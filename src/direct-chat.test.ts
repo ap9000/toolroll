@@ -795,6 +795,50 @@ describe("DirectChatHost & helpers", () => {
       host.drainRunningTurnLogs();
       detail = host.getThread("alex", started.thread.id)!;
       expect(detail.turns[0]?.assistantText).toBe("## Summary\n\n- Looks great!");
+
+      // Live assistant usage updates context tokens, and result usage records contextWindow + thinkingTokens + costUsd.
+      appendFileSync(
+        turnLogPath,
+        [
+          JSON.stringify({
+            type: "assistant",
+            message: {
+              content: [{ type: "text", text: "## Summary\n\n- Looks great!" }],
+              usage: { input_tokens: 120, cache_read_input_tokens: 45000, cache_creation_input_tokens: 880, output_tokens: 340 },
+            },
+          }),
+          JSON.stringify({
+            type: "result",
+            subtype: "success",
+            result: "## Summary\n\n- Looks great!",
+            total_cost_usd: 0.21,
+            usage: { input_tokens: 120, cache_read_input_tokens: 45000, cache_creation_input_tokens: 880, output_tokens: 340, output_tokens_details: { thinking_tokens: 90 } },
+            modelUsage: { "claude-opus-5-5": { contextWindow: 1000000, thinkingTokens: 90, costUSD: 0.21 } },
+          }),
+        ].join("\n") + "\n",
+      );
+      host.drainRunningTurnLogs();
+      detail = host.getThread("alex", started.thread.id)!;
+      expect(detail.turns[0]?.usage).toMatchObject({
+        contextTokens: 46000,
+        contextWindow: 1000000,
+        outputTokens: 340,
+        thinkingTokens: 90,
+        costUsd: 0.21,
+      });
+      expect(detail.thread.usage?.contextTokens).toBe(46000);
+      expect(detail.thread.usage?.contextWindow).toBe(1000000);
+
+      // Verify effort flags across all three providers.
+      expect(buildProviderCommand({ provider: "claude", modelId: "opus", effort: "xhigh", prompt: "hi", sessionId: null })).toEqual(
+        expect.arrayContaining(["--effort", "xhigh"]),
+      );
+      expect(buildProviderCommand({ provider: "codex", modelId: "gpt-6.2-sol", effort: "ultra", prompt: "hi", sessionId: null })).toEqual(
+        expect.arrayContaining(["-c", 'model_reasoning_effort="ultra"']),
+      );
+      expect(buildProviderCommand({ provider: "gemini", modelId: "gemini-4-neon", effort: "xhigh", prompt: "hi", sessionId: null })).toEqual(
+        expect.arrayContaining(["--model", "gemini-4-neon-xhigh", "--effort", "xhigh"]),
+      );
     } finally {
       host.close();
       store.close();

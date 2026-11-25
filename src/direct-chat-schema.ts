@@ -187,3 +187,15 @@ export const V182_REQUIRED_COLUMNS = Object.freeze({
 } as const);
 
 export const V183_STEPS = Object.freeze(["direct-chat-hardening-columns"] as const);
+
+export const V184_ADDED_COLUMNS = Object.freeze({
+  direct_chat_thread: {
+    effort: { definition: "TEXT NOT NULL DEFAULT ''" },
+    usage_json: { definition: "TEXT" },
+  },
+  direct_chat_turn: {
+    usage_json: { definition: "TEXT" },
+  },
+} as const);
+
+export const V184_STEPS = Object.freeze(["direct-chat-effort-usage-columns"] as const);

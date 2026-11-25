@@ -436,6 +436,7 @@ struct WorkHomeView: View {
                     planFirstChip
                 } else if currentGear == .chat {
                     chatTargetMenu
+                    chatEffortMenu
                 }
 
                 Spacer(minLength: 8)
@@ -536,13 +537,13 @@ struct WorkHomeView: View {
         Menu {
             ForEach(AgentChatProvider.allCases) { provider in
                 Section(provider.displayName) {
-                    ForEach(provider.presets, id: \.id) { preset in
+                    ForEach(store.directChatModels(for: provider)) { option in
                         Button {
-                            store.setDefaultChatModel(provider: provider, modelId: preset.id)
+                            store.setDefaultChatModel(provider: provider, modelId: option.modelId)
                         } label: {
                             HStack {
-                                Text(preset.label)
-                                if store.defaultChatProvider == provider && store.defaultChatModelId == preset.id {
+                                Text(option.menuTitle)
+                                if store.defaultChatProvider == provider && store.defaultChatModelId == option.modelId {
                                     Image(systemName: "checkmark")
                                 }
                             }
@@ -558,7 +559,7 @@ struct WorkHomeView: View {
                     tinted: true,
                     inTile: false
                 )
-                Text(store.defaultChatProvider.label(for: store.defaultChatModelId))
+                Text(store.directChatModelLabel(provider: store.defaultChatProvider, modelId: store.defaultChatModelId))
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(ToolrollPalette.ink)
                 Image(systemName: "chevron.up.chevron.down")
@@ -574,6 +575,48 @@ struct WorkHomeView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+    }
+
+    private var chatEffortMenu: some View {
+        let efforts = store.directChatAvailableEfforts(provider: store.defaultChatProvider, modelId: store.defaultChatModelId)
+        let current = efforts.contains(store.defaultChatEffort) ? store.defaultChatEffort : (efforts.first ?? "high")
+        return Menu {
+            Section("Reasoning Effort") {
+                ForEach(efforts, id: \.self) { level in
+                    Button {
+                        store.setDefaultChatEffort(level)
+                    } label: {
+                        HStack {
+                            Text(DirectChatEffortDisplay.label(for: level))
+                            if current == level {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "dial.medium")
+                    .font(.system(size: 10))
+                    .foregroundStyle(ToolrollPalette.muted)
+                Text(DirectChatEffortDisplay.label(for: current))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 26)
+            .background(ToolrollPalette.ground, in: Capsule())
+            .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            .contentShape(Capsule())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Reasoning effort level for \(store.directChatModelLabel(provider: store.defaultChatProvider, modelId: store.defaultChatModelId))")
     }
 
     private var planFirstChip: some View {

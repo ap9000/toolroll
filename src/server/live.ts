@@ -196,7 +196,7 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
   const directChatRooms = createLiveRooms<string, Viewer>(threadId => {
     const row = store.handle.prepare(`
       SELECT th.updated_at AS updated_at,
-             (SELECT status || ':' || byte_offset || ':' || length(assistant_text) FROM direct_chat_turn WHERE thread_id = th.id ORDER BY seq DESC LIMIT 1) AS turn_fp,
+             (SELECT status || ':' || byte_offset || ':' || length(assistant_text) || ':' || COALESCE(length(usage_json), 0) FROM direct_chat_turn WHERE thread_id = th.id ORDER BY seq DESC LIMIT 1) AS turn_fp,
              (SELECT COUNT(*) FROM direct_chat_tool tl JOIN direct_chat_turn tn ON tn.id = tl.turn_id WHERE tn.thread_id = th.id) AS tools_count
       FROM direct_chat_thread th WHERE th.id = ? AND th.archived_at IS NULL
     `).get(threadId) as Record<string, unknown> | undefined;

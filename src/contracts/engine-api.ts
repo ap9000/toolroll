@@ -690,6 +690,24 @@ export const directChatShipSummarySchema = z.object({
   createdAt: iso,
   stateAt: iso,
 });
+export const directChatUsageSchema = z.object({
+  inputTokens: z.number().int(),
+  outputTokens: z.number().int(),
+  cacheReadTokens: z.number().int(),
+  cacheCreationTokens: z.number().int(),
+  thinkingTokens: z.number().int(),
+  contextTokens: z.number().int(),
+  contextWindow: z.number().int().nullable(),
+  costUsd: z.number().nullable(),
+});
+export const directChatModelOptionSchema = z.object({
+  provider: directChatProviderSchema,
+  id: z.string(),
+  label: z.string(),
+  efforts: z.array(z.string()),
+  defaultEffort: z.string().nullable(),
+  contextWindow: z.number().int().nullable(),
+});
 export const directChatTurnSchema = z.object({
   id: hex32,
   seq: z.number().int(),
@@ -700,6 +718,7 @@ export const directChatTurnSchema = z.object({
   errorText: z.string().nullable(),
   createdAt: iso,
   finishedAt: iso.nullable(),
+  usage: directChatUsageSchema.nullable(),
   tools: z.array(directChatToolSchema),
   artifacts: z.array(directChatArtifactSchema),
 });
@@ -710,11 +729,13 @@ export const directChatSummarySchema = z.object({
   branch: z.string(),
   provider: directChatProviderSchema,
   modelId: z.string(),
+  effort: z.string().nullable(),
   posture: directChatPostureSchema,
   running: z.boolean(),
   lastStatus: z.enum(["running", "completed", "stopped", "failed", "interrupted"]).nullable(),
   changedFilesCount: z.number().int(),
   mainDirtyFiles: z.array(z.string()),
+  usage: directChatUsageSchema.nullable(),
   createdAt: iso,
   updatedAt: iso,
 });
@@ -723,6 +744,7 @@ export const directChatsListSchema = z.object({
   available: z.boolean(),
   problem: z.string().nullable(),
   backgroundOn: z.boolean(),
+  models: z.array(directChatModelOptionSchema),
   threads: z.array(directChatSummarySchema),
 });
 export const directChatDetailSchema = z.object({

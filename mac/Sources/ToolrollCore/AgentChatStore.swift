@@ -55,7 +55,151 @@ public enum AgentChatProvider: String, Codable, CaseIterable, Identifiable, Send
     }
 
     public func label(for modelId: String) -> String {
-        presets.first(where: { $0.id == modelId })?.label ?? modelId
+        if let found = presets.first(where: { $0.id == modelId }) {
+            return found.label
+        }
+        if let found = Self.fallbackCatalogModels.first(where: { $0.provider == self && $0.id == modelId }) {
+            return found.label
+        }
+        return modelId
+    }
+
+    public static var fallbackCatalogModels: [DirectChatModelOption] {
+        [
+            DirectChatModelOption(provider: .claude, id: "opus", label: "Claude Opus 5.5", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", contextWindow: 1_000_000),
+            DirectChatModelOption(provider: .claude, id: "sonnet", label: "Claude Sonnet 5.5", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", contextWindow: 1_000_000),
+            DirectChatModelOption(provider: .claude, id: "haiku", label: "Claude Haiku 5.5", efforts: ["low", "medium", "high"], defaultEffort: "medium", contextWindow: 200_000),
+            DirectChatModelOption(provider: .claude, id: "fable", label: "Claude Fable", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", contextWindow: 1_000_000),
+            DirectChatModelOption(provider: .codex, id: "gpt-6.2-sol", label: "GPT-6.2 Sol", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], defaultEffort: "high", contextWindow: 500_000),
+            DirectChatModelOption(provider: .codex, id: "gpt-6.2-astra", label: "GPT-6.2 Astra", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], defaultEffort: "high", contextWindow: 272_000),
+            DirectChatModelOption(provider: .codex, id: "gpt-6-astra", label: "GPT-6 Astra", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], defaultEffort: "high", contextWindow: 272_000),
+            DirectChatModelOption(provider: .codex, id: "gpt-6-sol", label: "GPT-6 Sol", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], defaultEffort: "high", contextWindow: 272_000),
+            DirectChatModelOption(provider: .codex, id: "gpt-6-luna", label: "GPT-6 Luna", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", contextWindow: 272_000),
+            DirectChatModelOption(provider: .gemini, id: "gemini-4-neon", label: "Gemini 4 Neon", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "high", contextWindow: 1_000_000),
+            DirectChatModelOption(provider: .gemini, id: "gemini-4-carbon", label: "Gemini 4 Carbon", efforts: ["low", "medium", "high"], defaultEffort: "high", contextWindow: 1_000_000),
+            DirectChatModelOption(provider: .gemini, id: "gemini-4-argon", label: "Gemini 4 Argon", efforts: ["low", "medium", "high"], defaultEffort: "high", contextWindow: 1_000_000),
+            DirectChatModelOption(provider: .gemini, id: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "high", contextWindow: 1_000_000),
+            DirectChatModelOption(provider: .gemini, id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", efforts: ["low", "medium", "high"], defaultEffort: "high", contextWindow: 1_000_000),
+        ]
+    }
+}
+
+public enum DirectChatEffortDisplay {
+    public static func label(for effort: String) -> String {
+        switch effort.lowercased() {
+        case "low": return "Low"
+        case "medium": return "Medium"
+        case "high": return "High"
+        case "xhigh": return "XHigh"
+        case "max": return "Max"
+        case "ultra": return "Ultra"
+        default: return effort.capitalized
+        }
+    }
+
+    public static func formatTokens(_ count: Int) -> String {
+        if count >= 1_000_000 {
+            let val = Double(count) / 1_000_000.0
+            return val.truncatingRemainder(dividingBy: 1) == 0
+                ? String(format: "%.0fM", val)
+                : String(format: "%.1fM", val)
+        }
+        if count >= 1_000 {
+            let val = Double(count) / 1_000.0
+            return val >= 100
+                ? String(format: "%.0fk", val)
+                : String(format: "%.1fk", val)
+        }
+        return "\(count)"
+    }
+}
+
+public struct DirectChatUsage: Codable, Equatable, Sendable {
+    public let inputTokens: Int
+    public let outputTokens: Int
+    public let cacheReadTokens: Int
+    public let cacheCreationTokens: Int
+    public let thinkingTokens: Int
+    public let contextTokens: Int
+    public let contextWindow: Int?
+    public let costUsd: Double?
+
+    public init(
+        inputTokens: Int = 0,
+        outputTokens: Int = 0,
+        cacheReadTokens: Int = 0,
+        cacheCreationTokens: Int = 0,
+        thinkingTokens: Int = 0,
+        contextTokens: Int = 0,
+        contextWindow: Int? = nil,
+        costUsd: Double? = nil
+    ) {
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.cacheCreationTokens = cacheCreationTokens
+        self.thinkingTokens = thinkingTokens
+        self.contextTokens = contextTokens
+        self.contextWindow = contextWindow
+        self.costUsd = costUsd
+    }
+
+    public var contextFraction: Double? {
+        guard let window = contextWindow, window > 0, contextTokens > 0 else { return nil }
+        return min(1.0, Double(contextTokens) / Double(window))
+    }
+
+    public var totalTokens: Int {
+        inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens
+    }
+
+    public var compactContextLabel: String {
+        let used = contextTokens > 0 ? contextTokens : totalTokens
+        if let window = contextWindow, window > 0 {
+            let pct = Int((Double(used) / Double(window) * 100.0).rounded())
+            return "\(DirectChatEffortDisplay.formatTokens(used)) / \(DirectChatEffortDisplay.formatTokens(window)) (\(pct)%)"
+        }
+        return "\(DirectChatEffortDisplay.formatTokens(used)) tok"
+    }
+}
+
+public struct DirectChatModelOption: Codable, Equatable, Identifiable, Sendable {
+    public var id: String { "\(provider.rawValue):\(modelId)" }
+    public let provider: AgentChatProvider
+    public let modelId: String
+    public let label: String
+    public let efforts: [String]
+    public let defaultEffort: String?
+    public let contextWindow: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case provider
+        case modelId = "id"
+        case label
+        case efforts
+        case defaultEffort
+        case contextWindow
+    }
+
+    public init(
+        provider: AgentChatProvider,
+        id: String,
+        label: String,
+        efforts: [String] = [],
+        defaultEffort: String? = nil,
+        contextWindow: Int? = nil
+    ) {
+        self.provider = provider
+        self.modelId = id
+        self.label = label
+        self.efforts = efforts
+        self.defaultEffort = defaultEffort
+        self.contextWindow = contextWindow
+    }
+
+    public var menuTitle: String {
+        guard let ctx = contextWindow, ctx > 0 else { return label }
+        return "\(label)  ·  \(DirectChatEffortDisplay.formatTokens(ctx))"
     }
 }
 
@@ -226,6 +370,7 @@ public struct DirectChatTurnDTO: Codable, Equatable, Identifiable, Sendable {
     public let errorText: String?
     public let createdAt: String
     public let finishedAt: String?
+    public let usage: DirectChatUsage?
     public let tools: [AgentChatToolEvent]
     public let artifacts: [DirectChatArtifact]
 
@@ -239,6 +384,7 @@ public struct DirectChatTurnDTO: Codable, Equatable, Identifiable, Sendable {
         errorText: String? = nil,
         createdAt: String,
         finishedAt: String? = nil,
+        usage: DirectChatUsage? = nil,
         tools: [AgentChatToolEvent] = [],
         artifacts: [DirectChatArtifact] = []
     ) {
@@ -251,6 +397,7 @@ public struct DirectChatTurnDTO: Codable, Equatable, Identifiable, Sendable {
         self.errorText = errorText
         self.createdAt = createdAt
         self.finishedAt = finishedAt
+        self.usage = usage
         self.tools = tools
         self.artifacts = artifacts
     }
@@ -263,11 +410,13 @@ public struct DirectChatSummaryDTO: Codable, Equatable, Identifiable, Sendable {
     public let branch: String
     public let provider: AgentChatProvider
     public let modelId: String
+    public let effort: String?
     public let posture: DirectChatPosture
     public let running: Bool
     public let lastStatus: String?
     public let changedFilesCount: Int
     public let mainDirtyFiles: [String]
+    public let usage: DirectChatUsage?
     public let createdAt: String
     public let updatedAt: String
 
@@ -278,11 +427,13 @@ public struct DirectChatSummaryDTO: Codable, Equatable, Identifiable, Sendable {
         branch: String,
         provider: AgentChatProvider,
         modelId: String,
+        effort: String? = nil,
         posture: DirectChatPosture,
         running: Bool,
         lastStatus: String? = nil,
         changedFilesCount: Int = 0,
         mainDirtyFiles: [String] = [],
+        usage: DirectChatUsage? = nil,
         createdAt: String,
         updatedAt: String
     ) {
@@ -292,11 +443,13 @@ public struct DirectChatSummaryDTO: Codable, Equatable, Identifiable, Sendable {
         self.branch = branch
         self.provider = provider
         self.modelId = modelId
+        self.effort = effort
         self.posture = posture
         self.running = running
         self.lastStatus = lastStatus
         self.changedFilesCount = changedFilesCount
         self.mainDirtyFiles = mainDirtyFiles
+        self.usage = usage
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -319,6 +472,7 @@ public struct DirectChatsListResponse: Codable, Equatable, Sendable {
     public let available: Bool
     public let problem: String?
     public let backgroundOn: Bool
+    public let models: [DirectChatModelOption]
     public let threads: [DirectChatSummaryDTO]
 
     public init(
@@ -326,13 +480,25 @@ public struct DirectChatsListResponse: Codable, Equatable, Sendable {
         available: Bool = true,
         problem: String? = nil,
         backgroundOn: Bool = false,
+        models: [DirectChatModelOption] = [],
         threads: [DirectChatSummaryDTO] = []
     ) {
         self.version = version
         self.available = available
         self.problem = problem
         self.backgroundOn = backgroundOn
+        self.models = models
         self.threads = threads
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        available = try c.decodeIfPresent(Bool.self, forKey: .available) ?? true
+        problem = try c.decodeIfPresent(String.self, forKey: .problem)
+        backgroundOn = try c.decodeIfPresent(Bool.self, forKey: .backgroundOn) ?? false
+        models = try c.decodeIfPresent([DirectChatModelOption].self, forKey: .models) ?? []
+        threads = try c.decodeIfPresent([DirectChatSummaryDTO].self, forKey: .threads) ?? []
     }
 }
 
@@ -470,6 +636,7 @@ public struct AgentChatMessage: Codable, Equatable, Identifiable, Sendable {
     public var isStreaming: Bool
     public var isError: Bool
     public var status: String
+    public var usage: DirectChatUsage?
 
     public init(
         id: String = UUID().uuidString,
@@ -481,7 +648,8 @@ public struct AgentChatMessage: Codable, Equatable, Identifiable, Sendable {
         timestamp: Date = Date(),
         isStreaming: Bool = false,
         isError: Bool = false,
-        status: String = "completed"
+        status: String = "completed",
+        usage: DirectChatUsage? = nil
     ) {
         self.id = id
         self.role = role
@@ -493,6 +661,7 @@ public struct AgentChatMessage: Codable, Equatable, Identifiable, Sendable {
         self.isStreaming = isStreaming
         self.isError = isError
         self.status = status
+        self.usage = usage
     }
 }
 
@@ -523,11 +692,13 @@ public struct AgentChatThread: Equatable, Identifiable, Sendable {
     public let branch: String
     public var provider: AgentChatProvider
     public var modelId: String
+    public var effort: String?
     public var posture: DirectChatPosture
     public var running: Bool
     public var lastStatus: String?
     public var changedFilesCount: Int
     public var mainDirtyFiles: [String]
+    public var usage: DirectChatUsage?
     public var messages: [AgentChatMessage]
     public var attachments: [DirectChatArtifact]
     public var ships: [DirectChatShipSummary]
@@ -541,11 +712,13 @@ public struct AgentChatThread: Equatable, Identifiable, Sendable {
         branch: String = "",
         provider: AgentChatProvider,
         modelId: String? = nil,
+        effort: String? = nil,
         posture: DirectChatPosture? = nil,
         running: Bool = false,
         lastStatus: String? = nil,
         changedFilesCount: Int = 0,
         mainDirtyFiles: [String] = [],
+        usage: DirectChatUsage? = nil,
         messages: [AgentChatMessage] = [],
         attachments: [DirectChatArtifact] = [],
         ships: [DirectChatShipSummary] = [],
@@ -558,11 +731,13 @@ public struct AgentChatThread: Equatable, Identifiable, Sendable {
         self.branch = branch
         self.provider = provider
         self.modelId = modelId ?? provider.defaultModelId
+        self.effort = effort
         self.posture = posture ?? DirectChatPosture.defaultFor(provider)
         self.running = running
         self.lastStatus = lastStatus
         self.changedFilesCount = changedFilesCount
         self.mainDirtyFiles = mainDirtyFiles
+        self.usage = usage
         self.messages = messages
         self.attachments = attachments
         self.ships = ships
@@ -577,11 +752,13 @@ public struct AgentChatThread: Equatable, Identifiable, Sendable {
         self.branch = summary.branch
         self.provider = summary.provider
         self.modelId = summary.modelId
+        self.effort = summary.effort
         self.posture = summary.posture
         self.running = summary.running
         self.lastStatus = summary.lastStatus
         self.changedFilesCount = summary.changedFilesCount
         self.mainDirtyFiles = summary.mainDirtyFiles
+        self.usage = summary.usage ?? existing?.usage
         self.messages = existing?.messages ?? []
         self.attachments = existing?.attachments ?? []
         self.ships = existing?.ships ?? []
@@ -596,11 +773,13 @@ public struct AgentChatThread: Equatable, Identifiable, Sendable {
         self.branch = detail.thread.branch
         self.provider = detail.thread.provider
         self.modelId = detail.thread.modelId
+        self.effort = detail.thread.effort
         self.posture = detail.thread.posture
         self.running = detail.thread.running
         self.lastStatus = detail.thread.lastStatus
         self.changedFilesCount = max(detail.thread.changedFilesCount, detail.diff.changedFiles.count)
         self.mainDirtyFiles = detail.thread.mainDirtyFiles
+        self.usage = detail.thread.usage
         self.messages = Self.messagesFromTurns(detail.turns)
         self.attachments = detail.attachments
         self.ships = detail.ships
@@ -658,7 +837,8 @@ public struct AgentChatThread: Equatable, Identifiable, Sendable {
                 timestamp: finished,
                 isStreaming: isRunning,
                 isError: isError,
-                status: turn.status
+                status: turn.status,
+                usage: turn.usage
             ))
         }
         return out

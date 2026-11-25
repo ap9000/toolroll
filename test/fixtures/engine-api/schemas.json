@@ -1,5 +1,5 @@
 {
-  "digest": "460baf3d35f9faec4be6eb5d40568fb3f37a9ff46ed10d08a81d34f3781552db",
+  "digest": "5059de5364e717a299bd645cc808edf1266bf0fdf395f8d7b49d6dd63a4a4a5d",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -4828,6 +4828,61 @@
         "backgroundOn": {
           "type": "boolean"
         },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "claude",
+                  "codex",
+                  "gemini"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "efforts": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "defaultEffort": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "contextWindow": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "provider",
+              "id",
+              "label",
+              "efforts",
+              "defaultEffort",
+              "contextWindow"
+            ],
+            "additionalProperties": false
+          }
+        },
         "threads": {
           "type": "array",
           "items": {
@@ -4856,6 +4911,12 @@
               },
               "modelId": {
                 "type": "string"
+              },
+              "effort": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "posture": {
                 "type": "object",
@@ -4908,6 +4969,77 @@
                   "type": "string"
                 }
               },
+              "usage": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "inputTokens": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "outputTokens": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "cacheReadTokens": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "cacheCreationTokens": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "thinkingTokens": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "contextTokens": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "contextWindow": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "costUsd": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "inputTokens",
+                      "outputTokens",
+                      "cacheReadTokens",
+                      "cacheCreationTokens",
+                      "thinkingTokens",
+                      "contextTokens",
+                      "contextWindow",
+                      "costUsd"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "createdAt": {
                 "type": "string"
               },
@@ -4922,11 +5054,13 @@
               "branch",
               "provider",
               "modelId",
+              "effort",
               "posture",
               "running",
               "lastStatus",
               "changedFilesCount",
               "mainDirtyFiles",
+              "usage",
               "createdAt",
               "updatedAt"
             ],
@@ -4939,6 +5073,7 @@
         "available",
         "problem",
         "backgroundOn",
+        "models",
         "threads"
       ],
       "additionalProperties": false
@@ -4979,6 +5114,12 @@
             },
             "modelId": {
               "type": "string"
+            },
+            "effort": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "posture": {
               "type": "object",
@@ -5031,6 +5172,77 @@
                 "type": "string"
               }
             },
+            "usage": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "inputTokens": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "outputTokens": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "cacheReadTokens": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "cacheCreationTokens": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "thinkingTokens": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "contextTokens": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "contextWindow": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "costUsd": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "inputTokens",
+                    "outputTokens",
+                    "cacheReadTokens",
+                    "cacheCreationTokens",
+                    "thinkingTokens",
+                    "contextTokens",
+                    "contextWindow",
+                    "costUsd"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "createdAt": {
               "type": "string"
             },
@@ -5045,11 +5257,13 @@
             "branch",
             "provider",
             "modelId",
+            "effort",
             "posture",
             "running",
             "lastStatus",
             "changedFilesCount",
             "mainDirtyFiles",
+            "usage",
             "createdAt",
             "updatedAt"
           ],
@@ -5113,6 +5327,77 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "usage": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "inputTokens": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "outputTokens": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "cacheReadTokens": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "cacheCreationTokens": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "thinkingTokens": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "contextTokens": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "contextWindow": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "costUsd": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "inputTokens",
+                      "outputTokens",
+                      "cacheReadTokens",
+                      "cacheCreationTokens",
+                      "thinkingTokens",
+                      "contextTokens",
+                      "contextWindow",
+                      "costUsd"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               },
               "tools": {
@@ -5221,6 +5506,7 @@
               "errorText",
               "createdAt",
               "finishedAt",
+              "usage",
               "tools",
               "artifacts"
             ],

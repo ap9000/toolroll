@@ -8,6 +8,7 @@
     "branch": "toolroll/chat-01234567",
     "provider": "claude",
     "modelId": "claude-sonnet-4-6",
+    "effort": "high",
     "posture": {
       "summary": "Runs commands without asking",
       "detail": "Claude runs inside this chat's isolated local clone with auto-approved tools and no remote configured.",
@@ -17,6 +18,16 @@
     "lastStatus": "completed",
     "changedFilesCount": 1,
     "mainDirtyFiles": ["README.md"],
+    "usage": {
+      "inputTokens": 420,
+      "outputTokens": 1280,
+      "cacheReadTokens": 18400,
+      "cacheCreationTokens": 2100,
+      "thinkingTokens": 320,
+      "contextTokens": 20920,
+      "contextWindow": 1000000,
+      "costUsd": 0.14
+    },
     "createdAt": "2026-10-20T10:00:00.000Z",
     "updatedAt": "2026-10-20T10:01:30.000Z"
   },
@@ -31,6 +42,16 @@
       "errorText": null,
       "createdAt": "2026-10-20T10:00:00.000Z",
       "finishedAt": "2026-10-20T10:01:30.000Z",
+      "usage": {
+        "inputTokens": 420,
+        "outputTokens": 1280,
+        "cacheReadTokens": 18400,
+        "cacheCreationTokens": 2100,
+        "thinkingTokens": 320,
+        "contextTokens": 20920,
+        "contextWindow": 1000000,
+        "costUsd": 0.14
+      },
       "tools": [
         {
           "id": "tool-1",

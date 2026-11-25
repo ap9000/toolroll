@@ -231,6 +231,10 @@ public final class WorkbenchStore {
     public var defaultChatModelId: String = UserDefaults.standard.string(forKey: "toolroll.chatModelId") ?? AgentChatProvider.claude.defaultModelId {
         didSet { UserDefaults.standard.set(defaultChatModelId, forKey: "toolroll.chatModelId") }
     }
+    public var defaultChatEffort: String = UserDefaults.standard.string(forKey: "toolroll.chatEffort") ?? "high" {
+        didSet { UserDefaults.standard.set(defaultChatEffort, forKey: "toolroll.chatEffort") }
+    }
+    public private(set) var directChatModels: [DirectChatModelOption] = AgentChatProvider.fallbackCatalogModels
     public var useLeadForNextChat: Bool = false
     private var managedLocalEngineProcess: Process? = nil
     private var directChatPollTask: Task<Void, Never>? = nil
@@ -1019,10 +1023,54 @@ public final class WorkbenchStore {
         }
     }
 
-    public func setDefaultChatModel(provider: AgentChatProvider, modelId: String) {
+    public func directChatModels(for provider: AgentChatProvider) -> [DirectChatModelOption] {
+        let filtered = directChatModels.filter { $0.provider == provider }
+        if !filtered.isEmpty { return filtered }
+        return AgentChatProvider.fallbackCatalogModels.filter { $0.provider == provider }
+    }
+
+    public func directChatModelOption(provider: AgentChatProvider, modelId: String) -> DirectChatModelOption? {
+        let options = directChatModels(for: provider)
+        if let exact = options.first(where: { $0.modelId == modelId }) { return exact }
+        let stripped = modelId
+            .replacingOccurrences(of: "-xhigh", with: "")
+            .replacingOccurrences(of: "-high", with: "")
+            .replacingOccurrences(of: "-medium", with: "")
+            .replacingOccurrences(of: "-low", with: "")
+            .replacingOccurrences(of: "-max", with: "")
+        return options.first(where: { $0.modelId == stripped })
+    }
+
+    public func directChatModelLabel(provider: AgentChatProvider, modelId: String) -> String {
+        directChatModelOption(provider: provider, modelId: modelId)?.label ?? provider.label(for: modelId)
+    }
+
+    public func directChatAvailableEfforts(provider: AgentChatProvider, modelId: String) -> [String] {
+        if let option = directChatModelOption(provider: provider, modelId: modelId), !option.efforts.isEmpty {
+            return option.efforts
+        }
+        switch provider {
+        case .claude: return ["low", "medium", "high", "xhigh", "max"]
+        case .codex: return ["low", "medium", "high", "xhigh", "max", "ultra"]
+        case .gemini: return ["low", "medium", "high", "xhigh"]
+        }
+    }
+
+    public func setDefaultChatModel(provider: AgentChatProvider, modelId: String, effort: String? = nil) {
         useLeadForNextChat = false
         defaultChatProvider = provider
         defaultChatModelId = modelId
+        let allowed = directChatAvailableEfforts(provider: provider, modelId: modelId)
+        if let effort, allowed.contains(effort) {
+            defaultChatEffort = effort
+        } else if !allowed.contains(defaultChatEffort) {
+            let fallback = directChatModelOption(provider: provider, modelId: modelId)?.defaultEffort
+            defaultChatEffort = (fallback.flatMap { allowed.contains($0) ? $0 : nil }) ?? allowed.first ?? "high"
+        }
+    }
+
+    public func setDefaultChatEffort(_ effort: String) {
+        defaultChatEffort = effort
     }
 
     public func refreshDirectChats() async {
@@ -1047,6 +1095,9 @@ public final class WorkbenchStore {
             directChatAvailable = list.available
             directChatProblem = list.problem
             directChatBackgroundOn = list.backgroundOn
+            if !list.models.isEmpty {
+                directChatModels = list.models
+            }
             let existingById = Dictionary(uniqueKeysWithValues: chatThreads.map { ($0.id, $0) })
             let pendingThreads = chatThreads.filter { $0.id.hasPrefix("pending-") }
             let serverThreads = list.threads.map { AgentChatThread(summary: $0, preserving: existingById[$0.id]) }
@@ -1130,12 +1181,18 @@ public final class WorkbenchStore {
         project: String?,
         provider: AgentChatProvider? = nil,
         modelId: String? = nil,
+        effort: String? = nil,
         attachments: [ComposerAttachment] = []
     ) async {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !attachments.isEmpty else { return }
         let chosenProvider = provider ?? defaultChatProvider
         let chosenModel = modelId ?? (provider == nil ? defaultChatModelId : chosenProvider.defaultModelId)
+        let allowedEfforts = directChatAvailableEfforts(provider: chosenProvider, modelId: chosenModel)
+        let rawEffort = effort ?? defaultChatEffort
+        let chosenEffort = allowedEfforts.contains(rawEffort)
+            ? rawEffort
+            : (directChatModelOption(provider: chosenProvider, modelId: chosenModel)?.defaultEffort ?? allowedEfforts.first ?? "high")
         let projName = project ?? activeProject ?? selectedProject ?? allProjects.first ?? "Workspace"
 
         if activeProfile.isDemo {
@@ -1218,7 +1275,8 @@ public final class WorkbenchStore {
                 project: resolvedProject,
                 prompt: initialPrompt,
                 provider: chosenProvider,
-                modelId: chosenModel
+                modelId: chosenModel,
+                effort: chosenEffort
             )
             guard started.ok, let threadId = started.threadId else {
                 let err = started.error ?? "Could not start chat."
@@ -1428,12 +1486,14 @@ public final class WorkbenchStore {
         }
     }
 
-    public func updateChatThreadModel(threadId: String, provider: AgentChatProvider, modelId: String) {
-        setDefaultChatModel(provider: provider, modelId: modelId)
+    public func updateChatThreadModel(threadId: String, provider: AgentChatProvider, modelId: String, effort: String? = nil) {
+        setDefaultChatModel(provider: provider, modelId: modelId, effort: effort)
+        let effectiveEffort = effort ?? defaultChatEffort
         if activeProfile.isDemo {
             if let idx = chatThreads.firstIndex(where: { $0.id == threadId }) {
                 chatThreads[idx].provider = provider
                 chatThreads[idx].modelId = modelId
+                chatThreads[idx].effort = effectiveEffort
                 chatThreads[idx].posture = DirectChatPosture.defaultFor(provider)
             }
             return
@@ -1441,7 +1501,12 @@ public final class WorkbenchStore {
         guard let client, isLocalSession else { return }
         Task {
             do {
-                let res = try await client.updateDirectChatModel(threadId: threadId, provider: provider, modelId: modelId)
+                let res = try await client.updateDirectChatModel(
+                    threadId: threadId,
+                    provider: provider,
+                    modelId: modelId,
+                    effort: effectiveEffort
+                )
                 if !res.ok {
                     notice = WorkbenchNotice(kind: .refusal, message: res.error ?? "Could not switch model.")
                     return

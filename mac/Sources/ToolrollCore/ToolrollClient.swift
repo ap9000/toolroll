@@ -486,17 +486,22 @@ public actor ToolrollClient {
         prompt: String,
         provider: AgentChatProvider,
         modelId: String,
+        effort: String? = nil,
         requestId: String = DirectChatDateParser.makeHex32RequestId()
     ) async throws -> DirectChatStartedResponse {
-        try await sendDirectChatForm(
+        var fields: [(String, String)] = [
+            ("project", project),
+            ("prompt", prompt),
+            ("provider", provider.rawValue),
+            ("model", modelId),
+            ("request", requestId),
+        ]
+        if let effort, !effort.isEmpty {
+            fields.append(("effort", effort))
+        }
+        return try await sendDirectChatForm(
             path: "/engine/direct-chats",
-            fields: [
-                ("project", project),
-                ("prompt", prompt),
-                ("provider", provider.rawValue),
-                ("model", modelId),
-                ("request", requestId),
-            ],
+            fields: fields,
             as: DirectChatStartedResponse.self,
             timeoutInterval: 60
         )
@@ -527,12 +532,17 @@ public actor ToolrollClient {
     public func updateDirectChatModel(
         threadId: String,
         provider: AgentChatProvider,
-        modelId: String
+        modelId: String,
+        effort: String? = nil
     ) async throws -> DirectChatMutatedResponse {
         let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+        var fields: [(String, String)] = [("provider", provider.rawValue), ("model", modelId)]
+        if let effort {
+            fields.append(("effort", effort))
+        }
         return try await sendDirectChatForm(
             path: "/engine/direct-chats/\(enc)/model",
-            fields: [("provider", provider.rawValue), ("model", modelId)],
+            fields: fields,
             as: DirectChatMutatedResponse.self
         )
     }

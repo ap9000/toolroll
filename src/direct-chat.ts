@@ -28,6 +28,7 @@ import {
   type TrustedCloneBinding,
 } from "./direct-chat-git.js";
 import { applyMainDirtyPatch, cloneSafeNodeModulesAsync, type ApplyMainDirtyPatchResult } from "./direct-chat-workspace.js";
+import { defaultContextWindowFor, normalizeDirectChatEffort, resolveAgyModelForEffort, type DirectChatEffort } from "./direct-chat-catalog.js";
 import type { Store } from "./store.js";
 
 export type DirectChatProvider = "claude" | "codex" | "gemini";
@@ -76,6 +77,17 @@ export function defaultModelForProvider(provider: DirectChatProvider): string {
   }
 }
 
+export type DirectChatUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  thinkingTokens: number;
+  contextTokens: number;
+  contextWindow: number | null;
+  costUsd: number | null;
+};
+
 export type DirectChatToolRow = {
   id: string;
   ordinal: number;
@@ -105,6 +117,7 @@ export type DirectChatTurnRow = {
   errorText: string | null;
   createdAt: string;
   finishedAt: string | null;
+  usage: DirectChatUsage | null;
   tools: DirectChatToolRow[];
   artifacts: DirectChatArtifactRow[];
 };
@@ -125,9 +138,11 @@ export type DirectChatThreadRow = {
   baseSha: string;
   provider: DirectChatProvider;
   modelId: string;
+  effort: DirectChatEffort | null;
   providerSessionId: string | null;
   mainDirtyFiles: string[];
   diffCache: DirectChatDiffSummary;
+  usage: DirectChatUsage | null;
   isLegacy: boolean;
   archivedAt: string | null;
   createdAt: string;
@@ -145,6 +160,7 @@ export type DirectChatStreamEvent =
   | { kind: "message_start" }
   | { kind: "text_delta"; delta: string }
   | { kind: "text_replace"; text: string }
+  | { kind: "usage"; usage: Partial<DirectChatUsage>; cumulative?: boolean }
   | { kind: "tool"; id: string; name: string; detail: string; status: DirectChatToolStatus }
   | { kind: "tool_status"; id: string; status: DirectChatToolStatus }
   | { kind: "completed" }
@@ -265,6 +281,47 @@ export function parseDirectChatLine(line: string, provider: DirectChatProvider):
   }
 }
 
+function finiteNonNeg(val: unknown): number {
+  return typeof val === "number" && Number.isFinite(val) && val >= 0 ? Math.round(val) : 0;
+}
+
+function emptyUsage(contextWindow: number | null = null): DirectChatUsage {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    thinkingTokens: 0,
+    contextTokens: 0,
+    contextWindow,
+    costUsd: null,
+  };
+}
+
+function parseUsageJson(raw: unknown): DirectChatUsage | null {
+  if (typeof raw !== "string" || raw.trim() === "") return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<DirectChatUsage> | null;
+    if (!parsed || typeof parsed !== "object") return null;
+    return {
+      inputTokens: finiteNonNeg(parsed.inputTokens),
+      outputTokens: finiteNonNeg(parsed.outputTokens),
+      cacheReadTokens: finiteNonNeg(parsed.cacheReadTokens),
+      cacheCreationTokens: finiteNonNeg(parsed.cacheCreationTokens),
+      thinkingTokens: finiteNonNeg(parsed.thinkingTokens),
+      contextTokens: finiteNonNeg(parsed.contextTokens),
+      contextWindow: typeof parsed.contextWindow === "number" && Number.isFinite(parsed.contextWindow) && parsed.contextWindow > 0
+        ? Math.round(parsed.contextWindow)
+        : null,
+      costUsd: typeof parsed.costUsd === "number" && Number.isFinite(parsed.costUsd) && parsed.costUsd >= 0
+        ? parsed.costUsd
+        : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function parseClaudeJson(json: Record<string, unknown>): DirectChatStreamEvent[] {
   const events: DirectChatStreamEvent[] = [];
   if (typeof json["session_id"] === "string" && json["session_id"] !== "") {
@@ -311,6 +368,21 @@ function parseClaudeJson(json: Record<string, unknown>): DirectChatStreamEvent[]
     if (textParts.length > 0) {
       events.push({ kind: "text_replace", text: sanitizeDisplay(textParts.join("\n")) });
     }
+    if (message["usage"] && typeof message["usage"] === "object") {
+      const u = message["usage"] as Record<string, unknown>;
+      const inputTokens = finiteNonNeg(u["input_tokens"]);
+      const cacheReadTokens = finiteNonNeg(u["cache_read_input_tokens"]);
+      const cacheCreationTokens = finiteNonNeg(u["cache_creation_input_tokens"]);
+      const outputTokens = finiteNonNeg(u["output_tokens"]);
+      const contextTokens = inputTokens + cacheReadTokens + cacheCreationTokens;
+      if (contextTokens > 0 || outputTokens > 0) {
+        events.push({
+          kind: "usage",
+          usage: { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, contextTokens },
+          cumulative: false,
+        });
+      }
+    }
   } else if (type === "user" && json["message"] && typeof json["message"] === "object") {
     const message = json["message"] as Record<string, unknown>;
     const content = Array.isArray(message["content"]) ? message["content"] : [];
@@ -322,6 +394,61 @@ function parseClaudeJson(json: Record<string, unknown>): DirectChatStreamEvent[]
       }
     }
   } else if (type === "result") {
+    const rawUsage = json["usage"] && typeof json["usage"] === "object" ? (json["usage"] as Record<string, unknown>) : null;
+    const rawModelUsage = json["modelUsage"] && typeof json["modelUsage"] === "object" ? (json["modelUsage"] as Record<string, unknown>) : null;
+    let contextWindow: number | null = null;
+    let thinkingTokens = 0;
+    let modelCost: number | null = null;
+    if (rawModelUsage) {
+      for (const entry of Object.values(rawModelUsage)) {
+        if (!entry || typeof entry !== "object") continue;
+        const m = entry as Record<string, unknown>;
+        if (typeof m["contextWindow"] === "number" && Number.isFinite(m["contextWindow"]) && m["contextWindow"] > 0) {
+          contextWindow = Math.round(m["contextWindow"]);
+        }
+        thinkingTokens += finiteNonNeg(m["thinkingTokens"]);
+        if (typeof m["costUSD"] === "number" && Number.isFinite(m["costUSD"]) && m["costUSD"] >= 0) {
+          modelCost = (modelCost ?? 0) + m["costUSD"];
+        }
+      }
+    }
+    const costUsd = typeof json["total_cost_usd"] === "number" && Number.isFinite(json["total_cost_usd"]) && json["total_cost_usd"] >= 0
+      ? json["total_cost_usd"]
+      : modelCost;
+    if (rawUsage) {
+      const outDetails = rawUsage["output_tokens_details"] && typeof rawUsage["output_tokens_details"] === "object"
+        ? (rawUsage["output_tokens_details"] as Record<string, unknown>)
+        : null;
+      if (thinkingTokens === 0 && outDetails) {
+        thinkingTokens = finiteNonNeg(outDetails["thinking_tokens"]);
+      }
+      const inputTokens = finiteNonNeg(rawUsage["input_tokens"]);
+      const cacheReadTokens = finiteNonNeg(rawUsage["cache_read_input_tokens"]);
+      const cacheCreationTokens = finiteNonNeg(rawUsage["cache_creation_input_tokens"]);
+      const outputTokens = finiteNonNeg(rawUsage["output_tokens"]);
+      events.push({
+        kind: "usage",
+        usage: {
+          inputTokens,
+          outputTokens,
+          cacheReadTokens,
+          cacheCreationTokens,
+          thinkingTokens,
+          ...(contextWindow !== null ? { contextWindow } : {}),
+          ...(costUsd !== null ? { costUsd } : {}),
+        },
+        cumulative: true,
+      });
+    } else if (contextWindow !== null || costUsd !== null) {
+      events.push({
+        kind: "usage",
+        usage: {
+          ...(contextWindow !== null ? { contextWindow } : {}),
+          ...(costUsd !== null ? { costUsd } : {}),
+        },
+        cumulative: true,
+      });
+    }
     const isError = json["is_error"] === true;
     const resultText = typeof json["result"] === "string" ? json["result"] : "";
     const denials = Array.isArray(json["permission_denials"]) ? json["permission_denials"] : [];
@@ -373,6 +500,20 @@ function parseCodexJson(json: Record<string, unknown>): DirectChatStreamEvent[] 
       events.push({ kind: "tool", id: itemId, name: tool, detail: sanitizeLine(server), status: type === "item.completed" ? "done" : "running" });
     }
   } else if (type === "turn.completed") {
+    if (json["usage"] && typeof json["usage"] === "object") {
+      const u = json["usage"] as Record<string, unknown>;
+      const inputTokens = finiteNonNeg(u["input_tokens"]);
+      const cacheReadTokens = finiteNonNeg(u["cached_input_tokens"]);
+      const outputTokens = finiteNonNeg(u["output_tokens"]);
+      const contextTokens = inputTokens;
+      if (inputTokens > 0 || outputTokens > 0) {
+        events.push({
+          kind: "usage",
+          usage: { inputTokens, outputTokens, cacheReadTokens, contextTokens },
+          cumulative: true,
+        });
+      }
+    }
     events.push({ kind: "completed" });
   } else if (type === "turn.failed" || type === "error") {
     const errObj = (json["error"] && typeof json["error"] === "object") ? (json["error"] as Record<string, unknown>) : null;
@@ -414,6 +555,28 @@ function parseGeminiJson(json: Record<string, unknown>): DirectChatStreamEvent[]
     }
   } else if (event === "result" && json["result"] && typeof json["result"] === "object") {
     const result = json["result"] as Record<string, unknown>;
+    const stats = (result["usage"] && typeof result["usage"] === "object"
+      ? (result["usage"] as Record<string, unknown>)
+      : (result["stats"] && typeof result["stats"] === "object" ? (result["stats"] as Record<string, unknown>) : null));
+    if (stats) {
+      const inputTokens = finiteNonNeg(stats["input_tokens"] ?? stats["prompt_tokens"] ?? stats["inputTokens"]);
+      const outputTokens = finiteNonNeg(stats["output_tokens"] ?? stats["completion_tokens"] ?? stats["outputTokens"]);
+      const cacheReadTokens = finiteNonNeg(stats["cached_tokens"] ?? stats["cache_read_input_tokens"] ?? stats["cachedInputTokens"]);
+      const thinkingTokens = finiteNonNeg(stats["thinking_tokens"] ?? stats["thoughts_token_count"] ?? stats["thinkingTokens"]);
+      if (inputTokens > 0 || outputTokens > 0 || cacheReadTokens > 0) {
+        events.push({
+          kind: "usage",
+          usage: {
+            inputTokens,
+            outputTokens,
+            cacheReadTokens,
+            thinkingTokens,
+            contextTokens: inputTokens + cacheReadTokens,
+          },
+          cumulative: true,
+        });
+      }
+    }
     if (typeof result["conversation_id"] === "string" && result["conversation_id"] !== "") {
       events.push({ kind: "session_id", sessionId: result["conversation_id"] });
     }
@@ -447,14 +610,17 @@ function parseGeminiJson(json: Record<string, unknown>): DirectChatStreamEvent[]
 export function buildProviderCommand(input: {
   provider: DirectChatProvider;
   modelId: string;
+  effort?: string | null;
   prompt: string;
   sessionId: string | null;
 }): string[] {
   const { provider, modelId, prompt, sessionId } = input;
+  const effort = normalizeDirectChatEffort(input.effort, provider);
   switch (provider) {
     case "claude": {
       const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", "auto"];
       if (modelId !== "") args.push("--model", modelId);
+      if (effort !== null) args.push("--effort", effort);
       if (sessionId !== null && sessionId !== "") args.push("--resume", sessionId);
       args.push("--", prompt);
       return args;
@@ -470,13 +636,16 @@ export function buildProviderCommand(input: {
         "--skip-git-repo-check",
       ];
       if (modelId !== "") args.push("-m", modelId);
+      if (effort !== null) args.push("-c", `model_reasoning_effort="${effort}"`);
       args.push("--", prompt);
       return args;
     }
     case "gemini": {
       const safePrompt = prompt.startsWith("-") ? ` ${prompt}` : prompt;
       const args = ["-p", safePrompt, "--output-format", "stream-json", "--mode", "auto", "--sandbox"];
-      if (modelId !== "") args.push("--model", modelId);
+      const effectiveModel = modelId !== "" ? resolveAgyModelForEffort(modelId, effort) : "";
+      if (effectiveModel !== "") args.push("--model", effectiveModel);
+      if (effort !== null) args.push("--effort", effort);
       if (sessionId !== null && sessionId !== "") args.push("--conversation", sessionId);
       return args;
     }
@@ -861,6 +1030,7 @@ export class DirectChatHost {
     repo: string;
     provider: DirectChatProvider;
     modelId?: string;
+    effort?: string | null;
     prompt: string;
   }): Promise<{ ok: true; thread: DirectChatThreadRow; turn: DirectChatTurnRow; created: boolean } | { ok: false; status: number; error: string }> {
     const trimmedPrompt = input.prompt.trim();
@@ -891,6 +1061,7 @@ export class DirectChatHost {
       repo: string;
       provider: DirectChatProvider;
       modelId?: string;
+      effort?: string | null;
       prompt: string;
     },
     trimmedPrompt: string,
@@ -941,15 +1112,16 @@ export class DirectChatHost {
     const firstLine = trimmedPrompt.split(/\r?\n/)[0]?.trim() ?? trimmedPrompt;
     const title = sanitizeLine(firstLine.slice(0, 72)) || "New chat";
     const modelId = (input.modelId && input.modelId.trim() !== "") ? input.modelId.trim() : defaultModelForProvider(input.provider);
+    const effort = normalizeDirectChatEffort(input.effort, input.provider) ?? "";
     const stamp = this.now().toISOString();
 
     this.store.handle.prepare(`
       INSERT INTO direct_chat_thread (
         id, owner, local_generation, account_generation, create_request_id,
         title, repo, clone_path, git_dir, config_sha256, diff_cache_json, is_legacy,
-        branch, base_sha, provider, model_id,
+        branch, base_sha, provider, model_id, effort,
         provider_session_id, main_dirty_files, archived_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, NULL, ?, NULL, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?)
     `).run(
       threadId,
       input.owner,
@@ -966,6 +1138,7 @@ export class DirectChatHost {
       baseSha,
       input.provider,
       modelId,
+      effort,
       mainDirtyFiles.length > 0 ? JSON.stringify(mainDirtyFiles) : null,
       stamp,
       stamp
@@ -1040,6 +1213,7 @@ export class DirectChatHost {
     const args = buildProviderCommand({
       provider: thread.provider,
       modelId: thread.modelId,
+      effort: thread.effort,
       prompt: effectivePrompt,
       sessionId: thread.providerSessionId,
     });
@@ -1103,6 +1277,7 @@ export class DirectChatHost {
     threadId: string;
     provider: DirectChatProvider;
     modelId: string;
+    effort?: string | null;
   }): { ok: true; thread: DirectChatThreadRow } | { ok: false; status: number; error: string } {
     if (!HEX32.test(input.threadId)) return { ok: false, status: 400, error: "Invalid thread id." };
     const raw = this.store.handle
@@ -1120,12 +1295,15 @@ export class DirectChatHost {
       this.pendingSwitchFrom.set(thread.id, thread.provider);
     }
     const nextModel = input.modelId.trim() !== "" ? input.modelId.trim() : defaultModelForProvider(input.provider);
+    const nextEffort = input.effort !== undefined
+      ? (normalizeDirectChatEffort(input.effort, input.provider) ?? "")
+      : (thread.effort ?? "");
     const stamp = this.now().toISOString();
     this.store.handle.prepare(`
       UPDATE direct_chat_thread
-      SET provider = ?, model_id = ?, provider_session_id = ?, updated_at = ?
+      SET provider = ?, model_id = ?, effort = ?, provider_session_id = ?, updated_at = ?
       WHERE id = ?
-    `).run(input.provider, nextModel, providerChanged ? null : thread.providerSessionId, stamp, thread.id);
+    `).run(input.provider, nextModel, nextEffort, providerChanged ? null : thread.providerSessionId, stamp, thread.id);
     this.onNotify({ threadId: thread.id, turnId: null, event: "change" });
     const updated = this.store.handle.prepare(`SELECT * FROM direct_chat_thread WHERE id = ?`).get(thread.id) as Record<string, unknown>;
     return { ok: true, thread: this.mapThread(updated) };
@@ -1469,6 +1647,8 @@ export class DirectChatHost {
 
     let changed = nextOffset !== turn.byteOffset;
     let assistantText = turn.assistantText;
+    let turnUsage: DirectChatUsage | null = turn.usage ? { ...turn.usage } : null;
+    let usageUpdated = false;
     let nextStatus: DirectChatTurnStatus = turn.status;
     let errorText: string | null = turn.errorText;
     let finishedAt: string | null = turn.finishedAt;
@@ -1515,6 +1695,33 @@ export class DirectChatHost {
             this.resetOnNextTextDelta.delete(turn.id);
             assistantText = sanitizeDisplay(ev.text);
             break;
+          case "usage": {
+            const base = turnUsage ?? emptyUsage(defaultContextWindowFor(thread.provider, thread.modelId));
+            const patch = ev.usage;
+            if (ev.cumulative) {
+              if (patch.inputTokens !== undefined) base.inputTokens = patch.inputTokens;
+              if (patch.outputTokens !== undefined) base.outputTokens = patch.outputTokens;
+              if (patch.cacheReadTokens !== undefined) base.cacheReadTokens = patch.cacheReadTokens;
+              if (patch.cacheCreationTokens !== undefined) base.cacheCreationTokens = patch.cacheCreationTokens;
+              if (patch.thinkingTokens !== undefined) base.thinkingTokens = patch.thinkingTokens;
+              if (patch.contextTokens !== undefined && patch.contextTokens > 0) base.contextTokens = patch.contextTokens;
+              if (patch.contextWindow !== undefined && patch.contextWindow !== null) base.contextWindow = patch.contextWindow;
+              if (patch.costUsd !== undefined && patch.costUsd !== null) base.costUsd = patch.costUsd;
+            } else {
+              if (patch.contextTokens !== undefined && patch.contextTokens > 0) base.contextTokens = patch.contextTokens;
+              if (patch.inputTokens !== undefined) base.inputTokens += patch.inputTokens;
+              if (patch.outputTokens !== undefined) base.outputTokens += patch.outputTokens;
+              if (patch.cacheReadTokens !== undefined) base.cacheReadTokens = Math.max(base.cacheReadTokens, patch.cacheReadTokens);
+              if (patch.cacheCreationTokens !== undefined) base.cacheCreationTokens += patch.cacheCreationTokens;
+              if (patch.contextWindow !== undefined && patch.contextWindow !== null) base.contextWindow = patch.contextWindow;
+            }
+            if (base.contextWindow === null) {
+              base.contextWindow = defaultContextWindowFor(thread.provider, thread.modelId);
+            }
+            turnUsage = base;
+            usageUpdated = true;
+            break;
+          }
           case "tool": {
             const existing = this.store.handle
               .prepare(`SELECT ordinal FROM direct_chat_tool WHERE turn_id = ? AND id = ?`)
@@ -1557,17 +1764,51 @@ export class DirectChatHost {
     if (changed) {
       this.store.handle.prepare(`
         UPDATE direct_chat_turn
-        SET byte_offset = ?, assistant_text = ?, status = ?, error_text = ?, finished_at = ?
+        SET byte_offset = ?, assistant_text = ?, status = ?, error_text = ?, finished_at = ?, usage_json = ?
         WHERE id = ?
-      `).run(nextOffset, assistantText, nextStatus, errorText, finishedAt, turn.id);
-      if (nextSessionId !== null) {
+      `).run(nextOffset, assistantText, nextStatus, errorText, finishedAt, turnUsage ? JSON.stringify(turnUsage) : null, turn.id);
+      const threadUsageJson = usageUpdated ? this.recomputeThreadUsageJson(thread) : null;
+      if (nextSessionId !== null && threadUsageJson !== null) {
+        this.store.handle.prepare(`UPDATE direct_chat_thread SET provider_session_id = ?, usage_json = ?, updated_at = ? WHERE id = ?`)
+          .run(nextSessionId, threadUsageJson, stamp, thread.id);
+      } else if (nextSessionId !== null) {
         this.store.handle.prepare(`UPDATE direct_chat_thread SET provider_session_id = ?, updated_at = ? WHERE id = ?`)
           .run(nextSessionId, stamp, thread.id);
+      } else if (threadUsageJson !== null) {
+        this.store.handle.prepare(`UPDATE direct_chat_thread SET usage_json = ?, updated_at = ? WHERE id = ?`)
+          .run(threadUsageJson, stamp, thread.id);
       } else {
         this.store.handle.prepare(`UPDATE direct_chat_thread SET updated_at = ? WHERE id = ?`).run(stamp, thread.id);
       }
     }
     return changed;
+  }
+
+  private recomputeThreadUsageJson(thread: DirectChatThreadRow): string | null {
+    const rows = this.store.handle
+      .prepare(`SELECT usage_json FROM direct_chat_turn WHERE thread_id = ? AND usage_json IS NOT NULL ORDER BY seq ASC`)
+      .all(thread.id) as Array<{ usage_json: string | null }>;
+    if (rows.length === 0) return null;
+    const total = emptyUsage(defaultContextWindowFor(thread.provider, thread.modelId));
+    let anyCost = false;
+    let costSum = 0;
+    for (const row of rows) {
+      const u = parseUsageJson(row.usage_json);
+      if (!u) continue;
+      total.inputTokens += u.inputTokens;
+      total.outputTokens += u.outputTokens;
+      total.cacheReadTokens += u.cacheReadTokens;
+      total.cacheCreationTokens += u.cacheCreationTokens;
+      total.thinkingTokens += u.thinkingTokens;
+      if (u.contextTokens > 0) total.contextTokens = u.contextTokens;
+      if (u.contextWindow !== null) total.contextWindow = u.contextWindow;
+      if (u.costUsd !== null) {
+        anyCost = true;
+        costSum += u.costUsd;
+      }
+    }
+    total.costUsd = anyCost ? costSum : null;
+    return JSON.stringify(total);
   }
 
   private readStderrTail(stderrPath: string): string {
@@ -1627,6 +1868,7 @@ export class DirectChatHost {
       errorText: typeof raw["error_text"] === "string" ? raw["error_text"] : null,
       createdAt: String(raw["created_at"]),
       finishedAt: typeof raw["finished_at"] === "string" ? raw["finished_at"] : null,
+      usage: parseUsageJson(raw["usage_json"]),
       tools: toolRows.map(t => ({
         id: String(t["id"]),
         ordinal: Number(t["ordinal"]),
@@ -1691,9 +1933,11 @@ export class DirectChatHost {
       baseSha: String(raw["base_sha"]),
       provider: String(raw["provider"]) as DirectChatProvider,
       modelId: String(raw["model_id"]),
+      effort: normalizeDirectChatEffort(typeof raw["effort"] === "string" ? raw["effort"] : null, String(raw["provider"]) as DirectChatProvider),
       providerSessionId: typeof raw["provider_session_id"] === "string" ? raw["provider_session_id"] : null,
       mainDirtyFiles,
       diffCache,
+      usage: parseUsageJson(raw["usage_json"]),
       isLegacy: Number(raw["is_legacy"] ?? 0) === 1,
       archivedAt: typeof raw["archived_at"] === "string" ? raw["archived_at"] : null,
       createdAt: String(raw["created_at"]),

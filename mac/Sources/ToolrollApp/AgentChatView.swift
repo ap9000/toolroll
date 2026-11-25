@@ -16,6 +16,7 @@ public struct AgentChatView: View {
     @State private var expandedToolMessageIds: Set<String> = []
     @State private var selectedDiffFileFilter: String? = nil
     @State private var isPosturePopoverOpen: Bool = false
+    @State private var isUsagePopoverOpen: Bool = false
     @State private var lightboxSelection: DirectChatGallerySelection? = nil
     @FocusState private var replyFocused: Bool
 
@@ -195,6 +196,10 @@ public struct AgentChatView: View {
 
             Spacer()
 
+            if let usage = thread.usage, usage.contextTokens > 0 || usage.totalTokens > 0 {
+                contextUsagePill(usage)
+            }
+
             if store.directChatBackgroundOn {
                 HStack(spacing: 4) {
                     Circle().fill(ToolrollPalette.success).frame(width: 5.5, height: 5.5)
@@ -209,6 +214,109 @@ public struct AgentChatView: View {
         .padding(.vertical, 6)
         .background(ToolrollPalette.ground)
         .overlay(alignment: .bottom) { HairlineDivider() }
+    }
+
+    private func contextUsagePill(_ usage: DirectChatUsage) -> some View {
+        let frac = usage.contextFraction ?? 0
+        let gaugeColor: Color = frac >= 0.90
+            ? ToolrollPalette.danger
+            : (frac >= 0.75 ? ToolrollPalette.warning : ToolrollPalette.live)
+        return Button {
+            isUsagePopoverOpen.toggle()
+        } label: {
+            HStack(spacing: 6) {
+                if usage.contextWindow != nil {
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(ToolrollPalette.line)
+                            .frame(width: 28, height: 4)
+                        Capsule()
+                            .fill(gaugeColor)
+                            .frame(width: max(2, 28 * min(1, frac)), height: 4)
+                    }
+                }
+                Text(usage.compactContextLabel)
+                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .monospacedDigit()
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(ToolrollPalette.raised, in: Capsule())
+            .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help("Context window & token usage")
+        .popover(isPresented: $isUsagePopoverOpen, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Context & Tokens")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(ToolrollPalette.ink)
+                    Spacer()
+                    Text(store.directChatModelLabel(provider: thread.provider, modelId: thread.modelId))
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
+
+                if let window = usage.contextWindow, window > 0 {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Context window")
+                                .font(.system(size: 11))
+                                .foregroundStyle(ToolrollPalette.muted)
+                            Spacer()
+                            Text("\(usage.contextTokens.formatted()) / \(window.formatted())")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(ToolrollPalette.ink)
+                        }
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(ToolrollPalette.line)
+                                Capsule()
+                                    .fill(gaugeColor)
+                                    .frame(width: max(3, geo.size.width * min(1, frac)))
+                            }
+                        }
+                        .frame(height: 5)
+                    }
+                }
+
+                HairlineDivider()
+
+                VStack(alignment: .leading, spacing: 4) {
+                    usageMetricRow("Input tokens", value: usage.inputTokens.formatted())
+                    if usage.cacheReadTokens > 0 {
+                        usageMetricRow("Cache read", value: usage.cacheReadTokens.formatted())
+                    }
+                    if usage.cacheCreationTokens > 0 {
+                        usageMetricRow("Cache write", value: usage.cacheCreationTokens.formatted())
+                    }
+                    usageMetricRow("Output tokens", value: usage.outputTokens.formatted())
+                    if usage.thinkingTokens > 0 {
+                        usageMetricRow("Thinking tokens", value: usage.thinkingTokens.formatted())
+                    }
+                    if let cost = usage.costUsd, cost > 0 {
+                        usageMetricRow("List-price equiv.", value: String(format: "$%.3f", cost))
+                    }
+                }
+            }
+            .padding(12)
+            .frame(width: 280)
+        }
+    }
+
+    private func usageMetricRow(_ label: String, value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 11))
+                .foregroundStyle(ToolrollPalette.muted)
+            Spacer()
+            Text(value)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(ToolrollPalette.ink)
+                .monospacedDigit()
+        }
     }
 
     private var backgroundServiceBanner: some View {
@@ -518,10 +626,26 @@ public struct AgentChatView: View {
                     .padding(.top, 1)
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(thread.provider.label(for: thread.modelId))
-                        .font(.system(size: 12, weight: .semibold))
-                        .tracking(-0.1)
-                        .foregroundStyle(ToolrollPalette.ink)
+                    HStack(spacing: 6) {
+                        Text(store.directChatModelLabel(provider: thread.provider, modelId: thread.modelId))
+                            .font(.system(size: 12, weight: .semibold))
+                            .tracking(-0.1)
+                            .foregroundStyle(ToolrollPalette.ink)
+                        if let eff = thread.effort, !eff.isEmpty {
+                            Text(DirectChatEffortDisplay.label(for: eff))
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(ToolrollPalette.muted)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1.5)
+                                .background(ToolrollPalette.raised, in: Capsule())
+                                .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                        }
+                        if let u = msg.usage, !msg.isStreaming, u.outputTokens > 0 {
+                            Text("\(DirectChatEffortDisplay.formatTokens(u.outputTokens)) out")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(ToolrollPalette.muted.opacity(0.75))
+                        }
+                    }
 
                     if msg.isStreaming || !msg.tools.isEmpty {
                         liveActivityRow(for: msg)

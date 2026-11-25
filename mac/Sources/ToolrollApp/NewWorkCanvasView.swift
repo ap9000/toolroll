@@ -36,7 +36,7 @@ public struct NewWorkCanvasView: View {
     }
 
     private var activeModelBadge: String {
-        if mode == .chat { return store.defaultChatProvider.label(for: store.defaultChatModelId) }
+        if mode == .chat { return store.directChatModelLabel(provider: store.defaultChatProvider, modelId: store.defaultChatModelId) }
         if mode == .askLead { return "Central Lead" }
         let key = (mode == .planFirst) ? "plan" : "build"
         if let role = store.modelsRead.roles.first(where: { $0.key == key }), !role.words.isEmpty {

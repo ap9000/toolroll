@@ -21,6 +21,7 @@ import {
   type DirectChatProvider,
   type DirectChatThreadRow,
 } from "../direct-chat.js";
+import { listDirectChatSubscriptionModels } from "../direct-chat-catalog.js";
 import { imageContentHeaders, type DirectChatArtifactRow } from "../direct-chat-artifacts.js";
 import {
   cancelDirectChatShip,
@@ -157,11 +158,13 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
       branch: row.branch,
       provider: row.provider,
       modelId: row.modelId,
+      effort: row.effort,
       posture: directChatPostureOf(row.provider),
       running: row.running,
       lastStatus: row.lastStatus,
       changedFilesCount: row.changedFilesCount,
       mainDirtyFiles: row.mainDirtyFiles,
+      usage: row.usage,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -204,6 +207,7 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
         available: false,
         problem: gate.error,
         backgroundOn: false,
+        models: [],
         threads: [],
       } satisfies DirectChatsList);
     }
@@ -218,6 +222,7 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
       available: true,
       problem: null,
       backgroundOn: isBackgroundOn(),
+      models: listDirectChatSubscriptionModels(store),
       threads: visibleThreads,
     } satisfies DirectChatsList);
   }
@@ -255,6 +260,7 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
         errorText: turn.errorText,
         createdAt: turn.createdAt,
         finishedAt: turn.finishedAt,
+        usage: turn.usage,
         tools: turn.tools,
         artifacts: turn.artifacts.map(toArtifactView),
       })),
@@ -272,6 +278,7 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
     const prompt = ctx.posted.get("prompt") ?? "";
     const providerRaw = ctx.posted.get("provider") ?? "claude";
     const modelId = ctx.posted.get("model") ?? "";
+    const effort = ctx.posted.get("effort") ?? "";
     const requestId = ctx.posted.get("request") ?? "";
 
     if (!isDirectChatProvider(providerRaw)) {
@@ -293,6 +300,7 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
       repo,
       provider: providerRaw as DirectChatProvider,
       modelId,
+      ...(effort !== "" ? { effort } : {}),
       prompt,
     });
     if (!res.ok) {
@@ -360,10 +368,17 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
     }
     const providerRaw = ctx.posted.get("provider") ?? "";
     const modelId = ctx.posted.get("model") ?? "";
+    const effortParam = ctx.posted.has("effort") ? (ctx.posted.get("effort") ?? "") : undefined;
     if (!isDirectChatProvider(providerRaw)) {
       return checked(ctx, 400, "directChatMutated", { ok: false, error: "Choose Claude, Codex, or Gemini." } satisfies DirectChatMutated);
     }
-    const res = host.switchModel({ owner: gate.who.name, threadId, provider: providerRaw, modelId });
+    const res = host.switchModel({
+      owner: gate.who.name,
+      threadId,
+      provider: providerRaw,
+      modelId,
+      ...(effortParam !== undefined ? { effort: effortParam } : {}),
+    });
     if (!res.ok) return checked(ctx, res.status, "directChatMutated", { ok: false, error: res.error } satisfies DirectChatMutated);
     return checked(ctx, 200, "directChatMutated", { ok: true, said: "Model updated." } satisfies DirectChatMutated);
   }

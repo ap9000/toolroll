@@ -1533,6 +1533,30 @@ pub struct DirectChatShipSummary {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatUsage {
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub thinking_tokens: i64,
+    pub context_tokens: i64,
+    pub context_window: Option<i64>,
+    pub cost_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatModelOption {
+    pub provider: String,
+    pub id: String,
+    pub label: String,
+    pub efforts: Vec<String>,
+    pub default_effort: Option<String>,
+    pub context_window: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct DirectChatTurn {
     pub id: String,
     pub seq: i64,
@@ -1543,6 +1567,7 @@ pub struct DirectChatTurn {
     pub error_text: Option<String>,
     pub created_at: String,
     pub finished_at: Option<String>,
+    pub usage: Option<DirectChatUsage>,
     pub tools: Vec<DirectChatTool>,
     pub artifacts: Vec<DirectChatArtifact>,
 }
@@ -1556,11 +1581,13 @@ pub struct DirectChatSummary {
     pub branch: String,
     pub provider: String,
     pub model_id: String,
+    pub effort: Option<String>,
     pub posture: DirectChatPosture,
     pub running: bool,
     pub last_status: Option<String>,
     pub changed_files_count: i64,
     pub main_dirty_files: Vec<String>,
+    pub usage: Option<DirectChatUsage>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -1580,6 +1607,7 @@ pub struct DirectChatsList {
     pub available: bool,
     pub problem: Option<String>,
     pub background_on: bool,
+    pub models: Vec<DirectChatModelOption>,
     pub threads: Vec<DirectChatSummary>,
 }
 

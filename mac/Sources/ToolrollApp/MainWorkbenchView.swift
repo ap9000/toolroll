@@ -302,13 +302,13 @@ public struct MainWorkbenchView: View {
             Menu {
                 ForEach(AgentChatProvider.allCases) { provider in
                     Section(provider.displayName) {
-                        ForEach(provider.presets, id: \.id) { preset in
+                        ForEach(store.directChatModels(for: provider)) { option in
                             Button {
-                                store.updateChatThreadModel(threadId: thread.id, provider: provider, modelId: preset.id)
+                                store.updateChatThreadModel(threadId: thread.id, provider: provider, modelId: option.modelId)
                             } label: {
                                 HStack {
-                                    Text(preset.label)
-                                    if thread.provider == provider && thread.modelId == preset.id {
+                                    Text(option.menuTitle)
+                                    if thread.provider == provider && thread.modelId == option.modelId {
                                         Image(systemName: "checkmark")
                                     }
                                 }
@@ -319,7 +319,7 @@ public struct MainWorkbenchView: View {
             } label: {
                 HStack(spacing: 5) {
                     ProviderBrandGlyph(provider: thread.provider.rawValue, size: 11, tinted: true, inTile: false)
-                    Text(thread.provider.label(for: thread.modelId))
+                    Text(store.directChatModelLabel(provider: thread.provider, modelId: thread.modelId))
                         .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(ToolrollPalette.ink)
                     Image(systemName: "chevron.up.chevron.down")
@@ -336,6 +336,44 @@ public struct MainWorkbenchView: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .disabled(isRunning)
+
+            let efforts = store.directChatAvailableEfforts(provider: thread.provider, modelId: thread.modelId)
+            let activeEffort = thread.effort ?? (efforts.contains(store.defaultChatEffort) ? store.defaultChatEffort : (efforts.first ?? "high"))
+            Menu {
+                Section("Reasoning Effort") {
+                    ForEach(efforts, id: \.self) { level in
+                        Button {
+                            store.updateChatThreadModel(threadId: thread.id, provider: thread.provider, modelId: thread.modelId, effort: level)
+                        } label: {
+                            HStack {
+                                Text(DirectChatEffortDisplay.label(for: level))
+                                if activeEffort == level {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "dial.medium")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(ToolrollPalette.muted)
+                    Text(DirectChatEffortDisplay.label(for: activeEffort))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(ToolrollPalette.ink)
+                }
+                .padding(.horizontal, 7)
+                .frame(height: 22)
+                .background(ToolrollPalette.raised, in: Capsule())
+                .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                .contentShape(Capsule())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .disabled(isRunning)
+            .help("Reasoning effort for the next turn")
         }
         .padding(.leading, 4)
     }
