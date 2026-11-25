@@ -129,7 +129,7 @@ describe.skipIf(!REAL_MAC)("deploy check on this Mac (sandbox-exec)", () => {
       try { fs.readFileSync(${JSON.stringify(join(root, "secret.txt"))}); out.read = "read"; } catch (e) { out.read = e.code; }
       try { fs.writeFileSync(${JSON.stringify(join(inside, "inside.txt"))}, "x"); out.inside = "written"; } catch (e) { out.inside = e.code; }
       const tryConnect = (p, host) => new Promise(done => { const s = net.connect(p, host); s.on("connect", () => { s.destroy(); done("connected"); }); s.on("error", e => done(e.code)); });
-      const server = net.createServer(s => s.end("hi")).listen(${port}, "127.0.0.1", async () => {
+      const server = net.createServer(s => { s.on("error", () => {}); s.end("hi"); }).listen(${port}, "127.0.0.1", async () => {
         out.own = await tryConnect(${port}, "127.0.0.1");
         out.otherPort = await tryConnect(${otherPort}, "127.0.0.1");
         out.network = await tryConnect(443, "1.1.1.1");
