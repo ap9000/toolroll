@@ -581,6 +581,9 @@ get("tasks", "task.approval", `^\\/t\\/${TASK}\\/approval$`, { project: "task", 
 // One-tap release approval (trusted-release-reports.md A6/A7): the sheet, and the push's opaque locator, which only
 // redirects to it once the plane's own state says the task ref is a release in the person's projects.
 get("tasks", "task.release", `^\\/t\\/${TASK}\\/release$`, { project: "task", limited: "resource", ...free, sample: "/t/one/release" });
+// Land's address read again (a reload or Back after the POST): only back to the task page's landing card, which reads
+// the saved outcome; never Land or git.
+get("tasks", "task.land-again", `^\\/t\\/${TASK}\\/land$`, { project: "task", limited: "resource", ...free, sample: "/t/one/land" });
 get("tasks", "release.locate", `^\\/approve\\/${ID}$`, { project: "task-ref", limited: "resource", ...free, sample: "/approve/1" });
 get("pages", "ledger.export", "/ledger/export", { limited: "unscoped", ...free });
 get("tasks", "runs", "/runs", { limited: "collection", ...free }); // a redirect to /agents now

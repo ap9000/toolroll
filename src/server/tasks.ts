@@ -3134,6 +3134,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     "task.act.complete": taskAct("complete"),
     "task.act.merge": taskMerge,
     "task.act.land": taskLand,
+    "task.land-again": taskLandAgain,
     "task.act.recheck-stopped": taskRecheckStopped,
     "task.act.stop": taskAct("stop"),
     "task.act.stop-carrying": taskAct("stop-carrying"),
@@ -3322,6 +3323,18 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     }
     if (answersInPlace(ctx.request)) return answerActInPlace(response, "done", `${done.kind === "undo" ? "Undone" : "Landed"} on ${done.branch} (${done.commit.slice(0, 7)}).`, 200);
     return redirect(response, taskHref(shown));
+  }
+
+  /** Land's address read again by a GET (a reload or Back after the POST): back to the task page's landing card, which
+   * reads the saved outcome (a kept commit and its command, or where it landed). Reads no git, lands nothing. Kept last
+   * in createTasksHandlers: password-freshness.test.ts pins the functions above by position. */
+  async function taskLandAgain(ctx: HandlerContext): Promise<void> {
+    const { url, who, response } = ctx;
+    const act = matchTaskPath(url.pathname, "/land$");
+    if (act === null) return noPage(who, response);
+    const ref = store.lookupRef(act.taskId);
+    if (ref === null || !visible(ref.repo)) return refuse(response, who, 404, "no such task", "/");
+    return redirect(response, `${taskHref(store.taskFamilyOf(act.taskId, null, true)?.current.id ?? act.taskId)}#land`);
   }
 
   return { registrations, workListFor, showOrder, runListPane, peekFragment, taskMutation, queueRegionFor, ciFailingFor, completedRowFor, attemptRowFor, resultRowOf, reviewCockpitViewOf, decisionEvidence, runEvidence, sendArtifact, peekGuards, liveRunIds };
