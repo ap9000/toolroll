@@ -143,7 +143,7 @@ function automaticStatus(databaseFile: string, journal: { id: string; phase: str
     const store = { handle: db } as unknown as Parameters<typeof autoUpdatePolicy>[0];
     const policy = autoUpdatePolicy(store);
     const lines = [policy === null ? "Automatic updates: the setting can't be read, so nothing updates by itself."
-      : policy.on ? `Automatic updates: on (turned on by ${policy.by ?? "someone"}). Change it in Settings → Updates.` : "Automatic updates: off. Turn them on in Settings → Updates."];
+      : policy.on ? `Automatic updates: on (turned on by ${policy.by ?? "someone"}). Change it in Settings → Updates.` : `Automatic updates: off${policy.by === null ? "" : ` (turned off by ${policy.by})`}. Turn them on in Settings → Updates.`];
     const last = autoUpdateAttempts(store, 1)?.[0];
     if (last !== undefined) lines.push(`Last automatic update: ${autoUpdateLine(last, last.outcome === null && journal?.id === last.journalId ? journal.phase : null).line}`);
     return lines;

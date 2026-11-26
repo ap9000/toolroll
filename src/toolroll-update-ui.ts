@@ -37,7 +37,7 @@ export type UpdatesView = {
 };
 
 /** What turning automatic updates on does, in one line (Settings → Updates). */
-export const AUTO_UPDATE_WORDS = "Installs each new release by itself: checks it came from Toolroll’s publish workflow, lets running work finish, backs up and rehearses the database, and puts the previous version back if anything fails.";
+export const AUTO_UPDATE_WORDS = "Installs each new release by itself: checks it came from Toolroll’s publish workflow, lets running work finish, backs up and rehearses the database, and puts the previous version back if anything fails. If an update doesn’t finish, or a version is rolled back, it turns itself off until you turn it on again.";
 
 /** Settings → Updates → Update automatically: the switch, what it does, and (behind the step-up) turning it on or off. */
 function autoHtml(auto: NonNullable<UpdatesView["auto"]>): Html {

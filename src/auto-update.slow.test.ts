@@ -4,7 +4,7 @@
  * the pass reserves the version, prepares its journal and launches the independent job (here, the job's own resume of
  * that journal id), which verifies, drains, backs up, rehearses, switches and checks health; the new version records
  * it as complete. A release whose provenance names another repository is refused before anything changes, and a failed
- * health check restores the previous version and database — each recorded once, never attempted automatically again,
+ * health check restores the previous version and database — each recorded once, turning automatic updates off,
  * while a person can still update by hand.
  */
 import { test, expect } from "vitest";

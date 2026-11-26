@@ -5,7 +5,8 @@
  * - `auto_update_policy`: one row once a person chose (no row reads off, so a new install and an upgraded one start
  *   with automatic updates off), with its revision, who chose and when. Every change is also in action_ledger.
  * - `auto_update_attempt`: one row per release version an automatic update was ever reserved for (UNIQUE version), so
- *   a failed, restored or rolled-back release is never tried automatically again. It binds the enabling person's
+ *   the same release is never reserved twice (an extra guard: an attempt that doesn't complete, and any rollback or
+ *   restore, also turn automatic updates off, so correctness never rests on this history surviving). It binds the enabling person's
  *   account generation, which the updater checks again before it starts and before it switches. Reserved before anything is
  *   prepared or launched; its journal id, launch time and outcome are each written once (a trigger refuses any other
  *   change) and the row is never deleted.

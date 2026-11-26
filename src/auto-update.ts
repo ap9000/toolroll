@@ -270,7 +270,8 @@ export type AutoUpdatePassResult = { started: string; journal: string } | { held
  * The update check's automatic step (releases.ts startUpdateChecks, beside the console): settle earlier attempts, then,
  * when the decision allows, reserve the version and prepare its journal under the prepare lock, and launch the same
  * independent updater Settings → Updates launches (prepare → a one-off job → resume that journal id only). The updater
- * never runs inside the service it stops. Never a downgrade, never a prerelease, one attempt per version.
+ * never runs inside the service it stops. Never a downgrade, never a prerelease, one attempt per version; an attempt
+ * that doesn't complete turns automatic updates off until a person turns them on again.
  */
 export async function autoUpdatePass(store: AutoUpdateStore, o: AutoUpdatePassOptions): Promise<AutoUpdatePassResult> {
   reconcileAutoUpdates(store, { stateDir: o.stateDir, current: o.current.version, now: o.now() });
