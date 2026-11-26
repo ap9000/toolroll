@@ -8,7 +8,7 @@ import { openStore, type Store } from "./store.js";
 import { addApprover, approve, propose } from "./scope.js";
 import { recordActionWhole } from "./action-ledger.js";
 import { LAND_DESTINATION, LAND_HANDOFF, LAND_HANDOFF_SETTLED, LAND_INTENT, LAND_SETTLED, landingHistoryOf } from "./local-landing.js";
-import { landedRowsOf, type LandedRow } from "./landed-rows.js";
+import { LANDED_GIT_READS, landedRowsOf, type LandedRow } from "./landed-rows.js";
 
 const NOW = new Date("2026-11-05T12:00:00.000Z");
 const REPO = "/repos/landed-rows", PR_REPO = "/repos/landed-rows-pr";
@@ -97,5 +97,48 @@ describe("a list's landing words", () => {
       landedRowsOf(store, rows(), git);
       expect(prepare).toHaveBeenCalledTimes(1);
     } finally { prepare.mockRestore(); }
+  });
+});
+
+describe("bounded, whatever a page holds (review round 2)", () => {
+  test("the statement reads only what an answer rests on: its results' kept handoffs and each project's newest destination", () => {
+    // History the page can't use: a kept handoff of another commit, and an older destination record.
+    ledger(null, REPO, null, LAND_DESTINATION, "refs/heads/old", { v: 1, ref: "refs/heads/old", common: join(REPO, ".git") }, "request");
+    ledger(null, REPO, null, LAND_DESTINATION, "refs/heads/main", { v: 1, ref: "refs/heads/main", common: join(REPO, ".git") }, "request");
+    const other = ledger("kept-not-merged", REPO, runs["kept-not-merged"]!, LAND_HANDOFF, "pending", { v: 1, key: "k", ref: "refs/heads/main", old: OLD, commit: "6".repeat(40), keep: "x", folder: REPO, candidate: "5".repeat(40) }, "request");
+    ledger("kept-not-merged", REPO, runs["kept-not-merged"]!, LAND_HANDOFF_SETTLED, `${other}:kept`, { v: 1 });
+    const read: Record<string, unknown>[] = [];
+    const prepare = store.handle.prepare.bind(store.handle);
+    const spy = vi.spyOn(store.handle, "prepare").mockImplementation(((sql: string) => {
+      const statement = prepare(sql);
+      return { all: (...args: unknown[]) => { const rows = (statement.all as (...a: unknown[]) => Record<string, unknown>[])(...args); read.push(...rows); return rows; } };
+    }) as never);
+    try {
+      landedRowsOf(store, [{ rootId: "kept-not-merged", repo: REPO, resultRunId: runs["kept-not-merged"]!, assignmentState: "complete" }], git);
+    } finally { spy.mockRestore(); }
+    expect(read.filter(row => row["kind"] === "destination")).toHaveLength(1);
+    expect(read.filter(row => row["action"] === LAND_HANDOFF).map(row => JSON.parse(String(row["detail"])).candidate)).toEqual([heads["kept-not-merged"]]);
+    expect(read.filter(row => row["action"] === LAND_HANDOFF_SETTLED)).toHaveLength(1);
+  });
+
+  test("a fixed number of git reads a page: past it the rows left say nothing, and nothing said is wrong", () => {
+    const many = Array.from({ length: LANDED_GIT_READS }, (_, i) => `many-${i}`);
+    for (const id of many) { built(id); landed(id, heads[id]!, (i => i.toString(16).padStart(40, "a"))(many.indexOf(id))); }
+    // git answers each landing's parent, so its revert check reads twice (its parent, then its change, unreadable).
+    let calls = 0;
+    const counted = (_cwd: string, args: readonly string[]): string | null => {
+      calls += 1;
+      if (args[0] === "rev-list" && args[1] === "--parents") return `${args[4]} ${OLD}`;
+      return null;
+    };
+    const rows = many.map(id => ({ rootId: id, repo: REPO, resultRunId: runs[id]!, assignmentState: "complete" }));
+    const listed = landedRowsOf(store, rows, counted);
+    expect(calls).toBeLessThanOrEqual(LANDED_GIT_READS);
+    expect(listed.size).toBe(LANDED_GIT_READS / 2);
+    expect([...listed.keys()]).toEqual(many.slice(0, LANDED_GIT_READS / 2));
+    for (const [id, words] of listed) {
+      const history = landingHistoryOf(store, REPO, id, heads[id]!, counted);
+      expect(words, id).toBe(history!.words.replace(/\.$/, ""));
+    }
   });
 });
