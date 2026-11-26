@@ -1660,3 +1660,38 @@ fn the_copied_setup_command_quotes_the_folder_and_leaves_out_one_it_cant_write_s
         "toolroll project flexible enable"
     );
 }
+
+#[test]
+fn a_thread_started_with_a_task_selected_shows_its_own_diff_never_the_tasks() {
+    // Stranger 17: with a task selected on the Diff tab, T started a thread; the thread was selected, but its Diff tab
+    // still showed the task's changes until the selection moved away and back.
+    let mut app = App::new(false, Some("/home/me/shop".into()));
+    app.now = NOW;
+    app.update(Msg::Work(Ok(parse(fake::scenario_work()))));
+    let task = app.selected_item().expect("a task is selected").id.clone();
+    assert_ne!(task, fake::THREAD);
+    app.tab = toolroll_tui::app::Tab::Diff;
+    let mut d = fake::fixture("result-diff.json");
+    d["task"] = json!(task);
+    app.diff = Some(parse(d));
+    app.update(Msg::Acted(Ok(ActOutcome::ThreadStarted {
+        words: "The thread started.".into(),
+        thread: fake::THREAD.into(),
+    })));
+    let fx = app.update(Msg::Threads(Ok(parse(fake::fixture("live-threads.json")))));
+    assert_eq!(
+        app.selected_item().map(|i| i.id.as_str()),
+        Some(fake::THREAD)
+    );
+    // The task's diff is let go, and the thread's own changes are asked for.
+    assert!(app.diff.is_none(), "{:?}", app.diff);
+    assert!(
+        fx.iter()
+            .any(|e| matches!(e, Effect::FetchThreadDiff(a) if a.task == fake::THREAD)),
+        "{fx:?}"
+    );
+    assert!(
+        !fx.iter().any(|e| matches!(e, Effect::FetchDiff(_))),
+        "{fx:?}"
+    );
+}
