@@ -29,29 +29,6 @@ For Claude Code, Codex, and Gemini — using the subscriptions already on your m
 
 ## Quick start
 
-### Native macOS app (recommended on Mac)
-
-Install the native SwiftUI macOS app and local CLI together via Homebrew Cask (macOS 14 Sonoma+, Apple Silicon & Intel):
-
-```sh
-brew install --cask ap9000/toolroll/toolroll
-```
-
-Or download the signed, notarized `Toolroll-<version>-macos.dmg` directly from [GitHub Releases](https://github.com/ap9000/toolroll/releases/latest) and drag **Toolroll.app** to Applications. On launch, Toolroll automatically discovers or starts your local engine — no manual terminal setup required.
-
-<details>
-<summary>Building the native Mac app from source</summary>
-
-```sh
-cd mac && bash build-app.sh && open build/Toolroll.app
-# Or package a local .dmg:
-cd mac && bash build-dmg.sh
-```
-
-See [macOS release & signing guide](https://github.com/ap9000/toolroll/blob/main/docs/guide/mac-release.md) for Developer ID signing, notarization, and Homebrew Cask automation.
-
-</details>
-
 ### CLI & Terminal Workbench (macOS or Linux)
 
 Requires Node.js 22.20+, git 2.41+, and Claude Code (`claude`), Codex (`codex`), or Gemini signed in on this computer. On Linux, also install the sandbox tools: `sudo apt update && sudo apt install bubblewrap socat ripgrep`.
@@ -75,6 +52,16 @@ npm uninstall -g standing-orders && npm install -g toolroll
 ```
 
 </details>
+
+### Native macOS app (macOS 14 Sonoma+)
+
+Build and launch the native SwiftUI **Toolroll.app** from a checkout (requires Xcode 16 / Swift 6; automatically discovers or starts your local Toolroll engine):
+
+```sh
+cd mac && bash build-app.sh && open build/Toolroll.app
+```
+
+Signed, notarized `.dmg` downloads and Homebrew Cask distribution are configured in [macOS release & signing guide](https://github.com/ap9000/toolroll/blob/main/docs/guide/mac-release.md) and will publish automatically once Developer ID signing secrets are enabled.
 
 Toolroll opens locally with no password and no login file — on your own computer you're already in. Start a **Direct Chat** for fast interactive iteration in an isolated clone, or delegate a **Task** to build while you walk away. Every result returns **Ready** with its diff and real check status; press `⌘⏎` (Mac app) or `a` (terminal) to accept and ship, or send it back with notes. To explore without model calls or spend, run `toolroll demo`. More: [Getting started](https://github.com/ap9000/toolroll/blob/main/docs/guide/getting-started.md).
 

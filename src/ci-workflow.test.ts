@@ -91,9 +91,9 @@ function checks(job: Job, id: string, event: Event, file: string): Check[] {
   return combos.map(combo => ({ name: fill(job.name ?? id, combo) + suffix(combo), runner: fill(job["runs-on"] ?? "", combo), runs, workflow: `.github/workflows/${file}` }));
 }
 
-/** Shards per suite (docs/plans/ci-speed.md, item 1): Linux runs every file in six, macOS its lane in three. Shard names
+/** Shards per suite (docs/plans/ci-speed.md, item 1): Linux runs every file in eight, macOS its lane in four. Shard names
  * are never required checks; only their joins are. */
-const SHARDS = { linux: 6, darwin: 3 } as const;
+const SHARDS = { linux: 8, darwin: 4 } as const;
 const shardNames = (node: string) => [
   ...Array.from({ length: SHARDS.linux }, (_, at) => `node ${node} · shard ${at + 1}/${SHARDS.linux}`),
   ...Array.from({ length: SHARDS.darwin }, (_, at) => `node ${node} · macos shard ${at + 1}/${SHARDS.darwin}`),
@@ -227,7 +227,7 @@ describe("the CI workflows", () => {
     const change = pr(["src/release.ts"]);
     // Skipped, Node 22's shards report once each, unexpanded (GitHub skips a matrix job before expanding it); the
     // required names are written out, so they report exactly.
-    const skippedShards = ["node 22 · shard ${{ matrix.shard }}/6", "node 22 · macos shard ${{ matrix.shard }}/3"];
+    const skippedShards = ["node 22 · shard ${{ matrix.shard }}/8", "node 22 · macos shard ${{ matrix.shard }}/4"];
     expect(names(change)).toEqual([...all.filter(name => !shardNames("22").includes(name)), ...skippedShards].sort());
     // An ordinary pull request: Node 22 reports skipped (main's protection reads that as passing a merge; a release never).
     expect(executed(change)).toEqual([...REQUIRED_PR_CHECKS.filter(name => !name.startsWith("node 22")), ...shardNames("24"), LATEST, SCOPE, NATIVE_SCOPE, ...NATIVE, ...ADVISORY].sort());

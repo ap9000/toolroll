@@ -41,14 +41,43 @@ jobs:
     permissions:
       contents: read
     outputs:
+      skipped: ${{ steps.secrets.outputs.skip }}
       tag: ${{ steps.meta.outputs.tag }}
-      version: ${{ steps.meta.outputs.version }}
+      version: ${{ steps.ver.outputs.version }}
       dmg_name: ${{ steps.pack.outputs.dmg_name }}
       dmg_sha256: ${{ steps.pack.outputs.dmg_sha256 }}
       signed: ${{ steps.pack.outputs.signed }}
       notarized: ${{ steps.pack.outputs.notarized }}
     steps:
+      - name: Check signing and notarization secrets
+        id: secrets
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          APPLE_DEVELOPER_ID_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+          APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+          APPLE_NOTARY_KEY_BASE64: ${{ secrets.APPLE_NOTARY_KEY_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          HAS_SIGNING=0
+          if [ -n "$APPLE_DEVELOPER_ID_P12" ] && [ -n "$APPLE_DEVELOPER_ID_PASSWORD" ] && [ -n "$APPLE_SIGN_IDENTITY" ]; then
+            HAS_SIGNING=1
+          fi
+          HAS_NOTARY=0
+          if [ -n "$APPLE_NOTARY_KEY_BASE64" ] && [ -n "$APPLE_NOTARY_KEY_ID" ] && [ -n "$APPLE_NOTARY_ISSUER_ID" ]; then
+            HAS_NOTARY=1
+          fi
+          if [ "$EVENT_NAME" = "release" ] && { [ "$HAS_SIGNING" -eq 0 ] || [ "$HAS_NOTARY" -eq 0 ]; }; then
+            echo "::notice::Apple signing/notarization secrets are not configured yet; skipping macOS DMG build and release upload for ${RELEASE_TAG}. See docs/guide/mac-release.md."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Resolve target ref
+        if: steps.secrets.outputs.skip != 'true'
         id: meta
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -69,16 +98,19 @@ jobs:
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        if: steps.secrets.outputs.skip != 'true'
         with:
           ref: ${{ steps.meta.outputs.ref }}
           persist-credentials: false
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        if: steps.secrets.outputs.skip != 'true'
         with:
           node-version: "24"
           check-latest: true
 
       - name: Determine release version
+        if: steps.secrets.outputs.skip != 'true'
         id: ver
         env:
           TAG: ${{ steps.meta.outputs.tag }}
@@ -92,11 +124,13 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_ENV"
 
       - name: Run Swift unit tests
+        if: steps.secrets.outputs.skip != 'true'
         run: |
           cd mac
           swift test
 
       - name: Build, sign, notarize, and package Toolroll.dmg
+        if: steps.secrets.outputs.skip != 'true'
         id: pack
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -184,6 +218,7 @@ jobs:
           echo "notarized=$([ "$HAS_SIGNING" -eq 1 ] && [ "$HAS_NOTARY" -eq 1 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: steps.secrets.outputs.skip != 'true'
         with:
           name: macos-dmg
           path: ${{ runner.temp }}/mac-release
@@ -198,11 +233,13 @@ jobs:
       contents: write
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: needs.build.outputs.skipped != 'true'
         with:
           name: macos-dmg
           path: ${{ runner.temp }}/mac-release
 
       - name: Verify DMG checksum
+        if: needs.build.outputs.skipped != 'true'
         env:
           DMG_NAME: ${{ needs.build.outputs.dmg_name }}
           DMG_SHA256: ${{ needs.build.outputs.dmg_sha256 }}
@@ -211,6 +248,7 @@ jobs:
           echo "$DMG_SHA256  $DMG_NAME" | sha256sum --strict -c -
 
       - name: Upload DMG and checksum to GitHub Release
+        if: needs.build.outputs.skipped != 'true'
         env:
           EVENT_NAME: ${{ github.event_name }}
           PUBLISH_RELEASE: ${{ inputs.publish_release }}
@@ -239,6 +277,7 @@ jobs:
             --clobber
 
       - name: Open Homebrew Cask PR in ap9000/homebrew-toolroll
+        if: needs.build.outputs.skipped != 'true'
         env:
           EVENT_NAME: ${{ github.event_name }}
           PUBLISH_RELEASE: ${{ inputs.publish_release }}

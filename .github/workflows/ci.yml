@@ -46,7 +46,7 @@ jobs:
   # job ran it in 14–21 minutes). `--shard=i/K` takes the files test/timings.json's plan gives shard i, slowest first
   # (test/shard-sequencer.ts), so the shards end together. Each shard records the files it ran on the tested commit.
   test-shard:
-    name: node ${{ matrix.node }} · shard ${{ matrix.shard }}/6
+    name: node ${{ matrix.node }} · shard ${{ matrix.shard }}/8
     # Pinned: ubuntu-latest moved to 26.04 (2026-10-21), where bubblewrap runs
     # unprivileged, so the agent-fence and ACP tests take the Linux fence road
     # they were never written for.
@@ -58,7 +58,7 @@ jobs:
       fail-fast: false
       matrix:
         node: ["24"]
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -145,7 +145,7 @@ jobs:
       # Vitest's own JSON report, back on fd 3 and converted on the trusted side: no candidate script summarizes it.
       # TOOLROLL_REQUIRE_NATIVE: a native attack that can't run here fails instead of skipping (a skip is not evidence);
       # the join's verifier runs with the same --native policy.
-      - run: '"$RUNNER_TEMP/candidate" run --env CI=true --env TOOLROLL_REQUIRE_NATIVE=linux --report "$RUNNER_TEMP/shard-report.json" -- npm run test:all -- --shard=${{ matrix.shard }}/6'
+      - run: '"$RUNNER_TEMP/candidate" run --env CI=true --env TOOLROLL_REQUIRE_NATIVE=linux --report "$RUNNER_TEMP/shard-report.json" -- npm run test:all -- --shard=${{ matrix.shard }}/8'
       - uses: actions/upload-artifact@v4
         with:
           name: shard-${{ matrix.node }}-${{ matrix.shard }}-a${{ github.run_attempt }}
@@ -211,7 +211,7 @@ jobs:
         run: |
           verifier=.trusted-base/scripts/ci-shards.mjs
           if [ ! -f "$verifier" ]; then echo "::warning::the base revision has no shard verifier yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
-          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 6 --native linux
+          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 8 --native linux
 
   # The unit suite on macOS (docs/plans/pipeline-speed.md, item 3a): it runs on the candidate itself, before anything
   # merges, sharded like the Linux suite, beside it; the release tag no longer runs it again (test-matrix.md). On a pull
@@ -219,7 +219,7 @@ jobs:
   # set; Linux runs every file), in three timing-balanced shards; the nightly runs every file here too. Each shard
   # records the files it ran on the tested commit.
   macos-shard:
-    name: node ${{ matrix.node }} · macos shard ${{ matrix.shard }}/3
+    name: node ${{ matrix.node }} · macos shard ${{ matrix.shard }}/4
     runs-on: macos-latest
     timeout-minutes: 40
     env:
@@ -228,7 +228,7 @@ jobs:
       fail-fast: false
       matrix:
         node: ["24"]
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -272,7 +272,7 @@ jobs:
       # Vitest's own JSON report, back on fd 3 and converted on the trusted side: no candidate script summarizes it.
       # TOOLROLL_REQUIRE_NATIVE: a native attack that can't run here fails instead of skipping (a skip is not evidence);
       # the join's verifier runs with the same --native policy.
-      - run: '"$RUNNER_TEMP/candidate" run --env CI=true --env TOOLROLL_REQUIRE_NATIVE=darwin --env TOOLROLL_TEST_LANE="$LANE" --report "$RUNNER_TEMP/shard-report.json" -- npm run test:all -- --shard=${{ matrix.shard }}/3'
+      - run: '"$RUNNER_TEMP/candidate" run --env CI=true --env TOOLROLL_REQUIRE_NATIVE=darwin --env TOOLROLL_TEST_LANE="$LANE" --report "$RUNNER_TEMP/shard-report.json" -- npm run test:all -- --shard=${{ matrix.shard }}/4'
         env:
           LANE: ${{ inputs.macos_lane || 'macos' }}
       - uses: actions/upload-artifact@v4
@@ -352,7 +352,7 @@ jobs:
           verifier=.trusted-base/scripts/ci-shards.mjs
           if [ ! -f "$verifier" ]; then echo "::warning::the base revision has no shard verifier yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
           if ! grep -q "export function linuxSkipsProblem" "$verifier"; then echo "::warning::the base revision's shard verifier has no macOS lane yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
-          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 3 --native darwin --lane "$LANE" --linux-reports "$RUNNER_TEMP/linux-shards" --linux-shards 6
+          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 4 --native darwin --lane "$LANE" --linux-reports "$RUNNER_TEMP/linux-shards" --linux-shards 8
 
   # The newest Node (docs/plans/test-matrix.md): what a person installs today, whose bundled SQLite can refuse what the
   # suite's Node 24 takes (0.9.105: SQLite 3.54.1, bundled from Node 22.23, 24.22 and 26.13 on, refused the Tasks list).
