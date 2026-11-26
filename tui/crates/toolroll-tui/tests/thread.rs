@@ -1590,7 +1590,10 @@ fn a_threads_diff_never_shows_a_tasks_review_card_only_its_own_save() {
     asked.extend(app.update(Msg::Thread(fake::THREAD.into(), Ok(parse(window())))));
     open_diff(&mut app, asked, thread_diff(None), thread_file());
     let shown = screen(&mut app, 120, 30);
-    assert!(shown.contains("Changes since the thread started"), "{shown}");
+    assert!(
+        shown.contains("Changes since the thread started"),
+        "{shown}"
+    );
     assert!(!shown.contains("Check this result"), "{shown}");
     assert!(!shown.contains("Send back"), "{shown}");
     assert!(shown.contains("Save as branch"), "{shown}");
@@ -1634,7 +1637,10 @@ fn a_first_message_a_setup_step_sent_back_waits_for_t_after_the_setup_and_never_
     assert_eq!(app.key(key('x')), vec![Effect::ResumeScreen]);
     // After the setup, T: the message back in its box, sent only by Enter.
     let fx = app.key(key('T'));
-    assert!(!fx.iter().any(|e| matches!(e, Effect::Act { .. })), "{fx:?}");
+    assert!(
+        !fx.iter().any(|e| matches!(e, Effect::Act { .. })),
+        "{fx:?}"
+    );
     assert_eq!(app.mode, Mode::NewThread("Fix the README".into()));
     // Taken once: Esc and T again is an empty box.
     app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
