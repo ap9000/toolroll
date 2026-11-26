@@ -215,6 +215,10 @@ const workRowSchema = z.object({
   group: z.enum(WORK_ROW_GROUPS),
   /** 0 waits on a person, 1 runs, 2 queued or waiting (a retry included), 3 finished, 4 stopped or put away. */
   rank: z.number().int(),
+  /** Complete work whose project check since it was accepted failed, is out of date (the check command was approved
+   * again since it ran: `stale`, never a failure) or can't be read (work-index.ts AfterCheck): the fact its Complete
+   * headline doesn't say. Absent on every other row. */
+  check: z.enum(["failed", "stale", "unreadable"]).optional(),
   detail: z.string().nullable(),
   problem: z.string().nullable(),
   /** What this waiting row asks; absent when it waits on nobody. */
@@ -369,6 +373,14 @@ export const stepCardsSchema = z.object({
    * proved). Display only: it never makes anything landable. Null when it hasn't landed (or the project publishes
    * through pull requests). */
   landing: z.object({ words: z.string(), reverted: z.boolean() }).nullable(),
+  /** The approved check (task-status.ts approvedCheckStateOf), present only when it holds the result back: `failed`,
+   * `stale` (the check command was approved again since it ran: out of date, never a failure) or `unreadable`. A client
+   * marks only `failed` as a failure. */
+  check: z.enum(["failed", "stale", "unreadable"]).optional(),
+  /** What Run checks again posts to POST /r/<run>/checks as `level` (the task page's own Run checks): the current
+   * result's build and the level its project has a command for, when its check failed, is out of date, can't be read or
+   * didn't run. Display only: the console decides who may at the post, as for the page. Absent otherwise. */
+  runChecks: z.object({ run: z.number().int(), level: z.enum(["quick", "full"]) }).optional(),
   room: z.string(),
 });
 

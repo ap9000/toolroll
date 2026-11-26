@@ -103,6 +103,16 @@ pub fn suggestion_words(s: &str) -> Option<String> {
     Some(format!("{}{}", first.to_uppercase(), chars.as_str()))
 }
 
+/// A Complete row's check since acceptance (Work's `check`), in a few words for its second line.
+pub fn after_check_words(check: &str) -> Option<&'static str> {
+    match check {
+        "failed" => Some("checks failed after acceptance"),
+        "stale" => Some("checks out of date"),
+        "unreadable" => Some("checks couldn't be read"),
+        _ => None,
+    }
+}
+
 fn mark_of(card: &StepCard) -> (&'static str, Style) {
     let m = marks();
     match card.mark.as_str() {
@@ -1200,6 +1210,10 @@ fn card_lines(
     }
     if !item.age.is_empty() {
         meta.push(item.age.clone());
+    }
+    // Complete work whose check since acceptance holds it back says so (only a failure is said as one).
+    if let Some(words) = item.check.as_deref().and_then(after_check_words) {
+        meta.insert(0, words.to_string());
     }
     if meta.is_empty() {
         meta.push(item.detail.clone());
@@ -2944,6 +2958,7 @@ pub fn facts_of(app: &App) -> Facts {
             .iter()
             .find(|c| c.key == "checks")
             .map(|c| c.mark.as_str()),
+        steps.and_then(|s| s.check.as_deref()),
     );
     let costs: Vec<f64> = cards.iter().filter_map(|c| c.cost_usd).collect();
     let accept = steps.and_then(|s| s.review.as_ref()).map(|r| &r.accept);

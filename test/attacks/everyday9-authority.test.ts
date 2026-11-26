@@ -254,3 +254,95 @@ describe("Run checks from the local owner's session", () => {
   });
 });
 
+
+// Everyday-9 E2: the workbench's Run checks again is the task page's own post (POST /r/<build>/checks), sent over the
+// terminal's own session as an in-place act. The console decides exactly as for the page: the live person or local
+// owner, the project they can see, the exact build named, one request however often it is asked.
+describe("Run checks again from the workbench: the page's own act, over the terminal's session", () => {
+  const terminalAsk = (session: { cookie: string; csrf: string }, result: { id: string; runId: number }, level = "full") =>
+    world.send(`/r/${result.runId}/checks`, "POST", { cookie: session.cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded", accept: "application/json",
+      "x-toolroll-act": "in-place", "x-toolroll-client": "terminal" }, new URLSearchParams({ csrf: session.csrf, level, return: `/t/${result.id}` }).toString());
+  const requests = (runId: number) => world.store.handle.prepare("SELECT actor, detail FROM action_ledger WHERE action = 'checks requested' AND run_id = ?").all(runId).map(row => ({ ...row }));
+  const steps = async (session: { cookie: string }, id: string) => JSON.parse((await world.send(`/t/${id}/steps`, "GET", { cookie: session.cookie, accept: "application/json" })).body) as { check?: string; runChecks?: { run: number; level: string } };
+  /** The project's check command approved again after the result was built: its saved check is out of date. */
+  const commandChanged = () => world.store.setVerifyCommand({ repo: world.repo, command: "npm test -- --ci", timeoutMs: 300_000, approvedBy: "alex" }, new Date(Date.now() + 60_000));
+
+  test("the local owner: the step cards offer it on an out-of-date check, and the post asks once, as the local owner's request", async () => {
+    const session = await world.localSession();
+    const result = fixtures.ready("ordinary");
+    expect((await steps(session, result.id)).runChecks).toBeUndefined();
+    commandChanged();
+    const offered = await steps(session, result.id);
+    expect(offered).toMatchObject({ check: "stale", runChecks: { run: result.runId, level: "full" } });
+    expect((await terminalAsk(session, result)).status).toBe(303);
+    // Asked again (a second press, a replayed post): the same one request.
+    expect((await terminalAsk(session, result)).status).toBe(303);
+    const asked = requests(result.runId);
+    expect(asked).toHaveLength(1);
+    expect(String(asked[0]!["detail"])).toContain(" · local-owner · ");
+  });
+
+  test("accepted, then its check command changed: Work's row says out of date (never failed), and it stays Complete", async () => {
+    const session = await world.localSession();
+    const result = fixtures.ready("ordinary");
+    // The build's own check result, as the builder records it.
+    world.store.recordRunCheck(result.runId, { status: "passed", exitCode: 0, suites: [] }, LOCAL_T0);
+    expect((await world.post(`/t/${result.id}/complete`, session.cookie, { csrf: session.csrf, run: String(result.runId), receipt: result.digest })).status).toBe(303);
+    const row = async () => (JSON.parse((await world.send("/work/rows", "GET", { cookie: session.cookie, accept: "application/json" })).body) as { rows: { id: string; status: { label: string }; check?: string }[] }).rows.find(one => one.id === result.id);
+    expect(await row()).toMatchObject({ status: { label: "Complete" } });
+    expect((await row())?.check).toBeUndefined();
+    commandChanged();
+    expect(await row()).toMatchObject({ status: { label: "Complete" }, check: "stale" });
+    expect(await steps(session, result.id)).toMatchObject({ check: "stale", runChecks: { run: result.runId } });
+  });
+
+  test("a signed-in approver asks as themselves; a viewer, someone outside the project and an ended session ask for nothing", async () => {
+    const session = await fullSession();
+    const result = fixtures.ready("ordinary");
+    commandChanged();
+    // Outside the project (scoped membership): the build isn't there for them.
+    world.store.handle.prepare("UPDATE approver SET projects_json = ? WHERE name = 'alex'").run(JSON.stringify(["/elsewhere"]));
+    expect((await terminalAsk(session, result)).status).toBe(404);
+    world.store.handle.prepare("UPDATE approver SET projects_json = NULL WHERE name = 'alex'").run();
+    // Made a viewer: refused in place (the session's standing is read again at the post).
+    world.store.handle.prepare("UPDATE approver SET role = 'viewer' WHERE name = 'alex'").run();
+    const viewer = await terminalAsk(session, result);
+    expect(viewer.status).toBe(403);
+    expect(JSON.parse(viewer.body)).toMatchObject({ outcome: "refused" });
+    world.store.handle.prepare("UPDATE approver SET role = 'approver' WHERE name = 'alex'").run();
+    expect(requests(result.runId)).toEqual([]);
+    // The approver: one request, theirs (a person's, not the local owner's standing).
+    expect((await terminalAsk(session, result)).status).toBe(303);
+    expect(requests(result.runId)).toHaveLength(1);
+    expect(requests(result.runId)[0]).toMatchObject({ actor: "alex" });
+    expect(String(requests(result.runId)[0]!["detail"])).toContain(" · person · ");
+    // The session ended (revoked): nothing more is asked.
+    const other = fixtures.ready("ordinary");
+    world.store.handle.prepare("DELETE FROM web_session WHERE account = 'alex'").run();
+    expect((await terminalAsk(session, other)).status).not.toBe(303);
+    expect(requests(other.runId)).toEqual([]);
+  });
+
+  test("a card read before a newer build: the post names its own build, and only that build's commit is checked", async () => {
+    const session = await world.localSession();
+    const result = fixtures.ready("ordinary");
+    commandChanged();
+    const offered = (await steps(session, result.id)).runChecks!;
+    const newer = fixtures.rebuild(result.id);
+    expect((await terminalAsk(session, { id: result.id, runId: offered.run })).status).toBe(303);
+    expect(requests(offered.run)).toHaveLength(1);
+    expect(requests(newer.runId)).toEqual([]);
+  });
+
+  test("protected work and a team install: the local owner's post asks for nothing, as on the page", async () => {
+    const session = await world.localSession();
+    const protectedWork = fixtures.ready("declared-protected");
+    commandChanged();
+    expect((await terminalAsk(session, protectedWork)).status).toBe(409);
+    expect(requests(protectedWork.runId)).toEqual([]);
+    const ordinary = fixtures.ready("ordinary");
+    secondPerson();
+    expect((await terminalAsk(session, ordinary)).status).not.toBe(303);
+    expect(requests(ordinary.runId)).toEqual([]);
+  });
+});

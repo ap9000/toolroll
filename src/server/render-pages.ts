@@ -544,6 +544,7 @@ export function workPage(
       id: row.rootId, title: row.title, href: taskHref(row.rootId), project: projectOf(row), age: relativeAge(row.updatedAt, data.now),
       status: { label: row.status.label, tone: row.status.tone, token: row.status.token }, chip: row.chip, word: chip,
       ask: row.ask, group: row.ask ?? (row.status.rank === 1 ? 'building' : 'rest'), rank: row.status.rank,
+      ...(row.check === undefined ? {} : { check: row.check }),
       // One quiet action, on a row that waits on you; every other row is its own link.
       action: actionHref === null || row.primaryAction === null || row.ask === null ? null : { label: row.primaryAction.label, href: actionHref },
       detail: needsYouDetail ? row.status.detail : (row as { progress?: string }).progress ?? (row.ask === null && row.status.detail !== row.status.label ? row.status.detail : null),

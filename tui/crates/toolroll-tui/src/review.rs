@@ -518,10 +518,17 @@ pub enum Checks {
     Running,
     Skipped,
     NotRun,
+    /// The check command was approved again since they ran: out of date, never a failure.
+    Stale,
 }
 
 impl Checks {
-    pub fn of(mark: Option<&str>) -> Checks {
+    /// From the Checks card's mark and the steps' own check fact (StepCards.check): an out-of-date check is never read
+    /// as failed, whatever its mark.
+    pub fn of(mark: Option<&str>, check: Option<&str>) -> Checks {
+        if check == Some("stale") {
+            return Checks::Stale;
+        }
         match mark {
             Some("done") => Checks::Passed,
             Some("stuck") => Checks::Failed,
@@ -537,6 +544,7 @@ impl Checks {
             Checks::Running => "running",
             Checks::Skipped => "skipped",
             Checks::NotRun => "none ran",
+            Checks::Stale => "out of date",
         }
     }
     pub fn word(self) -> &'static str {
@@ -546,6 +554,7 @@ impl Checks {
             Checks::Running => "Checks running",
             Checks::Skipped => "Checks skipped",
             Checks::NotRun => "No checks ran",
+            Checks::Stale => "Checks out of date",
         }
     }
 }

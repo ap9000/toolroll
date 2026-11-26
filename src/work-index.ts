@@ -29,6 +29,8 @@ import { LEAD_CLAIM_SQL, LEAD_CLAIMED, LEAD_IDLE_MS } from './lead-voice.js';
 import { workReadsOf, type WorkReads } from './work-reads.js';
 
 export type WorkIndexCounts = Record<WorkView, number>;
+/** A Complete row's check since acceptance, when it holds the work back (WorkIndexItem.check). */
+export type AfterCheck = 'failed' | 'stale' | 'unreadable';
 export type WorkIndexItem = {
   rootId: string;
   activeTaskId: string;
@@ -48,6 +50,9 @@ export type WorkIndexItem = {
   resultOutcome: string | null;
   publicationUrl: string | null;
   status: WorkStatus;
+  /** Complete work whose check since it was accepted failed, is out of date (its command changed) or can't be read: the
+   * fact the Complete headline doesn't say (everyday-9 E2). Absent otherwise. */
+  check?: AfterCheck;
   /** What a Needs you row asks of a person (needs-you.ts); null for every other row. */
   ask: Ask | null;
   /** The row's chip under its group: the specific ask (needs-you.ts askChipOf), or none. */
@@ -610,6 +615,7 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
     'publication_url',(SELECT pr_url FROM publication WHERE run=page_result_id),
     'result_role',(SELECT role FROM run WHERE id=page_result_id),'result_head',(SELECT head_revision FROM run WHERE id=page_result_id),'live_role',(SELECT role FROM run WHERE id=page.live_run),
     'check_status',(SELECT status FROM run_check WHERE run=page_result_id),
+    'check_stale',CASE WHEN code='complete' THEN (SELECT vc.approved_at > r.started_at FROM verify_command vc JOIN run r ON r.id=page_result_id WHERE vc.repo IS page.repo AND vc.revoked_at IS NULL) END,
     'check_level',(SELECT outcome FROM ${kept ? 'led' : 'action_ledger'} WHERE repo IS page.repo AND run_id=page_result_id AND action='checks used' ORDER BY id DESC LIMIT 1),
     'check_follows',(SELECT json_group_array(q.outcome||' '||COALESCE((SELECT substr(f.outcome,instr(f.outcome,':')+1) FROM action_ledger f WHERE f.repo IS page.repo AND f.run_id=page_result_id
       AND f.action='checks finished' AND f.outcome LIKE q.id||':%' LIMIT 1),'open')) FROM (SELECT id,outcome FROM ${kept ? 'led' : 'action_ledger'} WHERE repo IS page.repo AND run_id=page_result_id AND action='checks requested' ORDER BY id) q),
@@ -748,6 +754,14 @@ function listChecksOf(own: 'passed' | 'failed' | null, level: string | null, fol
   const read = withFollowUps({ status: own ?? 'not-run', level: ran, exitCode: null, head: null }, done);
   if (own === null && read.status === 'not-run' && ran !== 'off' && read.running === null) return null;
   return { status: read.status, exitCode: null, head: null, level: read.level, running: read.running };
+}
+
+/** Whether any follow-up check (Run checks) on the row's result finished, passed or failed. */
+function followUpFinished(follows: unknown): boolean {
+  try {
+    return ((typeof follows === 'string' ? JSON.parse(follows) : Array.isArray(follows) ? follows : []) as unknown[])
+      .some(one => { const said = String(one).split(' ')[1]; return said === 'passed' || said === 'failed'; });
+  } catch { return false; }
 }
 
 type ReadinessFacts = Pick<TaskStatusFacts, 'requirements' | 'accepted' | 'blockers'> & { checks: ChecksFact | null };
@@ -947,7 +961,12 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   const finished = reading.stage === 'finished' || reading.stage === 'complete';
   // Only a recorded check is a pass; a verdict alone isn't one (task-status.ts approvedCheckOf reads it with the receipt).
   const own = checkStatus === 'failed' || n(row, 'proof_failed_check') === 1 ? 'failed' as const : checkStatus === 'passed' ? 'passed' as const : null;
-  const recordedChecks = !finished ? null : listChecksOf(own, s(row, 'check_level'), row['check_follows']);
+  const listed = !finished ? null : listChecksOf(own, s(row, 'check_level'), row['check_follows']);
+  // Complete work whose own check passed before its project's check command was approved again, with no check since:
+  // out of date (assignment.ts buildChecks' rule, verification-evidence.ts: the command approved after the build began),
+  // so the list says what the task page says, never a pass. Display only (everyday-9 E2).
+  const recordedChecks = code === 'complete' && own === 'passed' && n(row, 'check_stale') === 1 && listed?.status === 'passed' && listed.running == null && !followUpFinished(row['check_follows'])
+    ? { ...listed, status: 'unavailable' as const, cause: 'command-changed' as const } : listed;
   // A read without the evidence files claims no pass (unreadChecksOf); the readiness read below says the rest.
   const listedChecks = readable ? recordedChecks : unreadChecksOf(recordedChecks);
   const ready = reading.stage === 'finished' && readiness !== undefined ? readiness(row, recordedChecks) : null;
@@ -988,7 +1007,9 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   if (archived === null && running) views.push('running');
   if (archived === null && !need && !running && n(row, 'rank') === 2) views.push('queued');
   if (archived === null && code === 'complete') views.push('completed');
+  const after = code === 'complete' && (shared.check === 'failed' || shared.check === 'stale' || shared.check === 'unreadable') ? shared.check : null;
   return { rootId: String(row['root_id']), activeTaskId: id, title: String(row['root_title']), repo: s(row, 'repo'),
+    ...(after === null ? {} : { check: after }),
     state: String(row['state']) as TaskState, assignmentState, createdAt: String(row['created_at']), updatedAt: String(row['sort_at']),
     versionCount: n(row, 'version_count'), earlierActiveCount: n(row, 'earlier_active'), familyProblem: n(row, 'broken') ? FAMILY_PROBLEM : null,
     liveRunId: n(row, 'live_run') || null, unfinishedRunId: n(row, 'unfinished') || null, resultRunId: n(row, 'result_id') || null, resultTaskId: n(row, 'result_id') ? id : null,

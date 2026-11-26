@@ -1,5 +1,5 @@
 {
-  "digest": "31a2995b2d931d875b215d9fd44eceb8260d1973119026e6d56607c89f6fe5e1",
+  "digest": "9f69d9f65ce9aa3dd89d53299b5dcf7cb84f3302366d40af3b2b0d3a48b3ce20",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -1076,6 +1076,14 @@
                 "type": "integer",
                 "minimum": -9007199254740991,
                 "maximum": 9007199254740991
+              },
+              "check": {
+                "type": "string",
+                "enum": [
+                  "failed",
+                  "stale",
+                  "unreadable"
+                ]
               },
               "detail": {
                 "type": [
@@ -2486,6 +2494,36 @@
               "type": "null"
             }
           ]
+        },
+        "check": {
+          "type": "string",
+          "enum": [
+            "failed",
+            "stale",
+            "unreadable"
+          ]
+        },
+        "runChecks": {
+          "type": "object",
+          "properties": {
+            "run": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "level": {
+              "type": "string",
+              "enum": [
+                "quick",
+                "full"
+              ]
+            }
+          },
+          "required": [
+            "run",
+            "level"
+          ],
+          "additionalProperties": false
         },
         "room": {
           "type": "string"
