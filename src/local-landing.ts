@@ -953,7 +953,8 @@ export function recognisedOnBranch(store: Store, repo: string, rootId: string, c
  * on the branch as Toolroll recorded it, or as Toolroll recognises it there (merged by hand, or its handed-off commit
  * brought in: `recorded` false); `reverted`: a later commit exactly reverted it (revertedOnBranch). A landing undone
  * through Toolroll reads "…, then undone." with `landed` false. `candidate` is the accepted result's commit (null when
- * the task isn't complete: then only a recorded landing counts). Display only: it never lands, undoes or allows anything.
+ * the task isn't complete): `landed` holds only for that exact result, so a later revision's work never reads as landed
+ * because an earlier one did (its words still say the history). Display only: it never lands, undoes or allows anything.
  */
 export type LandingHistory = { words: string; landed: boolean; reverted: boolean; recorded: boolean };
 export function landingHistoryOf(store: Store, repo: string, rootId: string, candidate: string | null, read: GitLook): LandingHistory | null {
@@ -963,7 +964,7 @@ export function landingHistoryOf(store: Store, repo: string, rootId: string, can
     if (onBranch !== null) return { ...onBranch, landed: true, recorded: false };
   }
   const standing = landedStanding(store, rootId, read);
-  return standing === null ? null : { ...standing, landed: record !== null && !record.undone, recorded: true };
+  return standing === null ? null : { ...standing, landed: record !== null && !record.undone && candidate !== null && record.intent.candidate === candidate, recorded: true };
 }
 
 /** Whether a landing commit Toolroll handed the person is on its branch now (they brought it in) with no landing record

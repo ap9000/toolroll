@@ -24,8 +24,10 @@ const landingReads: GitRead = recentGitReads();
 /** A task's landing history when its work is on its branch now (landingHistoryOf), else null: what the checklist says in
  * place of "Not yet" for work that already landed. Projects that publish through pull requests have none. */
 export function landedNowOf(store: Store, assignment: AssignmentSnapshot, read: GitRead = landingReads): { words: string; reverted: boolean } | null {
-  if (assignment.repo === null || publishesThroughPullRequests(store, assignment.repo)) return null;
-  const history = landingHistoryOf(store, assignment.repo, assignment.rootId, assignment.state === "complete" ? assignment.receipt?.head ?? null : null, read);
+  // Only accepted work lands: anything else reads nothing more (no statement, no git read).
+  const head = assignment.state === "complete" ? assignment.receipt?.head ?? null : null;
+  if (head === null || assignment.repo === null || publishesThroughPullRequests(store, assignment.repo)) return null;
+  const history = landingHistoryOf(store, assignment.repo, assignment.rootId, head, read);
   return history !== null && history.landed ? { words: history.words, reverted: history.reverted } : null;
 }
 
