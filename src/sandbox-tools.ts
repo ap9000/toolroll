@@ -29,7 +29,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SrtTerms } from "./sandbox-runtime.js";
 import { installLine } from "./linux-packages.js";
-import { shownText } from "./shown-text.js";
+import { hasUnsafeText, shownText } from "./shown-text.js";
 import { mergeRepairs, toolrollPackageRoot, trustFaults, trustFaultWords, trustRepair, type TrustFault, type TrustRepair } from "./trust-repair.js";
 import { platformAcl, rootOwnedBinary, rootOwnedFolders, type AclReader } from "./trusted-path.js";
 
@@ -193,6 +193,12 @@ export function resolveLinuxSandboxTools(options: ToolTrust & { folders?: readon
  * Why not, or null.
  */
 export function verifyLinuxSandboxTools(tools: LinuxSandboxTools, options: ToolTrust & { exclusions?: ToolExclusions } = {}): string | null {
+  // Its reason names paths (a re-pointed link's target among them): shown escaped (shown-text.ts).
+  const why = verifyNow(tools, options);
+  return why === null ? null : shownText(why);
+}
+
+function verifyNow(tools: LinuxSandboxTools, options: ToolTrust & { exclusions?: ToolExclusions }): string | null {
   const trust = trustOf(options);
   const exclusions = options.exclusions ?? NO_EXCLUSIONS;
   for (const key of KEYS) {
@@ -213,7 +219,8 @@ export function verifyLinuxSandboxTools(tools: LinuxSandboxTools, options: ToolT
 export function isLinuxSandboxTools(value: unknown): value is LinuxSandboxTools {
   if (value === null || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
-  const path = (one: unknown) => typeof one === "string" && one.startsWith("/") && !/[\u0000-\u001f\u007f]/.test(one);
+  // No control, separator or invisible format character in a path handed over (shown-text.ts's set).
+  const path = (one: unknown) => typeof one === "string" && one.startsWith("/") && !hasUnsafeText(one);
   if (!path(record["whichFolder"])) return false;
   return KEYS.every(key => {
     const tool = record[key] as Record<string, unknown> | null | undefined;

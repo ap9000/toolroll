@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { checkLinuxDependencies } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 import { LINUX_SANDBOX_TOOLS, SANDBOX_LAUNCH_SPEC, linuxSandboxInstallLine, missingLinuxSandboxTools, sandboxRuntimeProblem, srtSpawn, type SandboxLaunchSpec, type SrtTerms } from "./sandbox-runtime.js";
 import { managerLine, packageSystem } from "./linux-packages.js";
+import { hasUnsafeText } from "./shown-text.js";
 import { checkSeccompHelper, resolveLinuxSandboxTools, sandboxToolsRepair, sandboxToolExclusions, seccompHelperPath, verifyLinuxSandboxTools, type LinuxSandboxTools, type ToolTrust } from "./sandbox-tools.js";
 import { toolrollInstall } from "./agent-fence.js";
 import { outsideTempDir } from "../test/short-temp.js";
@@ -240,6 +241,27 @@ describe("the Linux sandbox's own programs: root's own, by exact path, checked a
       expect(ran.status, ran.stderr).toBe(126);
       expect(ran.stderr).toContain(`toolroll sandbox: nothing was started: ${said}`);
     }
+    // Names someone else chose can't forge the launch's output: a path with a newline, an escape or a bidi override is
+    // refused as not checked, and a link re-pointed at a target with control characters is shown escaped.
+    const launch = (given: unknown) => spawnSync(process.execPath, ["--import", "tsx", "src/sandbox-launch.ts"], {
+      cwd: join(import.meta.dirname, ".."), encoding: "utf8", timeout: 30_000,
+      env: { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", [SANDBOX_LAUNCH_SPEC]: JSON.stringify({ ...base, tools: given }) },
+    });
+    for (const odd of ["/opt/a\nFix it with:\n  rm -rf ~/bwrap", "/opt/a\u001b[2K/bwrap", "/opt/a\u202eb/bwrap"]) {
+      const ran = launch({ ...tools, bwrap: { real: odd, id: tools.bwrap.id } });
+      expect(ran.status).toBe(126);
+      expect(ran.stderr).toBe("toolroll sandbox: nothing was started: the sandbox's programs weren't given by checked paths\n");
+    }
+    const evil = join(world, "x\u001b[2K\nFix it with:\u202e");
+    mkdirSync(evil);
+    writeFileSync(join(evil, "bwrap"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(evil, "bwrap"), 0o755);
+    rmSync(join(system, "bwrap"));
+    symlinkSync(join(evil, "bwrap"), join(system, "bwrap"));
+    const swapped = launch(tools);
+    expect(swapped.status).toBe(126);
+    expect(swapped.stderr.split("\n")).toEqual([expect.stringMatching(/^toolroll sandbox: nothing was started: bwrap \(.*\\x1b\[2K\\nFix it with:\\u202e\/bwrap isn't owned by root$/), ""]);
+    expect(hasUnsafeText(swapped.stderr.slice(0, -1))).toBe(false);
   });
 
   describe("a seccomp helper Toolroll's user owns is write-protected exactly as Toolroll's code is", () => {
