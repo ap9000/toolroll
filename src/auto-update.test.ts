@@ -312,6 +312,22 @@ describe("what a person is told", () => {
     expect(notices(w.store)).toHaveLength(1);
   });
 
+  test("a preparation or launch that fails is told once too, though no journal settles it", async () => {
+    const launchFails = world();
+    const pass = (w: { dir: string; databaseFile: string; store: Store }, launch: () => Promise<void>) =>
+      autoUpdatePass(w.store, { stateDir: w.dir, databaseFile: w.databaseFile, current: { version: "0.9.120", dist: join(w.dir, "dist") }, kind: "managed", latest: "0.9.121", now: () => T0, launch });
+    expect(await pass(launchFails, async () => { throw new Error("launchctl said no"); })).toMatchObject({ failed: expect.any(String) });
+    await run(launchFails, "0.9.120");
+    expect(notices(launchFails.store)).toEqual([{ dedupe_key: "auto-update:0.9.121:not-started:alex", push_class: "attention",
+      subject: "Couldn't update to 0.9.121: launchctl said no. Still on 0.9.120. It won't be tried again by itself; you can still update by hand." }]);
+    // The journal can't even be prepared (its stage folder can't be made): reserved, then settled and told.
+    const prepareFails = world();
+    writeFileSync(join(prepareFails.dir, "staged-upgrades"), "not a folder");
+    expect(await pass(prepareFails, async () => { throw new Error("never launched"); })).toMatchObject({ failed: expect.stringContaining("ENOTDIR") });
+    expect(autoUpdateAttempts(prepareFails.store)?.[0]).toMatchObject({ outcome: "not-started" });
+    expect(notices(prepareFails.store)).toMatchObject([{ dedupe_key: "auto-update:0.9.121:not-started:alex", push_class: "attention" }]);
+  });
+
   test("a restore that needs a person is told once, as needing attention; an installed release is told with its notes", async () => {
     const w = world();
     const reserved = reserveAutoUpdate(w.store, { version: "0.9.121", from: "0.9.120", now: T0 });

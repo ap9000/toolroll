@@ -136,16 +136,23 @@ export function markAutoUpdateLaunched(store: Pick<Store, "handle">, attempt: nu
   return store.handle.prepare("UPDATE auto_update_attempt SET launched_at = ? WHERE id = ? AND launched_at IS NULL").run(now.toISOString(), attempt).changes === 1;
 }
 
-/** Record how an attempt ended, once, with its ledger row. False when it was already recorded. */
-export function recordAutoUpdateOutcome(store: Pick<Store, "handle" | "transact" | "recordAction">, attempt: AutoUpdateAttempt, outcome: AutoUpdateOutcome, detail: string, now: Date): boolean {
+/** Record how an attempt ended, once, with its ledger row and its notice to each instance operator (notifyAutoUpdate),
+ * all in one transaction: whichever road settles it (the journal's outcome, a failed preparation or launch), the person
+ * is told once. False when it was already recorded. */
+export function recordAutoUpdateOutcome(store: OutcomeStore, attempt: AutoUpdateAttempt, outcome: AutoUpdateOutcome, detail: string, now: Date): boolean {
+  const clean = detail.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 1500);
   return store.transact(() => {
     const changed = store.handle.prepare("UPDATE auto_update_attempt SET outcome = ?, outcome_at = ?, detail = ? WHERE id = ? AND outcome IS NULL")
-      .run(outcome, now.toISOString(), detail.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 1500), attempt.id).changes === 1;
-    if (changed) store.recordAction({ at: now.toISOString(), actor: autoUpdateActor(attempt.enabledBy), repo: null, taskId: null, runId: null, action: AUTO_UPDATE_ATTEMPT_ACTION, outcome, source: "policy",
-      detail: `${attempt.from} → ${attempt.version}: ${detail}` });
-    return changed;
+      .run(outcome, now.toISOString(), clean, attempt.id).changes === 1;
+    if (!changed) return false;
+    store.recordAction({ at: now.toISOString(), actor: autoUpdateActor(attempt.enabledBy), repo: null, taskId: null, runId: null, action: AUTO_UPDATE_ATTEMPT_ACTION, outcome, source: "policy",
+      detail: `${attempt.from} → ${attempt.version}: ${clean}` });
+    notifyAutoUpdate(store, { ...attempt, outcome, outcomeAt: now.toISOString(), detail: clean }, null, now);
+    return true;
   });
 }
+/** What recording an outcome uses of the store: the attempt, the ledger and the outbox. */
+type OutcomeStore = Pick<Store, "handle" | "transact" | "recordAction" | "accountFacts" | "isInstanceOperator" | "enqueueNotification">;
 
 /** Who an automatic update's journal and ledger rows name: the update itself, on the authority of the person who turned
  * automatic updates on. */
@@ -180,7 +187,7 @@ function settled(attempt: AutoUpdateAttempt, saved: RuntimeUpdateJournal | null,
  * Record how each open automatic attempt ended, from the update journal (and its stage copy), each once with its ledger
  * row. Fails closed: when the saved journal or the history can't be read, nothing is recorded. Returns what it recorded.
  */
-export function reconcileAutoUpdates(store: Pick<Store, "handle" | "transact" | "recordAction">, o: { stateDir: string; current: string; now: Date }): { attempt: AutoUpdateAttempt; outcome: AutoUpdateOutcome; detail: string }[] {
+export function reconcileAutoUpdates(store: OutcomeStore, o: { stateDir: string; current: string; now: Date }): { attempt: AutoUpdateAttempt; outcome: AutoUpdateOutcome; detail: string }[] {
   let open: AutoUpdateAttempt[];
   try { open = store.handle.prepare(`SELECT ${ATTEMPT_COLUMNS} FROM auto_update_attempt WHERE outcome IS NULL ORDER BY id`).all().map(attemptOf); }
   catch { return []; }
@@ -269,8 +276,7 @@ export type AutoUpdatePassResult = { started: string; journal: string } | { held
  * never runs inside the service it stops. Never a downgrade, never a prerelease, one attempt per version.
  */
 export async function autoUpdatePass(store: AutoUpdateStore, o: AutoUpdatePassOptions): Promise<AutoUpdatePassResult> {
-  const recorded = reconcileAutoUpdates(store, { stateDir: o.stateDir, current: o.current.version, now: o.now() });
-  for (const one of recorded) { try { notifyAutoUpdate(store, { ...one.attempt, outcome: one.outcome, outcomeAt: o.now().toISOString(), detail: one.detail }, null, o.now()); } catch { /* the attempt row says what happened */ } }
+  reconcileAutoUpdates(store, { stateDir: o.stateDir, current: o.current.version, now: o.now() });
   const policy = autoUpdatePolicy(store);
   let journal: AutoUpdateFacts["journal"];
   let saved: RuntimeUpdateJournal | null = null;
@@ -348,7 +354,7 @@ export function automaticUpdates(store: AutoUpdateStore, o: Omit<AutoUpdatePassO
 /** HH:MM on the computer running Toolroll. */
 const clockOf = (iso: string) => { const d = new Date(iso); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
 /** A reason as one short sentence, without a trailing "Nothing was changed." the line already implies. */
-const reasonOf = (detail: string | null) => (detail ?? "it stopped").replace(/\s*Nothing (?:was )?changed[^.]*\.?\s*$/i, "").replace(/\.\s*$/, "").slice(0, 300) || "it stopped";
+const reasonOf = (detail: string | null) => (detail ?? "it stopped").replace(/^The update could not start:\s*/i, "").replace(/\s*Nothing (?:was )?changed[^.]*\.?\s*$/i, "").replace(/\.\s*$/, "").slice(0, 300) || "it stopped";
 export const whatsNewUrl = (version: string) => `${RELEASES_PAGE}v${version}`;
 
 /**
