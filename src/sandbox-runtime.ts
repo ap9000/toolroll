@@ -21,7 +21,8 @@ import { fileURLToPath } from "node:url";
 import { wrapCommandWithSandboxMacOS } from "@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js";
 import { checkLinuxDependencies, getLinuxDependencyStatus } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 import type { FsReadRestrictionConfig, FsWriteRestrictionConfig } from "@anthropic-ai/sandbox-runtime";
-import { linuxSandboxTools, sandboxToolExclusions, type LinuxSandboxTools, type LinuxSandboxToolsVerdict, type ToolExclusions } from "./sandbox-tools.js";
+import { linuxSandboxTools, sandboxToolExclusions, seccompHelperRepair, type LinuxSandboxTools, type LinuxSandboxToolsVerdict, type ToolExclusions } from "./sandbox-tools.js";
+import { trustRepairLines } from "./trust-repair.js";
 
 const require = createRequire(import.meta.url);
 
@@ -86,6 +87,14 @@ export function sandboxRuntimeProblem(platform: NodeJS.Platform = process.platfo
     return probe.status === 0 ? null : "bubblewrap can't start a sandbox here (unprivileged user namespaces may be off)";
   }
   return `the sandbox runtime has no sandbox for ${platform}`;
+}
+
+/** Linux: when the sandbox's own seccomp helper fails its trust check, what fails and the exact repair, as lines
+ * (sandbox-tools.ts seccompHelperRepair); none otherwise. The check is unchanged and runs again at every launch. */
+export function sandboxRuntimeRepair(platform: NodeJS.Platform = process.platform): string[] {
+  if (platform !== "linux") return [];
+  const repair = seccompHelperRepair();
+  return repair === null ? [] : trustRepairLines(repair);
 }
 
 /**

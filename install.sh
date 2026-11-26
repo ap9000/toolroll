@@ -132,6 +132,9 @@ if npm ls -g standing-orders --depth=0 >/dev/null 2>&1; then
   fi
 fi
 say "Installing $package …"
+# Toolroll refuses to run programs others can change, so its files are made writable by you alone, whatever this
+# shell's umask (Ubuntu's and Fedora's 0002 would make them group-writable).
+umask 022
 if ! npm install -g "$package" --no-fund --no-audit --loglevel=error; then
   stop "npm couldn't install it. If it said permission denied, give npm a folder you own: https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally"
 fi

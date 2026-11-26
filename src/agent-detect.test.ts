@@ -4,6 +4,7 @@
  * stand-in that prints a token. Every stand-in writes the arguments it was run with to a log, so the test sees exactly
  * which commands ran: only the two status commands, never a model call, never an ACP agent or Gemini CLI itself.
  */
+import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, relative } from "node:path";
@@ -326,6 +327,11 @@ describe("a status command runs only from a trusted install, with nothing of thi
     const check = createConnectionChecker({ home, env: { PATH: shared, HOME: home } });
     expect((await check("claude", true)).state).toBe("unverified");
     expect(existsSync(join(dir, "executed"))).toBe(false);
+    // Never "sign-in unknown" without the reason (umask 0002): why, and the exact per-path repair; after it, it runs.
+    const unknown = (await detectAgents({ env: { PATH: shared, HOME: home }, home, timeoutMs: SLACK_MS })).agents.find(one => one.id === "claude")!;
+    expect(unknown.next).toMatch(/^Toolroll won't run its sign-in check: others can change it \(group- or world-writable\)\. Fix it: run `chmod go-w '[^']+\/claude'`, then `toolroll agents` to check again\.$/);
+    execFileSync("/bin/sh", ["-c", /`(chmod go-w '[^']+')`/.exec(unknown.next!)![1]!]);
+    expect(await claudeOf(shared)).toBe("signed-in");
   });
 
   test("its environment is built from nothing: no token, key, socket, loader or interpreter variable reaches it", async () => {

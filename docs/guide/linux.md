@@ -30,6 +30,20 @@ don't exist, and the sandbox needs all three. Until they're installed,
 `toolroll` says which are missing and doesn't start. See
 [Security](security.md).
 
+## When Toolroll says a program "can't be trusted"
+
+Toolroll only runs its sandbox helper and your agents' sign-in checks from
+files nobody else can change. On Ubuntu and Fedora the default `umask` is
+0002, so `npm install -g` into a folder you own (nvm, `~/.npm-global`) makes
+those files writable by your group. `toolroll doctor` names each path that
+fails and why (owned by someone else, writable by the group or by everyone,
+an extended ACL) and prints the exact `chmod` commands for those paths only:
+one recursive command for Toolroll's own package, one per folder above it,
+never a recursive one on a shared folder or another program's install. Run
+them, then `toolroll doctor` again. If anyone else uses this computer,
+reinstall too, after `umask 022`. The installer (`install.sh`) and
+`toolroll update` already make Toolroll's files writable by you alone.
+
 ## Start over without a password
 
 If Toolroll was started before the sandbox tools were installed, it may

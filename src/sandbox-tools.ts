@@ -28,6 +28,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SrtTerms } from "./sandbox-runtime.js";
+import { toolrollPackageRoot, trustRepair, type TrustRepair } from "./trust-repair.js";
 import { platformAcl, rootOwnedBinary, rootOwnedFolders, type AclReader } from "./trusted-path.js";
 
 /** The only folders the system programs are looked for in, in this order. */
@@ -222,4 +223,22 @@ export function linuxSandboxTools(exclusions: ToolExclusions = NO_EXCLUSIONS): L
   const why = verifyLinuxSandboxTools(tools, { exclusions });
   if (why !== null) { discovered = null; return { ok: false, why: `a sandbox program failed its check right before the launch: ${why}` }; }
   return { ok: true, tools };
+}
+
+/**
+ * When the seccomp helper fails its check: which canonical paths fail and the exact repair (trust-repair.ts). Toolroll's
+ * own package folder, when the helper is inside it and this user owns it, gets one recursive command; every folder
+ * above gets its own. The check itself is unchanged: null when the helper passes, has none for this processor, or
+ * can't be read.
+ */
+export function seccompHelperRepair(options: ToolTrust = {}, packageRoot: string | null = toolrollPackageRoot()): TrustRepair | null {
+  const helper = "seccomp" in options ? options.seccomp ?? null : seccompHelperPath();
+  if (helper === null || checkSeccompHelper(helper, NO_EXCLUSIONS, options).ok) return null;
+  const t = trustOf(options);
+  const owners = t.codeOwner === undefined ? t.root : [...t.root, t.codeOwner];
+  const root = packageRoot;
+  const real = realOrSelf(helper);
+  let mine = false;
+  try { mine = root !== null && lstatSync(root).uid === (process.geteuid?.() ?? -1); } catch { mine = false; }
+  return trustRepair(helper, { owners, ownTree: root !== null && mine && insideOrAt(real, root) ? root : null });
 }

@@ -62,7 +62,7 @@ export type EasyStartSeams = {
   initLocal: () => Promise<boolean>;
   /** l1: this computer's sandbox, read now — the Linux programs it lacks (sandbox-runtime.ts LINUX_SANDBOX_TOOLS, by
    * package; none elsewhere), and why it can't sandbox here (null when it can). */
-  sandbox: () => Promise<{ missing: string[]; problem: string | null }>;
+  sandbox: () => Promise<{ missing: string[]; problem: string | null; repair?: string[] }>;
   /** l1: whether this database was made by a laptop start (created-by laptop) yet never had local mode (on or off):
    * a start that couldn't go password-free made it. Read only, from the database alone; false when unreadable. */
   passwordByLaptopStart: () => boolean;
@@ -254,8 +254,9 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
   // No local mode here (a new install on a computer that can't sandbox): the browser, with the password `up` saved —
   // pointed at, never "your password" to someone who never set one (l1).
   if (seams.localMode() !== "on") {
-    const problem = (await seams.sandbox()).problem;
+    const { problem, repair } = await seams.sandbox();
     if (problem !== null) write(`Toolroll can't start without a password here: ${problem}.`);
+    if (problem !== null) for (const line of repair ?? []) write(line);
     const saved = seams.savedLogin();
     write(saved === null ? `Toolroll is on ${url}. Sign in with your password.` : `Toolroll is on ${url}. Your password: run \`cat -- '${saved.replaceAll("'", "'\\''")}'\``);
     await seams.openBrowser(url);
@@ -410,10 +411,11 @@ export function defaultEasyStartSeams(options: {
       remote: (await import("./local-owner.js")).localOwnerRequested(),
     }),
     sandbox: async () => {
-      const { missingLinuxSandboxTools, sandboxRuntimeProblem } = await import("./sandbox-runtime.js");
+      const { missingLinuxSandboxTools, sandboxRuntimeProblem, sandboxRuntimeRepair } = await import("./sandbox-runtime.js");
       if (process.platform !== "linux") return { missing: [], problem: sandboxRuntimeProblem() };
       const missing = missingLinuxSandboxTools();
-      return { missing, problem: missing.length > 0 ? null : sandboxRuntimeProblem() };
+      const problem = missing.length > 0 ? null : sandboxRuntimeProblem();
+      return { missing, problem, repair: problem === null ? [] : sandboxRuntimeRepair() };
     },
     passwordByLaptopStart: () => {
       const store = openStoreReadOnly(file);

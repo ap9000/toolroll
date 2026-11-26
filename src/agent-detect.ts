@@ -34,7 +34,8 @@ import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProvider, type AcpProviderId } from 
 import { inspectAcpAgent } from "./acp-inspect.js";
 import { resolveExecutable } from "./attest.js";
 import type { ProviderId } from "./contracts/provider.js";
-import { statusProbe, STATUS_TIMEOUT_MS, type StatusProbeOptions } from "./status-probe.js";
+import { excludedFolders, statusBinaryDiagnosis, statusProbe, STATUS_TIMEOUT_MS, type StatusProbeOptions } from "./status-probe.js";
+import { platformAcl } from "./trusted-path.js";
 import { keyStatus, OWN_KEY_ENV, readAuthMode } from "./keys.js";
 import { createConnectionChecker, type ConnectionChecker, type ProviderConnection } from "./provider-connection.js";
 
@@ -137,6 +138,9 @@ export type DetectOptions = {
   acpChecked?: (provider: AcpProviderId) => boolean;
   /** More folders an agent can write, besides those status-probe.ts always derives from Toolroll's records. */
   untrusted?: () => readonly string[];
+  /** Why an agent's install isn't run for its sign-in check, with its repair, in words (a test's stand-in; by default
+   * status-probe.ts statusBinaryDiagnosis); null when it is trusted. */
+  trustProblem?: (binary: string) => Promise<string | null>;
   /** Toolroll's records those folders come from: the store in hand, or its database file. */
   store?: StatusProbeOptions["store"];
   databaseFile?: string;
@@ -189,11 +193,21 @@ export async function detectAgents(options: DetectOptions = {}): Promise<AgentDe
     }
     // Claude Code and Codex: their own status command, or key presence on an API key.
     const answer = await within(check(row.id).then(value => value as ProviderConnection | null), timeoutMs, null);
-    if (answer === null) return out(resolved === null ? "not-installed" : "unknown");
+    /** Unknown: with why Toolroll won't run its status command, and the repair, when its install fails the trust check. */
+    const unknown = async (): Promise<DetectedAgent> => {
+      const why = await (options.trustProblem ?? defaultTrustProblem)(row.binary);
+      return why === null ? out("unknown") : { ...out("unknown"), next: why };
+    };
+    const defaultTrustProblem = async (binary: string): Promise<string | null> => {
+      const untrusted = await excludedFolders({ store: options.store, databaseFile: options.databaseFile }, options.untrusted?.() ?? []);
+      if (untrusted === null) return null;
+      return agentTrustWords(statusBinaryDiagnosis(binary, { path, uid: process.getuid?.(), untrusted, acl: platformAcl() }));
+    };
+    if (answer === null) return resolved === null ? out("not-installed") : unknown();
     if (answer.state === "not-installed" || (KEY_ANSWERS.has(answer.state) && resolved === null)) return out("not-installed");
     if (answer.launchIssue === "command-not-found") return { ...out("unknown"), next: "The status command exited with code 127. Check that the agent and its helpers are on Toolroll's trusted PATH." };
     if (SIGNED_IN.has(answer.state)) return out("signed-in", KEY_ANSWERS.has(answer.state) ? "API key" : answer.method ?? "signed in");
-    return out(SIGNED_OUT.has(answer.state) ? "signed-out" : "unknown");
+    return SIGNED_OUT.has(answer.state) ? out("signed-out") : unknown();
   };
 
   const seen = await Promise.all(DETECTED_AGENTS.map(row => one(row).catch(() => ({ id: row.id, name: row.name, state: "unknown" as const, how: null, signIn: row.signIn, ready: false, next: null }))));
@@ -371,4 +385,13 @@ export function npmRegistryOf(home: string, pkg: string): { url: string | null; 
   if (url.protocol !== "https:" && url.protocol !== "http:") return { url: null, unsure: true };
   if (url.hostname === "registry.npmjs.org") return { url: null, unsure };
   return { url: `${url.protocol}//${url.host}${url.pathname}`.replace(/[\u0000-\u001f\u007f]/g, ""), unsure };
+}
+
+/** An agent install that fails its trust check, in one sentence with its repair (status-probe.ts statusBinaryDiagnosis). */
+export function agentTrustWords(diagnosis: { why: string; repair: import("./trust-repair.js").TrustRepair | null } | null): string | null {
+  if (diagnosis === null) return null;
+  const commands = diagnosis.repair?.commands ?? [];
+  const fix = commands.length > 0 ? ` Fix it: run ${commands.map(one => `\`${one}\``).join(", then ")}, then \`toolroll agents\` to check again.`
+    : " Reinstall it into a folder only you can change.";
+  return `Toolroll won't run its sign-in check: ${diagnosis.why}.${fix}`;
 }

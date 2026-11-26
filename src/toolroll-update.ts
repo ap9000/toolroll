@@ -53,6 +53,7 @@ import { V173_ADDED_COLUMNS } from "./plan-problems-schema.js";
 import { V159_ADDED_COLUMNS } from "./one-step-chat-schema.js";
 import { isNewer, REGISTRY } from "./releases.js";
 import { markNeverIndex } from "./never-index.js";
+import { protectTree } from "./trust-repair.js";
 import { readRuntimeUpdateJournal, RUNTIME_PHASES, RUNTIME_UPDATE_STEPS, stagedStartedAt, updaterStartingOf, type RuntimeUpdateJournalRecord } from "./contracts/update-journal.js";
 import { sleep } from "./sleep.js";
 
@@ -1377,6 +1378,8 @@ export function machineSystem(home = homedir(), env: Record<string, string | und
       const registry = `--registry=${REGISTRY}/`;
       const installed = sh("npm", ["install", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", "--no-color", registry], { cwd: runtime });
       if (installed.status !== 0) throw new Refusal(`npm could not install Toolroll ${release.version}: ${(installed.stderr || installed.stdout).trim().slice(-400)} Nothing was changed.`);
+      // Writable by this user alone whatever the umask npm ran under: the sandbox won't run a helper others can change.
+      protectTree(join(runtime, "node_modules"));
       let locked: { integrity?: string; resolved?: string; version?: string } | undefined;
       try { locked = (JSON.parse(readFileSync(join(runtime, "package-lock.json"), "utf8")) as { packages?: Record<string, { integrity?: string; resolved?: string; version?: string }> }).packages?.[`node_modules/${NAME}`]; } catch { locked = undefined; }
       if (locked?.version !== release.version || locked.integrity !== release.integrity || !String(locked.resolved ?? "").startsWith(`${REGISTRY}/`)) throw new Refusal(`npm installed different bytes than the verified Toolroll ${release.version}. Nothing was changed.`);
