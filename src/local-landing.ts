@@ -746,8 +746,8 @@ export function gitCommand(folder: string, args: readonly string[]): string | nu
   if (UNSAFE_IN_COMMAND.test(folder)) return null;
   return ["git", "-C", `'${folder.replace(/'/g, "'\\''")}'`, ...args].join(" ");
 }
-/** What to say instead of a command when the folder's name can't be written safely in one. */
-const UNSAFE_FOLDER = (what: string) => `Toolroll can't write a safe command for this folder's name; run ${what} in your project folder.`;
+/** What to say instead of a command when the folder's name can't be written safely in one (Save as branch says it too). */
+export const UNSAFE_FOLDER = (what: string) => `Toolroll can't write a safe command for this folder's name; run ${what} in your project folder.`;
 /** The exact command that brings a handed-off landing commit onto the branch the project folder has checked out. */
 function handoffCommand(folder: string, commit: string): string | null {
   return gitCommand(folder, ["merge", "--ff-only", oidOrThrow(commit)]);

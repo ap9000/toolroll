@@ -3313,7 +3313,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (!done.ok) return taskScreen(response, who, act.taskId, done.message, done.reason === "authority" ? 403 : 409);
     if (done.handoff !== null) {
       const words = `Landing commit ${done.commit.slice(0, 7)} is ready. Your project folder has ${done.branch} checked out, so Toolroll didn't touch it. ${handoffWords(done.handoff, done.commit)}`;
-      return answersInPlace(ctx.request) ? answerActInPlace(response, "done", words, 200) : taskScreen(response, who, act.taskId, words, 200);
+      return answersInPlace(ctx.request) ? answerActInPlace(response, "done", words, 200, done.handoff.command) : taskScreen(response, who, act.taskId, words, 200);
     }
     if (answersInPlace(ctx.request)) return answerActInPlace(response, "done", `${done.kind === "undo" ? "Undone" : "Landed"} on ${done.branch} (${done.commit.slice(0, 7)}).`, 200);
     return redirect(response, taskHref(act.taskId));
@@ -3531,9 +3531,11 @@ export function localOwnerRetry(store: Store, taskId: string, run: string | null
 
 /** An act's answer in place (Work's panel, the one-workspace plan S2a): `x-toolroll-act: in-place` asked for a small
  * JSON outcome instead of a page or a redirect. Read only after every proof and the write itself: it shapes the answer,
- * never the decision. `done`: the act was kept; `refused`: nothing changed, and `words` say why. */
-export function answerActInPlace(response: ServerResponse, outcome: "done" | "refused", words: string, status: number): void {
-  respond(response, status, "application/json; charset=utf-8", JSON.stringify({ outcome, words }));
+ * never the decision. `done`: the act was kept; `refused`: nothing changed, and `words` say why. `command`: the exact
+ * command the words name, which Toolroll wrote from its own records, for a terminal to show whole on its own line
+ * (everyday-9 C2); omitted when there is none, or none could be written safely. */
+export function answerActInPlace(response: ServerResponse, outcome: "done" | "refused", words: string, status: number, command: string | null = null): void {
+  respond(response, status, "application/json; charset=utf-8", JSON.stringify(command === null ? { outcome, words } : { outcome, words, command }));
 }
 
 /** Work's list for one address (the one-workspace plan S2a): the Tasks list's screen, the work index page it shows (its

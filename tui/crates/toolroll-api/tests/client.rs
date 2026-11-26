@@ -252,3 +252,24 @@ fn a_redirect_says_its_words() {
         Some(("problem", "✓%zz".to_string()))
     );
 }
+
+#[test]
+fn a_command_is_kept_to_copy_only_when_a_terminal_could_neither_hide_nor_act_on_it() {
+    use toolroll_api::client::copyable_command;
+    let plain = "git -C '/home/me/shop' merge --ff-only toolroll/code-0123";
+    let accented = "git -C '/home/me/café ☕' merge --ff-only 3b51847";
+    assert!(copyable_command(plain));
+    assert!(copyable_command(accented));
+    for hostile in [
+        "",
+        "   ",
+        "git -C '/home/me/a\u{1b}[2Jb' merge",
+        "git -C '/home/me/a\u{202e}b' merge",
+        "git -C '/home/me/a\u{200b}b' merge",
+        "git -C '/home/me/a\u{2066}b' merge",
+        "git merge\nrm -rf ~",
+        "git -C '/home/me/a\u{9b}b' merge",
+    ] {
+        assert!(!copyable_command(hostile), "{hostile:?}");
+    }
+}
