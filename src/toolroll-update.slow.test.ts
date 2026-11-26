@@ -418,7 +418,8 @@ test("c2: the one-off update job has no RunAtLoad, starts by kickstart, and resu
     expect(plist).toContain(`<string>--resume</string>\n    <string>--id</string>\n    <string>${id}</string>`);
     expect(plist).not.toContain("--yes");
     expect(plist).not.toContain("--version");
-    expect(launchctl.map(args => args[0])).toEqual(["print", "enable", "bootstrap", "kickstart"]);
+    // launchd is asked first whether another update job is running (it isn't), then the job is installed and started.
+    expect(launchctl.map(args => args[0])).toEqual(["print", "print", "enable", "bootstrap", "kickstart"]);
     // Run at a login with no saved update: the job starts nothing and removes its own definition.
     const lines: string[] = [];
     expect(await runUpdateCommand(["--resume", "--id", id, "--db", f.databaseFile], line => lines.push(line), { system: f.system, current: f.current, home })).toBe(0);
