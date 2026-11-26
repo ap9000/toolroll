@@ -353,7 +353,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
       { name: "digest", takesValue: true, meaning: "the exact receipt from assignment show; accepts and finishes exactly that result" },
       { name: "despite", takesValue: true, meaning: "accept with this reason, without finishing; never combines with --finish or --digest (--note is its alias)" }],
     notableReasons: ["usage", "unknown-task", "no-run", "not-ready"] },
-  { ...operator("task land", "put accepted work on the project's own branch when it has no pull requests: bare shows exactly what lands where; --yes --key <key> lands it as a fast-forward; --undo reverts it with a new commit"),
+  { ...operator("task land", "put accepted work on the project's own branch when it has no pull requests: bare shows exactly what lands where; --yes --key <key> lands it as one new commit on top; --undo reverts that commit with a new one"),
     positionals: [{ name: "id", required: true, meaning: "the task" }],
     flags: [jsonFlag, dbFlag, { name: "into", takesValue: true, meaning: "land on this branch instead of the recorded one (the yes records it)" },
       { name: "undo", takesValue: false, meaning: "revert the landing with a new commit on the branch" },

@@ -16,6 +16,8 @@ export type TaskBaseView = {
   main: string | null;
   /** Commits on main the base does not have; null when Git could not say. */
   behind: number | null;
+  /** A revision: the base is its family's original start on main, so its change is the whole change since then. */
+  family?: boolean;
   /** One short line: `Base 9d087efe · Behind main by 2 commits`. */
   words: string;
 };
@@ -36,11 +38,37 @@ export const readGit: GitRead = (cwd, args) => {
 
 const commits = (count: number) => `${count} commit${count === 1 ? "" : "s"}`;
 
-/** The base line on its own, for surfaces that label it already: `9d087efe · Behind main by 2 commits`. */
-export function baseStandingWords(view: Pick<TaskBaseView, "base" | "main" | "behind">): string {
-  const short = view.base.slice(0, 8);
+/** The base line on its own, for surfaces that label it already: `9d087efe · Behind main by 2 commits`. A revision's
+ * says its change is the whole change since that start. */
+export function baseStandingWords(view: Pick<TaskBaseView, "base" | "main" | "behind" | "family">): string {
+  const short = view.family === true ? `Whole change since ${view.base.slice(0, 8)} (includes earlier attempts' work that's still in it)` : view.base.slice(0, 8);
   if (view.main === null || view.behind === null) return short;
   return view.behind === 0 ? `${short} · Up to date with ${view.main}` : `${short} · Behind ${view.main} by ${commits(view.behind)}`;
+}
+
+/**
+ * Where a revision's whole change starts (everyday-9 A1): its family's original start on main, the first task's pinned
+ * base, never the head of the attempt it revises. A revision builds on that attempt's head, so a diff from there would
+ * show only the newest delta while landing would carry everything. Null for a task that revises nothing (its branch's
+ * own pinned base applies), and when the ancestry can't be verified, crosses projects, or the first task has no base.
+ */
+export function familyStartOf(store: Store, taskRef: number): string | null {
+  const id = store.externalIdFor(taskRef);
+  const ref = id === null ? null : store.lookupRef(id);
+  if (id === null || ref === null || ref.revisionOf === null) return null;
+  const ancestry = store.revisionAncestryStatus(id);
+  const rootId = ancestry.chain[ancestry.chain.length - 1];
+  const root = ancestry.problem !== null || rootId === undefined || rootId === id ? null : store.lookupRef(rootId);
+  if (root === null || root.repo !== ref.repo) return null;
+  const first = store.runsFor(root.id).filter(one => one.role === "builder" && one.branch !== null && one.baseRevision !== null).sort((a, b) => a.id - b.id)[0];
+  if (first === undefined || first.branch === null) return null;
+  return store.firstBuilderBase(root.id, first.branch) ?? first.baseRevision;
+}
+
+/** The base a build's whole change is captured and reviewed against: a revision's family start, else its branch's own
+ * pinned base (null before any attempt recorded one). */
+export function wholeChangeBaseOf(store: Store, taskRef: number, branch: string): string | null {
+  return familyStartOf(store, taskRef) ?? store.firstBuilderBase(taskRef, branch);
 }
 
 /**
@@ -62,12 +90,13 @@ export function taskBaseOf(store: Store, taskId: string, git: GitRead = readGit)
   const branch = latest.branch;
   // A move to current main newer than the latest attempt is where the next one starts.
   const move = store.latestBranchBaseMove(ref.id, branch);
-  const base = move !== null && move.afterRun >= latest.id ? move.to : store.recordedBranchBase(ref.id, branch) ?? latest.baseRevision;
+  const family = familyStartOf(store, ref.id);
+  const base = family ?? (move !== null && move.afterRun >= latest.id ? move.to : store.recordedBranchBase(ref.id, branch) ?? latest.baseRevision);
   const main = git(ref.repo, ["symbolic-ref", "--short", "-q", "HEAD"]) || null;
   const counted = main === null ? null : git(ref.repo, ["rev-list", "--count", `${base}..refs/heads/${main}`]);
   const behind = counted === null || !/^\d+$/.test(counted) ? null : Number(counted);
-  const view = { base, branch, main: behind === null ? null : main, behind };
-  return { ...view, words: `Base ${baseStandingWords(view)}` };
+  const view = { base, branch, main: behind === null ? null : main, behind, ...(family === null ? {} : { family: true }) };
+  return { ...view, words: family === null ? `Base ${baseStandingWords(view)}` : baseStandingWords(view) };
 }
 
 /** `git`'s answers kept for `ttlMs` (at most `entries` of them), for a page that shows the base line on every refresh:

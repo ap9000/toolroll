@@ -124,7 +124,7 @@ import { type Who } from "./session.js";
 import { approveReleaseCard, releaseApprovalCard, releaseSheetHref, releaseTaskOf } from "../release-approval.js";
 import { releaseSheetPage } from "./render-release.js";
 import { approvalFactsNow, btn } from "./kit.js";
-import { land, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding } from "../local-landing.js";
+import { handoffWords, land, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding } from "../local-landing.js";
 import { localActNow, localOwnerRefusal, withLocalAct } from "../local-owner.js";
 import { localChecksRefusal } from "../local-checks.js";
 import { sessionYesPossible } from "./send-back-build.js";
@@ -3297,8 +3297,13 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (key === "") {
       const read = await readLanding(store, act.taskId, access, now, options);
       if (!read.ok) return taskScreen(response, who, act.taskId, read.message, 409);
-      if (!("plan" in read)) return redirect(response, taskHref(act.taskId));
+      if (!("plan" in read)) {
+        if (answersInPlace(ctx.request)) return answerActInPlace(response, "done", `Already on ${read.landed.ref.replace(/^refs\/heads\//, "")} (${read.landed.commit.slice(0, 7)}).`, 200);
+        return redirect(response, taskHref(act.taskId));
+      }
       const plan = read.plan;
+      // The terminal's Land (everyday-9 A4): the same lines and key as the page, for its own confirm; its Enter posts the key.
+      if (answersInPlace(ctx.request)) return respond(response, 200, "application/json; charset=utf-8", JSON.stringify({ outcome: "land-terms", key: plan.key, lines: landingWords(plan) }));
       const title = undo ? "Undo landing" : `Land on ${plan.branch}`;
       return sendScreen(response, 200, screen(title, html`<h1>${title}</h1>${landingWords(plan).map(line => html`<p>${line}</p>`)}${postForm(`${taskHref(act.taskId)}/land`,
         html`${btn(undo ? "Undo it" : "Land it", { variant: "primary", type: "submit" })} ${btn("Cancel", { variant: "ghost", href: taskHref(act.taskId) })}`,
@@ -3306,6 +3311,10 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     }
     const done = await land(store, act.taskId, { key, ...(into === "" ? {} : { into }), ...(undo ? { undo: true } : {}) }, principal !== null ? { kind: "person", who: principal } : { kind: "local" }, access, now, { root: evidenceRoot });
     if (!done.ok) return taskScreen(response, who, act.taskId, done.message, done.reason === "authority" ? 403 : 409);
+    if (done.handoff !== null) {
+      const words = `Landing commit ${done.commit.slice(0, 7)} is ready. Your project folder has ${done.branch} checked out, so Toolroll didn't touch it. ${handoffWords(done.handoff, done.commit)}`;
+      return answersInPlace(ctx.request) ? answerActInPlace(response, "done", words, 200) : taskScreen(response, who, act.taskId, words, 200);
+    }
     if (answersInPlace(ctx.request)) return answerActInPlace(response, "done", `${done.kind === "undo" ? "Undone" : "Landed"} on ${done.branch} (${done.commit.slice(0, 7)}).`, 200);
     return redirect(response, taskHref(act.taskId));
   }

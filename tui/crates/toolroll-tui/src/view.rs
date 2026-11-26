@@ -3623,6 +3623,8 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
     let plan = !live && app.plan_pins().is_some();
     let waiting = !live && app.queued_here();
     let held = !live && app.held_here().is_some();
+    // A finished task: Land (the console says why not when it can't).
+    let land = !live && app.land_here().is_some();
     let composer_visible = app.tab == Tab::Live
         && live
         && app.areas.right.height >= 12
@@ -3650,6 +3652,8 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
         } else if waiting {
             // Work that would start for the first time (approved, or a plan asked for): a pause, not a retry.
             v.push((&[Stop], "pause task"));
+        } else if land {
+            v.push((&[Land], "land"));
         }
         if plan {
             v.push((&[Pause], "plan"));
@@ -4313,6 +4317,27 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
                 dim(),
             )));
             (title, lines)
+        }
+        Mode::ConfirmLand { lines: said, .. } => {
+            // The console's own lines for what lands where (everyday-9 A4), then the one act.
+            let w = (area.width as usize).saturating_sub(10).clamp(24, 72);
+            let mut lines = vec![
+                Line::raw(""),
+                Line::from(Span::styled("Land this work?", ink())),
+                Line::raw(""),
+            ];
+            for one in said {
+                for l in wrap(one, w) {
+                    lines.push(Line::raw(l));
+                }
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::from(sheet::act("Enter", "Land it", true)));
+            lines.push(Line::from(Span::styled(
+                "Any other key changes nothing.",
+                dim(),
+            )));
+            (" Land ", lines)
         }
         Mode::ConfirmResume { .. } => {
             let w = (area.width as usize).saturating_sub(10).clamp(24, 72);

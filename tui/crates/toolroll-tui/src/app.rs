@@ -420,6 +420,13 @@ pub enum Mode {
         version: String,
         hold: i64,
     },
+    /// Land a task's accepted work (everyday-9 A4): the console's own lines for what lands where, and the key its Enter
+    /// posts back (POST /t/<task>/land `key`), so what lands is exactly what was read.
+    ConfirmLand {
+        task: String,
+        key: String,
+        lines: Vec<String>,
+    },
     /// Cancel a task: the state and latest build shown (`run`: None for no build), posted as pins the cancel proves.
     ConfirmCancel {
         task: String,
@@ -1776,6 +1783,14 @@ impl App {
     }
 
     /// The person's hold on the selected task (Stop retrying, or the task page's hold), when one stands.
+    /// The selected task when Land can be offered (everyday-9 A4): a finished task (Recent), never a thread or an ask.
+    /// The console decides the rest (accepted, a project with no pull requests, not landed yet) and says why not.
+    pub fn land_here(&self) -> Option<String> {
+        self.selected_item()
+            .filter(|i| i.is_task && !i.thread && i.section == Section::Recent && i.tone == "done")
+            .map(|i| i.id.clone())
+    }
+
     pub fn held_here(&self) -> Option<&toolroll_api::TaskHold> {
         self.steps_here()
             .filter(|s| s.live_run.is_none())
@@ -2434,6 +2449,19 @@ impl App {
                 self.say(Tone::Refused, words);
                 self.sent_thread();
                 self.mode = Mode::ThreadNext(next);
+                vec![]
+            }
+            Msg::Acted(Ok(ActOutcome::LandTerms { key, lines })) => {
+                // What landing does, in the console's words: confirmed on Enter, for the task still selected.
+                let Some(task) = self.land_here() else {
+                    return vec![];
+                };
+                self.status = None;
+                self.mode = Mode::ConfirmLand {
+                    task,
+                    key,
+                    lines: lines.into_iter().map(|l| clean(&l)).collect(),
+                };
                 vec![]
             }
             Msg::Acted(Ok(ActOutcome::ThreadTerms { key, lines })) => {
@@ -3851,6 +3879,24 @@ impl App {
                     }
                 }
             }
+            Mode::ConfirmLand {
+                task,
+                key: landing,
+                ..
+            } => {
+                self.mode = Mode::Normal;
+                match key.code {
+                    KeyCode::Enter => self.act(
+                        format!("/t/{}/land", toolroll_api::client::encode(&task)),
+                        vec![("key", landing)],
+                        "Landed.".into(),
+                    ),
+                    _ => {
+                        self.say(Tone::Said, "Nothing landed.");
+                        vec![]
+                    }
+                }
+            }
             Mode::ConfirmResume {
                 task,
                 version,
@@ -5227,6 +5273,20 @@ impl App {
                 }
                 vec![]
             }
+            Action::Land => match self.land_here() {
+                Some(task) => {
+                    self.say(Tone::Said, "Reading what lands…");
+                    self.act(
+                        format!("/t/{}/land", toolroll_api::client::encode(&task)),
+                        vec![],
+                        String::new(),
+                    )
+                }
+                None => {
+                    self.say(Tone::Refused, "Only finished work can land.");
+                    vec![]
+                }
+            },
             Action::NewTask => self.open_new_task(),
             Action::TakeOver => self.take_over(),
             Action::TakeOverAgent => self.take_over_agent(),
@@ -6664,6 +6724,9 @@ impl App {
                 .is_none()
                 .then_some(QUESTION_CHANGED),
             Mode::Approve { task, key, .. } => self.approval_changed(task, key),
+            Mode::ConfirmLand { task, .. } if self.selected_id().as_ref() != Some(task) => {
+                Some(TASK_CHANGED)
+            }
             // Every other dialog froze the version it opened on: a newer one (a revision filed since) closes it.
             Mode::ConfirmHold { task, version, .. }
             | Mode::ConfirmResume { task, version, .. }
@@ -6935,6 +6998,7 @@ impl App {
                 | ActOutcome::ThreadTerms { .. }
                 | ActOutcome::ThreadStarted { .. }
                 | ActOutcome::ShipTerms { .. }
+                | ActOutcome::LandTerms { .. }
                 | ActOutcome::BuilderPassword { .. }
                 | ActOutcome::NextStep { .. },
             ) => {

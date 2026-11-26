@@ -474,6 +474,9 @@ describe("Toolroll proves a build stopped itself, end to end", () => {
       .toMatchObject({ label: "Accept with exception", href: null, accept: { action: "/t/unverified/accept-proof", run: runs["unverified"], note: "Why is this safe to accept?" } });
     expect(needActionOf(here, review, "csrf", "/back", { ...facts, humanReview: true, accepted: false })?.accept?.note).toBeNull();
     expect(needActionOf(here, review, "csrf", "/back", { ...facts, accepted: true })).toBeNull();
+    // A verified, current result owes no exception by the completion's own rule: plain Accept, no reason (everyday-9 A5).
+    expect(needActionOf(here, review, "csrf", "/back", { ...facts, accepted: false, exception: false })).toMatchObject({ label: "Accept result", accept: { note: null } });
+    expect(needActionOf(here, review, "csrf", "/back", { ...facts, accepted: false, exception: true })).toMatchObject({ label: "Accept with exception", accept: { note: "Why is this safe to accept?" } });
     // Whatever else the task page sends the person here for, this page leads with what it can do, never a link back:
     // Accept a check only a person can make, or Build again a result that may run again.
     const other = taskStatusOf({ stage: "needs-you", need: "other" });

@@ -160,7 +160,7 @@ import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { parseMachLookup, parseReadDeny, readDenyWords, type ProjectSandbox } from "./project-sandbox.js";
 import { LOCAL_POLICY } from "./surface.js";
-import { land, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding, type LandAuthority } from "./local-landing.js";
+import { handoffWords, land, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding, type LandAuthority } from "./local-landing.js";
 import { asLocalOwner, currentLocalOwner, localActNow, LOCAL_MODE_CONFINES, localModeOn, localOwnerRefusal, localOwnerRequested, type LocalOwnerAct, type LocalPrincipal } from "./local-owner.js";
 import { CHECK_ACCESS_WARNINGS, checkAccessRunsAs, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
@@ -564,6 +564,8 @@ export const OPERATE_HELP = `toolroll — operating the queue
                                         remotely, name a token with --token-name)
   toolroll task complete <id>        mark the current result complete (--digest for JSON/agents);
       [--pull-request]                  --pull-request also opens its pull request
+  toolroll task land <id>            put accepted work on the project's own branch (no pull requests): shows what lands
+                                        where, then --yes --key <key> lands it as one commit; --undo reverts it
   toolroll task merge <id> --as <you> --token <t>
                                         merge the task's pull request once checks pass
       [--anyway]                        merge without waiting for the full check
@@ -15985,8 +15987,11 @@ async function landTaskCommand(positional: readonly string[], flags: Map<string,
     if (!read.ok) return fail(write, json, command, read.reason, read.message, EXIT.refused);
     if (!("plan" in read)) return succeed(write, json, command, { landed: read.landed }, () => [`${id} · Landed on ${read.landed.ref.replace(/^refs\/heads\//, "")} (${read.landed.commit.slice(0, 7)}).`]);
     const plan = read.plan;
+    // Say up front what the yes will ask for (everyday-9 A4): this computer's local owner needs nothing more; anyone
+    // else, their name and password.
     return succeed(write, json, command, { plan }, () => [...landingWords(plan),
-      `To ${undo ? "undo it" : "land it"}: toolroll task land ${id}${into === undefined ? "" : ` --into ${into}`}${undo ? " --undo" : ""} --yes --key ${plan.key}`]);
+      `To ${undo ? "undo it" : "land it"}: toolroll task land ${id}${into === undefined ? "" : ` --into ${into}`}${undo ? " --undo" : ""} --yes --key ${plan.key}${local === null ? " --as <you>" : ""}`,
+      ...(local === null ? ["That asks for your Toolroll password."] : [])]);
   }
   if (key === undefined || !/^[0-9a-f]{16}$/.test(key)) return fail(write, json, command, "usage", "--yes needs the --key `toolroll task land` showed you, so what lands is what you read.", EXIT.usage);
   let authority: LandAuthority;
@@ -16002,8 +16007,14 @@ async function landTaskCommand(positional: readonly string[], flags: Map<string,
   const access = { repos: authority.kind === "person" ? authority.who.repos : localRepos };
   const result = await land(store, id, { key, ...(into === undefined ? {} : { into }), ...(undo ? { undo: true } : {}) }, authority, access, now, { root: context.evidenceRoot });
   if (!result.ok) return fail(write, json, command, result.reason, result.message, EXIT.refused);
+  if (result.handoff !== null) {
+    const handoff = result.handoff;
+    return succeed(write, json, command, { landing: result }, () => [
+      `${id} · Landing commit ${result.commit.slice(0, 7)} is ready (kept at ${handoff.ref}). Your project folder has ${result.branch} checked out, so Toolroll didn't touch it.`,
+      handoffWords(handoff, result.commit)]);
+  }
   return succeed(write, json, command, { landing: result }, () => [
-    `${id} · ${result.replayed ? "Already " : ""}${result.kind === "undo" ? "Undone" : "Landed"} on ${result.branch} (${result.commit.slice(0, 7)})${result.mode === "ref" ? "; no folder had it open" : ""}.`,
+    `${id} · ${result.replayed ? "Already " : ""}${result.kind === "undo" ? "Undone" : "Landed"} on ${result.branch} (${result.commit.slice(0, 7)})${result.mode === "ref" ? "; no folder had it open" : result.mode === "files" ? "; your project folder's files are updated" : ""}.`,
     ...(result.warning === null ? [] : [result.warning])]);
 }
 

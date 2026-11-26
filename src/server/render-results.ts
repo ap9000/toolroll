@@ -865,8 +865,10 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   // Otherwise exactly what the completion itself owes (assignment.ts owedAcceptance, the rule acceptAndComplete enforces): a
   // person's own check needs no reason, only an exception does (everyday-8 #5).
   const shared = accepted || assignment?.receipt == null ? null : owedAcceptance(assignment.receipt, assignment.readiness?.blockers ?? []);
-  const owed = accepted ? null : youCheck?.accept != null ? { note: null } : panel.panel.need?.accept != null ? { note: panel.panel.need.accept.note }
-    : shared === "person-check" ? { note: null } : shared === "exception" || blocked === ACCEPT_NEEDS_REASON ? { note: "Why is this safe to accept?" } : null;
+  // The shared rule leads (everyday-9 A5): a reason only for a real exception, never because the page's own Needs-you
+  // button would phrase it as one.
+  const owed = accepted ? null : youCheck?.accept != null || shared === "person-check" ? { note: null }
+    : shared === "exception" || blocked === ACCEPT_NEEDS_REASON ? { note: "Why is this safe to accept?" } : null;
   const complete = hardStop === null && assignment?.state === "ready-to-check" && assignment.receipt !== null && canRetryReview && csrf !== ""
     ? { action: `${taskHref(view.taskId)}/complete`, receipt: assignment.receipt.digest, run: run.id, accept: owed, ...(host.kind === "task" ? { returnTo: at() } : {}) } : null;
   if (complete !== null) parts.push(completionForm(view.taskId, run.id, complete.receipt, view.detail?.pullRequestTo ?? null, owed));
@@ -2046,6 +2048,7 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
   // On the result itself, "Review result" would link here: accepting it is what resolves it.
   const need = needActionOf(current, taskStatus, o.csrf, o.returnTo, {
     accepted: proof?.accepted != null, humanReview, run: run.id, action: `${taskHref(detail.taskId)}/accept-proof`, refuted: proof?.verdict === "refuted",
+    exception: current?.receipt == null ? !humanReview : owedAcceptance(current.receipt, current.readiness?.blockers ?? []) === "exception",
     // What Store.finalResultReason refuses: a verified, attested, accepted or published result.
     rebuildable: proof?.accepted == null && proof?.verdict !== "verified" && proof?.verdict !== "attested" && !(detail.publication !== null && ["pushed", "opened"].includes(detail.publication.state)) });
   const directAssessment = proof?.matrix.some(row => row.assessment !== undefined) === true;
@@ -2496,7 +2499,7 @@ export function hardBlockerOf(assignment: AssignmentSnapshot | null | undefined)
 /** A Needs you result's one action (needs-you.ts): a link to the act that resolves it, or Confirm it
  * stopped behind the password. Null under every other headline. */
 export function needActionOf(assignment: AssignmentSnapshot | null, status: TaskStatus | null, csrf: string, returnTo: string,
-  result?: { accepted: boolean; humanReview: boolean; run: number; action: string; rebuildable?: boolean; refuted?: boolean }): BrowserNeedAction | null {
+  result?: { accepted: boolean; humanReview: boolean; run: number; action: string; rebuildable?: boolean; refuted?: boolean; exception?: boolean }): BrowserNeedAction | null {
   if (assignment === null || status === null || status.headline !== "Needs you" || status.need == null) return null;
   // Accepting can't resolve it: Request changes is the way on, beside the reason.
   if (result !== undefined && hardBlockerOf(assignment) !== null) return null;
@@ -2505,8 +2508,11 @@ export function needActionOf(assignment: AssignmentSnapshot | null, status: Task
   // Built to an earlier plan: Build again, in place (the task page's requeue).
   if (action?.code === "retry-task" && status.need.key === "rebuild" && csrf !== "") return { label: status.need.action.label, ...rebuild };
   if (result !== undefined) {
-    if ((status.need.key === "review-result" || result.refuted === true) && !result.accepted && csrf !== "") return { label: result.humanReview ? "Accept result" : "Accept with exception", href: null, confirm: null,
-      accept: { action: result.action, run: result.run, returnTo, note: result.humanReview ? null : "Why is this safe to accept?" } };
+    // An exception (and its reason) only when the completion's own rule says so (assignment.ts owedAcceptance, passed as
+    // `exception`), or the report doesn't match its changes: a verified, current result is plainly accepted (everyday-9 A5).
+    const exception = result.refuted === true || (result.exception ?? !result.humanReview);
+    if ((status.need.key === "review-result" || result.refuted === true) && !result.accepted && csrf !== "") return { label: exception ? "Accept with exception" : "Accept result", href: null, confirm: null,
+      accept: { action: result.action, run: result.run, returnTo, note: exception ? "Why is this safe to accept?" : null } };
     // The task page sends the person here: never back to it. What this page can do leads — Accept
     // a check only a person can make, or Build again a result that may run again.
     const here = (action?.code === "open-result" || action?.code === "inspect-run") && action.target.runId === result.run;

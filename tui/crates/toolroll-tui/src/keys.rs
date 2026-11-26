@@ -74,6 +74,7 @@ actions! {
     Accept = "accept", Global, Act, "Accept the result, or approve a plan", ["a"];
     SendBack = "send-back", Global, Act, "Send the result back, with a note (or retry, or plan again)", ["r"];
     Retry = "retry", Global, Act, "Retry a failed task (Review and retry)", [];
+    Land = "land", Global, Act, "Land accepted work on your branch (shows what lands first)", ["B"];
     TakeOver = "take-over", Global, Act, "Open build shell", ["t"];
     TakeOverAgent = "take-over-agent", Global, Act, "Open live agent (Claude / Codex / Antigravity)", ["i"];
     NewTask = "new-task", Global, Act, "New task", ["n"];
@@ -232,6 +233,11 @@ const PAIRS: &[(Action, Action, &str)] = &[
         "Open build shell / live agent",
     ),
     (Action::Agents, Action::Models, "Agents / model assignments"),
+    (
+        Action::Accept,
+        Action::Land,
+        "Accept or approve / land on your branch",
+    ),
     (
         Action::LeadChat,
         Action::DockChat,
