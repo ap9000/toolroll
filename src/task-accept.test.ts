@@ -12,7 +12,9 @@ import { runOperate, EXIT } from "./operate.js";
 import { storeEvidence } from "./evidence.js";
 import { sealVerificationReceipt } from "./verification-evidence.js";
 import { recordRunCheckLevel } from "./check-levels.js";
-import { assignmentOf } from "./assignment.js";
+import { assignmentOf, checkAssignmentAsOperator } from "./assignment.js";
+import { verifyApproverByPassword } from "./principal.js";
+import { withActor } from "./actor.js";
 import { CHECKS_FINISHED, CHECKS_REQUESTED, FOLLOW_UP_LOG, FOLLOW_UP_RECEIPT } from "./result-follow-ups.js";
 import { workIndexPage, workIndexTask } from "./work-index.js";
 import { stepCardsOf } from "./engine-reads.js";
@@ -155,6 +157,30 @@ describe("a completion stays complete when the check command changes", () => {
       expect(headlineOf(assignmentStatusFacts(after)), id).toBe("Complete");
       store.setVerifyCommand({ repo: REPO, command: "true", timeoutMs: 60_000, approvedBy: "alex" }, NOW);
     }
+  });
+
+  test("completed by the lead's token: a person's later Accept records their yes to that exact receipt, never to a changed one (review round 2)", async () => {
+    const who = verifyApproverByPassword(store, "alex", password, [REPO]);
+    if (!who.ok) throw new Error("who");
+    const byLead = (id: string) => withActor({ account: "alex", lead: true }, () => checkAssignmentAsOperator(store, id, receipt(id), who.who, NOW, root()));
+    built("t-lead-done");
+    expect(byLead("t-lead-done").ok).toBe(true);
+    expect(snapshot("t-lead-done").completion).toMatchObject({ lead: true });
+    expect(snapshot("t-lead-done").completion?.person).toBeUndefined();
+    // The CLI's Accept by the person: recorded as theirs, for the same receipt (it stays complete under it).
+    const sealed = receipt("t-lead-done");
+    await complete("t-lead-done");
+    expect(snapshot("t-lead-done").completion).toMatchObject({ person: "alex", digest: sealed });
+    // A completion that is history (its check command changed since): a person's yes to today's receipt records nothing,
+    // so it never completes today's receipt past what it owes.
+    built("t-lead-history");
+    expect(byLead("t-lead-history").ok).toBe(true);
+    store.setVerifyCommand({ repo: REPO, command: "npm test", timeoutMs: 60_000, approvedBy: "alex" }, LATER);
+    const today = snapshot("t-lead-history").receipt!.digest;
+    expect(checkAssignmentAsOperator(store, "t-lead-history", today, who.who, LATER, root()).ok).toBe(true);
+    expect(snapshot("t-lead-history").completion).toMatchObject({ historical: true });
+    expect(snapshot("t-lead-history").completion?.person).toBeUndefined();
+    expect(store.handle.prepare("SELECT count(*) AS n FROM action_ledger WHERE outcome = ?").get(today)!["n"]).toBe(0);
   });
 
   test("a task finished before any check command existed stays complete when one is set", async () => {

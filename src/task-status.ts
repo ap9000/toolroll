@@ -608,6 +608,8 @@ export function receiptChecksOf(receipt: NonNullable<AssignmentSnapshot["receipt
 /** Who accepted a completed task, as its status says it ("Accepted by sam."): the lead, or the person's name; null when
  * nobody did (not complete, or Toolroll completed it because its work landed). */
 export function completedByOf(completion: AssignmentSnapshot["completion"]): string | null {
+  // A person's own yes names them, even when a machine or the lead completed it first.
+  if (completion !== null && completion.person !== undefined) return completion.person;
   return completion === null || completion.landed !== undefined ? null : completion.lead === true ? "the lead" : completion.actor.replace(/^(?:operator|coordinator|lead):/, "");
 }
 
@@ -642,7 +644,7 @@ export function assignmentStatusFacts(assignment: AssignmentSnapshot, options: {
     ...(withResult && (assignment.readiness?.blockers.length ?? 0) > 0 ? { blockers: assignment.readiness!.blockers } : {}),
     evidence: withResult ? options.evidence ?? evidenceOf(receipt, [...(receipt?.caveats ?? []), ...assignment.attention]) : null,
     completedBy: completedByOf(assignment.completion),
-    ...(assignment.completion?.person === true ? { personCompleted: true as const } : {}),
+    ...(assignment.completion?.person !== undefined ? { personCompleted: true as const } : {}),
     ...(assignment.completion?.landed === undefined ? {} : { landed: assignment.completion.landed }),
     action: options.action ?? null,
     ...(options.links === undefined ? {} : { links: options.links }),

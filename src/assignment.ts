@@ -72,9 +72,10 @@ export type AssignmentSnapshot = {
   /** `landed`: Toolroll marked it complete because its work is already in main, and why ("its pull request merged"). */
   /** `historical`: completed under checks that read differently now (a check command changed since); `digest` is the
    * receipt it sealed then, not today's, so nothing that needs the exact current receipt counts it. */
-  /** `person`: a person's own completion of this result is on record ("proof person": an operator acting as themselves,
-   * never a lead's token, a coordinator or a machine credential): what may answer the requirements only a person checks. */
-  completion: { actor: string; at: string; digest: string; lead?: true; landed?: string; historical?: true; person?: true } | null;
+  /** `person`: who, when a person's own completion of this result is on record ("proof person": an operator acting as
+   * themselves, never a lead's token, a coordinator or a machine credential): what may answer the requirements only a
+   * person checks, and the name "Accepted by" says. */
+  completion: { actor: string; at: string; digest: string; lead?: true; landed?: string; historical?: true; person?: string } | null;
   handoff: { kind: "result" | "decision" | "attention"; digest: string; acknowledged: boolean } | null;
   publication: { state: string; prUrl: string | null; remoteState: string | null } | null;
   /** The result's one automatic review, when its project had review on:
@@ -383,10 +384,12 @@ export function assignmentOf(given: Store, taskId: string, now: Date, access: As
       // A person's completion of this receipt: the one road that may answer a person's own checks (any such row for it,
       // a later person's completion of work a machine completed first included).
       const byPerson = (row: Record<string, unknown>) => String(row["actor"]).startsWith("operator:") && row["detail"] === COMPLETION_BY_PERSON;
-      const person = exact === undefined ? byPerson(checked) : exactRows.some(byPerson);
+      // The person: the completion's own when a person made it, else the newest person's yes to this exact receipt.
+      const personRow = exact === undefined ? (byPerson(checked) ? checked : undefined) : byPerson(exact) ? exact : exactRows.find(byPerson);
+      const person = personRow === undefined ? null : String(personRow["actor"]).slice("operator:".length);
       completion = { actor: String(checked["actor"]), at: String(checked["at"]), digest: exact === undefined ? String(checked["outcome"]) : receipt.digest,
         ...(byLead && landed === null ? { lead: true as const } : {}), ...(landed === null ? {} : { landed }), ...(exact === undefined ? { historical: true as const } : {}),
-        ...(person ? { person: true as const } : {}) };
+        ...(person === null ? {} : { person }) };
       state = "complete";
       primaryAction = { ...primaryAction, label: completionKind === "research-report" ? "Read report" : "Open result" };
       const label = byLead ? "the lead" : completion.actor.startsWith("operator:") ? completion.actor.slice(9) : owner && completion.actor === actorOf(owner) ? owner.label : "the previous lead";
@@ -586,9 +589,14 @@ function acknowledgeCurrent(store: Store, current: AssignmentSnapshot, receiptDi
     const by = currentActor() ?? (actor.startsWith("operator:") ? { account: actor.slice("operator:".length), lead: false } : null);
     if (ref !== null) store.noteTaskAct(ref.id, "completed", now, undefined, by);
     store.bumpWake();
-  } else if (person !== null && personCompletionOwed(store, receipt.taskId, receipt.runId, receiptDigest, person, root)) {
+  } else if (person !== null && (personCompletionOwed(store, receipt.taskId, receipt.runId, receiptDigest, person, root)
+    // Completed exactly this receipt, by a machine or the lead only (stranger 17, review round 2): a person's own yes to it
+    // is recorded, so it answers the requirements only a person checks. Never for a completion that is history (its
+    // receipt has changed since): that would complete today's receipt past its blockers.
+    || (current.completion !== null && current.completion.digest === receiptDigest && current.completion.historical !== true && current.completion.person === undefined))) {
     // Already complete, but no person's completion is on record that lets protected work publish (a machine's, or one
-    // from before completions said who made them): this person's completion is recorded now (approval policy §1.7a).
+    // from before completions said who made them), or that answers a person's checks: this person's completion is
+    // recorded now (approval policy §1.7a). It grants nothing a person completing it in the first place wouldn't have.
     store.recordAction({ at: now.toISOString(), actor, repo: current.repo,
       taskId: current.rootId, runId: receipt.runId, action: CHECK_ACTION, outcome: receiptDigest, source: "work", detail: COMPLETION_BY_PERSON });
     store.bumpWake();

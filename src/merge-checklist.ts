@@ -101,7 +101,7 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
   // lands it on its checks and main alone (below). Only a person's own completion (never a lead's token, a coordinator
   // or a machine credential) answers the requirements a person checks and says who accepted it.
   const accepted = assignment.state === "complete" && assignment.completion !== null;
-  const acceptedByPerson = accepted && assignment.completion!.person === true;
+  const acceptedByPerson = accepted && assignment.completion!.person !== undefined;
 
   // Plan approved: the approval as dispatch reads it.
   if (scope === null) row("plan", "no", "There's no plan yet.");

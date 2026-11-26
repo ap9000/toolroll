@@ -10301,7 +10301,7 @@ function showTask(positional: readonly string[], context: Context): number {
     ...(task.state !== "done" || detail.proofVerdict === null
       ? []
       // Accepted (Complete): the person's yes is the check now, never a verdict still waiting (stranger 17).
-      : shared?.headline === "Complete" && current?.completion?.person === true ? [
+      : shared?.headline === "Complete" && current?.completion?.person !== undefined ? [
           `  checked: ${acceptedWords(current?.completion ?? null)}`,
           ...matrixWords(shownMatrix),
           ...(detail.semanticCoverage === null ? [] : coverageWords(detail.semanticCoverage).map(line => `  ${line}`)),

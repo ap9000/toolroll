@@ -328,8 +328,18 @@ describe("accepted work reads as accepted (stranger 17)", () => {
     expect((await http(`/t/machine-done?tab=result&run=${runs["machine-done"]}`)).body).toContain('"youCheck":{');
     const requirements = (id: string) => statusOf(assignmentStatusFacts(assignmentOf(store, id, NOW, { principal: "operator", repos: [REPO] }, ev)!)).details.find(one => one.key === "requirements")?.text;
     expect(requirements("machine-done")).toBe("0 of 1 met · You check 1");
+    // The person's own Accept on it (offered on the result, review round 2) records their yes to this exact receipt.
+    const page = await http(`/t/machine-done?tab=result&run=${runs["machine-done"]}`);
+    expect(page.body).toContain('"action":"/t/machine-done/complete"');
+    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(page.body)![1]!;
+    const posted = await http("/t/machine-done/complete", { method: "POST", body: new URLSearchParams({ csrf, run: String(runs["machine-done"]), receipt: read.receipt!.digest, accept: "1" }).toString() });
+    expect(posted.status).toBe(303);
+    const confirmed = assignmentOf(store, "machine-done", NOW, { principal: "operator", repos: [REPO] }, ev)!;
+    expect(confirmed).toMatchObject({ state: "complete", completion: { person: "sam", digest: read.receipt!.digest } });
+    expect(rowOf("machine-done", "requirements")).toMatchObject({ mark: "yes", say: "Accepted by sam." });
+    expect(requirements("machine-done")).toBe("1 of 1 met");
     // A person's own completion (the terminal's a, Mark complete) answers it.
-    expect(assignmentOf(store, "marked", NOW, { principal: "operator", repos: [REPO] }, ev)!.completion?.person).toBe(true);
+    expect(assignmentOf(store, "marked", NOW, { principal: "operator", repos: [REPO] }, ev)!.completion?.person).toBe("sam");
     expect(requirements("marked")).toBe("1 of 1 met");
   });
 
