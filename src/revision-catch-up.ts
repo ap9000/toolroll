@@ -35,11 +35,13 @@ export type CatchUp =
   | { kind: "unavailable" };
 
 const OID = /^[0-9a-f]{40}$/;
+/** The fixed identity every catch-up merge carries, as author and committer. */
+const IDENTITY = "Toolroll <update@toolroll.invalid>";
 const PLAIN_BRANCH = /^[A-Za-z0-9._/-]{1,100}$/;
 
 /** The merge commit's bytes: a fixed identity at `time`, the revised head first. */
 function mergeBody(tree: string, head: string, main: string, time: number, message: string): string {
-  const who = `Toolroll <update@toolroll.invalid> ${time} +0000`;
+  const who = `${IDENTITY} ${time} +0000`;
   return `tree ${tree}\nparent ${head}\nparent ${main}\nauthor ${who}\ncommitter ${who}\n\n${message}\n`;
 }
 const commitIdOf = (body: string) => createHash("sha1").update(`commit ${Buffer.byteLength(body, "utf8")}\0`).update(body, "utf8").digest("hex");
@@ -81,6 +83,25 @@ export async function catchUpRevision(git: Runner, repo: string, head: string, b
   const parents = header.split("\n").filter(line => line.startsWith("parent ")).map(line => line.slice("parent ".length));
   if (shown.code !== 0 || !header.startsWith(`tree ${tree}\n`) || parents.length !== 2 || parents[0] !== head || parents[1] !== main) return { kind: "unavailable" };
   return { kind: "merged", commit, main };
+}
+
+/**
+ * Main's commit, when `commit` is a Toolroll catch-up merge of exactly `head`: its parents are `head` then a commit the
+ * landing `branch` contains, its author and committer the fixed Toolroll identity. Else null. A retry reads it back
+ * from a branch whose first attempt never opened (the read-back after its lease couldn't confirm it).
+ */
+export async function catchUpMergeOf(git: Runner, repo: string, commit: string, head: string, branch: string): Promise<string | null> {
+  const run = (args: readonly string[]) => git("git", ["--no-replace-objects", ...args], { cwd: repo, timeoutMs: 120_000 });
+  if (!OID.test(commit) || !OID.test(head) || !PLAIN_BRANCH.test(branch)) return null;
+  const shown = await run(["cat-file", "commit", commit]);
+  if (shown.code !== 0) return null;
+  const header = (shown.stdout.split("\n\n")[0] ?? "").split("\n");
+  const parents = header.filter(line => line.startsWith("parent ")).map(line => line.slice("parent ".length));
+  const who = (field: string) => header.filter(line => line.startsWith(`${field} `)).map(line => line.slice(field.length + 1).replace(/ \d+ [+-]\d{4}$/, ""));
+  if (parents.length !== 2 || parents[0] !== head || !OID.test(parents[1]!)) return null;
+  if (who("author").join() !== IDENTITY || who("committer").join() !== IDENTITY) return null;
+  const onBranch = await run(["merge-base", "--is-ancestor", parents[1]!, `refs/heads/${branch}`]);
+  return onBranch.code === 0 ? parents[1]! : null;
 }
 
 /** Record a catch-up that merged or conflicted, for the attempt it started, and the attempt's history line. */

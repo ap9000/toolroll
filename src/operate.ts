@@ -161,7 +161,7 @@ import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { parseMachLookup, parseReadDeny, readDenyWords, type ProjectSandbox } from "./project-sandbox.js";
 import { LOCAL_POLICY } from "./surface.js";
 import { handoffWords, land, landedLine, landingBranchOf, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding, type LandAuthority } from "./local-landing.js";
-import { catchUpRevision, recordCatchUp, type CatchUp } from "./revision-catch-up.js";
+import { catchUpMergeOf, catchUpRevision, recordCatchUp, type CatchUp } from "./revision-catch-up.js";
 import { asLocalOwner, currentLocalOwner, localActNow, LOCAL_MODE_CONFINES, localModeOn, localOwnerRefusal, localOwnerRequested, type LocalOwnerAct, type LocalPrincipal } from "./local-owner.js";
 import { CHECK_ACCESS_WARNINGS, checkAccessRunsAs, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
@@ -3697,6 +3697,13 @@ async function tickCommand(
           // On a git without --no-lazy-fetch, through a frozen read view that refuses a partial clone (lazyFetchSafeGit).
           const ancestry = await lazyFetchSafeGit(git)("git", [...noLazyFetch(), "-c", "protocol.allow=never", "--no-replace-objects", "merge-base", "--is-ancestor", source.head, descendant], { cwd: repo });
           if (ancestry.code !== 0) problem = ancestry.stderr.includes(PARTIAL_CLONE_REFUSAL) ? PARTIAL_CLONE_REFUSAL : "the requested revision base does not contain its source head";
+          // A branch made at a catch-up merge whose first attempt never opened (its read-back couldn't confirm it): the
+          // move is recorded now, from the branch as it stands, before this attempt opens.
+          else if (exists.code === 0 && store.latestBranchBaseMove(ref.id, branch) === null && store.firstBuilderBase(ref.id, branch) === null && !publishesThroughPullRequests(store, repo)) {
+            const tip = exists.stdout.trim();
+            const main = await catchUpMergeOf(hardenedGit(git, "build", { repo }), repo, tip, source.head, landingBranchOf(store, repo, base));
+            if (main !== null) store.recordBranchBaseMove(ref.id, branch, tip, main, clock());
+          }
         }
       }
       if (problem !== null) {
@@ -3723,7 +3730,15 @@ async function tickCommand(
       const merged = caughtUp.result;
       const at = leased.ok && leased.created ? await hardenedGit(git, "build", { repo })("git", ["rev-parse", "--verify", "-q", `refs/heads/${branch}^{commit}`], { cwd: repo }) : null;
       if (at !== null && at.code === 0 && at.stdout.trim() === merged.commit) store.recordBranchBaseMove(ref.id, branch, merged.commit, merged.main, clock());
-      else caughtUp = { ...caughtUp, result: { kind: "unavailable" } };
+      else if (leased.ok && leased.created) {
+        // Made at the merge, but not proved there: no attempt opens on an unrecorded base. The next pass finds the branch
+        // and records the move from the merge it stands at (above), or builds on whatever it is.
+        await worktrees.release(leased.worktree.path, clock());
+        release(store, lease, clock());
+        dispatched.push({ id, outcome: "failed", reason: "git", detail: "Toolroll couldn't confirm the new branch stands at its merge of main; it tries again." });
+        broke++;
+        continue;
+      } else caughtUp = { ...caughtUp, result: { kind: "unavailable" } };
     }
     if (!leased.ok) {
       // The task is fine; this machine's pool is not. Hand the claim back so

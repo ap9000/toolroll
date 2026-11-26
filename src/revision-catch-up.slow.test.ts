@@ -14,7 +14,8 @@ import { run as exec } from "./exec.js";
 import { EXIT, runOperate } from "./operate.js";
 import { openStore } from "./store.js";
 import { familyStartOf, taskBaseOf } from "./task-base.js";
-import { CATCH_UP_ACTION } from "./revision-catch-up.js";
+import { CATCH_UP_ACTION, catchUpMergeOf, catchUpRevision } from "./revision-catch-up.js";
+import { hardenedGit } from "./teardown-git.js";
 import { mergeChecklistOf } from "./merge-checklist.js";
 import { stepCardsOf } from "./engine-reads.js";
 import type { Runner } from "./builder.js";
@@ -217,6 +218,38 @@ describe("work behind main gets a working way forward", () => {
       expect(row.say).toContain("conflict with it in b.txt");
       // Nothing moved main.
       expect((await exec("git", ["rev-parse", "main"], { cwd: repo })).stdout.trim()).toBe(mainNow);
+    } finally { store.close(); }
+  });
+  test("a branch already at a catch-up merge whose attempt never opened: the retry records the move from it; nothing else counts", async () => {
+    await file("t-b");
+    await tick(T0);
+    await complete("t-b", later(1));
+    writeFileSync(join(repo, "a.txt"), "main's own a\n");
+    await git(["add", "a.txt"]);
+    await git(["commit", "-qm", "main's a"]);
+    const mainNow = await git(["rev-parse", "main"]);
+    const b = await headOf("t-b");
+    const revision = await sendBack("t-b", later(2));
+    // What a dispatch whose read-back failed leaves: the branch made at Toolroll's merge, no move recorded, no attempt.
+    const hardened = hardenedGit(exec, "build", { repo });
+    const made = await catchUpRevision(hardened, repo, b.headRevision!, "main", revision, later(2));
+    if (made.kind !== "merged") throw new Error(made.kind);
+    // Look-alikes never count: another identity, or a first parent that isn't the revised head.
+    const tree = await git(["rev-parse", `${made.commit}^{tree}`]);
+    const forged = await git(["commit-tree", tree, "-p", b.headRevision!, "-p", mainNow, "-m", "Bring it up to date"]);
+    expect(await catchUpMergeOf(hardened, repo, forged, b.headRevision!, "main")).toBeNull();
+    expect(await catchUpMergeOf(hardened, repo, made.commit, mainNow, "main")).toBeNull();
+    expect(await catchUpMergeOf(hardened, repo, made.commit, b.headRevision!, "main")).toBe(mainNow);
+    await git(["branch", `toolroll/${revision}`, made.commit]);
+
+    await tick(later(3));
+    const built = await headOf(revision);
+    expect(built.outcome, JSON.stringify(built)).toBe("built");
+    expect(built.baseRevision).toBe(made.commit);
+    const store = openStore(db);
+    try {
+      expect(familyStartOf(store, store.lookupRef(revision)!.id)).toBe(mainNow);
+      expect(store.latestBranchBaseMove(store.lookupRef(revision)!.id, `toolroll/${revision}`)).toMatchObject({ from: made.commit, to: mainNow });
     } finally { store.close(); }
   });
 });
