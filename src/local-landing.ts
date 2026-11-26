@@ -864,8 +864,9 @@ export function landedStanding(store: Store, rootId: string, read?: GitLook): { 
 
 /**
  * Whether a later commit on `ref` exactly reverted a one-commit landing (`commit`, whose only parent is `old`), proved
- * from the commits themselves (everyday-9 #3): one commit after it on `ref` changes exactly the same files, each from
- * the landing's after-state back to its before-state (the same modes and blob ids, swapped). Ancestry alone never says
+ * from the commits themselves (everyday-9 #3): one commit on `ref` that descends from the landing (`--ancestry-path`:
+ * a merged side branch that never saw the landing can't count, though it may hold the same change) changes exactly the
+ * same files, each from the landing's after-state back to its before-state (the same modes and blob ids, swapped). Ancestry alone never says
  * this — an ordinary revert leaves the landing in the branch's history. Display only: it never undoes, lands or allows
  * anything. Anything git can't say (a timeout, too much output, more than 50 later commits to look at) claims nothing.
  */
@@ -888,7 +889,7 @@ export function revertedOnBranch(repo: string, ref: string, landing: { old: stri
   if (mine === null || mine.length === 0) return false;
   // The exact inverse: every file back from the landing's after-state to its before-state.
   const inverse = mine.map(key => { const [modes, path] = key.split("\t"); const [m1, m2, s1, s2] = modes!.split(" "); return `${m2} ${m1} ${s2} ${s1}\t${path}`; }).sort().join("\n");
-  const later = read(repo, ["log", "--no-show-signature", "--no-merges", "-n", "50", "--format=%x01%H", "--raw", "--no-renames", "--no-abbrev", "--no-ext-diff", "--no-textconv", `${landing.commit}..${ref}`]);
+  const later = read(repo, ["log", "--no-show-signature", "--no-merges", "--ancestry-path", "-n", "50", "--format=%x01%H", "--raw", "--no-renames", "--no-abbrev", "--no-ext-diff", "--no-textconv", `${landing.commit}..${ref}`]);
   if (later === null) return false;
   return later.split("\u0001").slice(1).some(entry => changes(entry.slice(entry.indexOf("\n") + 1))?.join("\n") === inverse);
 }

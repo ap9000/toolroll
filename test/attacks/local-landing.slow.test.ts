@@ -753,6 +753,20 @@ describe("already on main (everyday-9 A3): recognised for display, never grantin
     expect(landingOf(store, "t")).toMatchObject({ undone: false });
   });
 
+  test("a merged side branch that never saw the landing holds the same inverse change: not a revert (review round 1)", async () => {
+    built("t", { "a.txt": "two\n" });
+    const before = at();
+    const { landed } = await landNow("t");
+    if (landed?.ok !== true || landed.handoff !== null) throw new Error(JSON.stringify(landed));
+    // A side branch from before the landing: one→two, then two→one (the exact inverse of the landing's change).
+    const two = git(repo, "commit-tree", `${landed.commit}^{tree}`, "-p", before, "-m", "side: two");
+    const back = git(repo, "commit-tree", `${before}^{tree}`, "-p", two, "-m", "side: back to one");
+    // Merged into main, keeping the landing's files: the landing still stands.
+    const merge = git(repo, "commit-tree", `${landed.commit}^{tree}`, "-p", landed.commit, "-p", back, "-m", "merge side");
+    git(repo, "update-ref", "refs/heads/main", merge);
+    expect(landedStanding(store, "t", readGit)).toEqual({ words: `Landed on main (${landed.commit.slice(0, 7)}).`, reverted: false });
+  });
+
   test("recognition never grants acceptance: work not accepted stays not accepted, and Land still refuses it", async () => {
     const { head } = built("t", { "a.txt": "two\n" }, { complete: false });
     git(repo, "update-ref", "refs/heads/main", head);
