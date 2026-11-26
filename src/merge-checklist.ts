@@ -12,10 +12,10 @@ import { releaseCiHoldOf, releaseCiRunningOf } from "./release-ci-hold.js";
 import { isRevisionFeedback } from "./result-review.js";
 import { approvalOf, deployGateScope } from "./scope.js";
 import { shipChecksForTask, type Store } from "./store.js";
-import { approvedCheckStateOf, requirementWordOf } from "./task-status.js";
+import { approvedCheckStateOf, completedByOf, requirementWordOf } from "./task-status.js";
 import { projectCheckSet } from "./check-levels.js";
 import { projectName } from "./project.js";
-import { landingHistoryOf, publishesThroughPullRequests } from "./local-landing.js";
+import { LAND_HANDOFF, LAND_INTENT, landingHistoryOf, publishesThroughPullRequests } from "./local-landing.js";
 import { recentGitReads, type GitRead, type TaskBaseView } from "./task-base.js";
 
 /** The bounded git reads a checklist's landing history uses (display only, answers kept for a moment). */
@@ -31,11 +31,32 @@ export function landedNowOf(store: Store, assignment: AssignmentSnapshot, read: 
   return history !== null && history.landed ? { words: history.words, reverted: history.reverted } : null;
 }
 
+/** Each listed task's landing words ("Landed on main (abc1234)", no closing period) when its accepted work is on its
+ * branch, for a list (the workbench's rows, `toolroll task list`): one ledger read for every row, then the landing history
+ * (landedNowOf's) only for a row Toolroll landed or handed a landing commit for. Work a person merged by hand with no
+ * Toolroll landing is said on its own page only. Display only. */
+export function landedRowsOf(store: Store, rows: readonly { rootId: string; repo: string | null; resultRunId: number | null; assignmentState: string }[],
+  read: GitRead = landingReads): Map<string, string> {
+  const out = new Map<string, string>();
+  const done = rows.filter(one => one.assignmentState === "complete" && one.repo !== null && one.resultRunId !== null);
+  if (done.length === 0) return out;
+  const ids = [...new Set(done.map(one => one.rootId))];
+  const touched = new Set(store.handle.prepare(`SELECT DISTINCT task_id FROM action_ledger WHERE action IN (?, ?) AND task_id IN (${ids.map(() => "?").join(",")})`)
+    .all(LAND_INTENT, LAND_HANDOFF, ...ids).map(row => String(row["task_id"])));
+  for (const one of done) {
+    if (!touched.has(one.rootId) || publishesThroughPullRequests(store, one.repo!)) continue;
+    const history = landingHistoryOf(store, one.repo!, one.rootId, store.getRun(one.resultRunId!)?.headRevision ?? null, read);
+    if (history !== null && history.landed) out.set(one.rootId, history.words.replace(/\.$/, ""));
+  }
+  return out;
+}
+
 export const CHECKLIST_KEYS = ["plan", "build", "checks", "requirements", "pull-request", "pr-ci", "up-to-date", "conflicts", "comments", "release"] as const;
 export type ChecklistKey = (typeof CHECKLIST_KEYS)[number];
 /** yes: done; no: in the way (with its act when one exists); waiting: under way, nothing to do yet; unknown: Toolroll
- * keeps no record of it; skip: doesn't apply to this task. */
-export type ChecklistMark = "yes" | "no" | "waiting" | "unknown" | "skip";
+ * keeps no record of it; note: a fact worth seeing that is not in the way (no check is set: Land doesn't need one);
+ * skip: doesn't apply to this task. */
+export type ChecklistMark = "yes" | "no" | "waiting" | "unknown" | "note" | "skip";
 /** The existing act a blocker carries. `fix`: Send back, with `note` as its feedback (empty: send the saved notes). */
 export type ChecklistAct = { kind: "run-checks"; run: number } | { kind: "retry"; taskId: string } | { kind: "fix"; run: number; note: string };
 export type ChecklistRow = { key: ChecklistKey; label: string; mark: ChecklistMark; say: string; act: ChecklistAct | null };
@@ -96,6 +117,9 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
   const head = receipt?.head ?? null;
   const rows: ChecklistRow[] = [];
   const row = (key: ChecklistKey, mark: ChecklistMark, say: string, act: ChecklistAct | null = null) => rows.push({ key, label: CHECKLIST_LABELS[key], mark, say, act });
+  // Accepted: a person's acceptance of this result is on record (a completion is history: it stays when its checks run
+  // again later). It answers every "You check" requirement, as Land reads it; checks and main still count (below).
+  const accepted = assignment.state === "complete" && assignment.completion !== null;
 
   // Plan approved: the approval as dispatch reads it.
   if (scope === null) row("plan", "no", "There's no plan yet.");
@@ -116,15 +140,17 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
     { kind: "fix", run: receipt.runId, note: `The project checks failed on ${short(head)}${receipt.checks.exitCode === null ? "" : ` (exit ${receipt.checks.exitCode})`}. Fix them so they pass.` });
   else if (check === "running") row("checks", "waiting", "Running now.");
   else if (check === "off") row("checks", "waiting", "Checks are off for this project; they run at release.");
-  // No check command at all: Run checks could only refuse, so the row says how to set one instead.
+  // No check command at all: Run checks could only refuse, so the row says how to set one instead. Not in the way: Land
+  // lands work from a project with no check (local-landing.ts), and so does Accept.
   else if (check === "not-run" && assignment.repo !== null && !projectCheckSet(store, assignment.repo)) {
-    row("checks", "no", noCheckSetWords(assignment.repo));
+    row("checks", "note", noCheckSetWords(assignment.repo));
   }
   else row("checks", "no", check === "unreadable" ? "The check result couldn't be read." : check === "stale" ? "The check command changed since they ran on this commit." : "No check ran on this commit.", { kind: "run-checks", run: receipt.runId });
 
   // Requirements: the result's own blockers, as Accept reads them.
   const criteria = assignment.readiness?.blockers.filter(one => one.key === "criteria" || one.key === "high") ?? [];
   if (receipt === null) row("requirements", "waiting", "Waits for a build.");
+  else if (accepted) { const by = completedByOf(assignment.completion); row("requirements", "yes", by === null ? "Accepted." : `Accepted by ${by}.`); }
   else if (criteria.length > 0) row("requirements", "no", criteria[0]!.message, { kind: "fix", run: receipt.runId, note: criteria.map(one => one.message).join("\n") });
   else if (assignment.readiness?.verdict === "refuted") row("requirements", "no", "The result doesn't match its plan.", { kind: "fix", run: receipt.runId, note: "The result doesn't match its plan. Fix it so it does." });
   else {
@@ -190,7 +216,8 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
   const notes = run === null ? [] : store.liveDiffComments(run).filter(one => isRevisionFeedback(one));
   if (run === null) row("comments", "waiting", "Waits for a build.");
   else if (notes.length === 0) row("comments", "yes", "None open.");
-  else row("comments", "no", `${notes.length} note${notes.length === 1 ? "" : "s"} not sent back yet.`, { kind: "fix", run, note: "" });
+  // Accepted work lands without them (local-landing.ts): a saved note is still offered, never in the way.
+  else row("comments", accepted ? "note" : "no", `${notes.length} note${notes.length === 1 ? "" : "s"} not sent back yet.`, { kind: "fix", run, note: "" });
 
   // A release: its own check, as the release card reads it.
   if (scope !== null && deployGateScope(scope)) {
@@ -223,7 +250,7 @@ function resultBehindMain(repo: string, head: string | null, main: string | null
 /** The checklist as plain lines (the CLI, the lead, the TUI): the answer, then one line per row that applies. */
 export function checklistLines(list: MergeChecklist): string[] {
   if (list.answer === "landed") return [list.sentence];
-  const MARK: Readonly<Record<ChecklistMark, string>> = { yes: "✓", no: "✗", waiting: "…", unknown: "?", skip: "–" };
+  const MARK: Readonly<Record<ChecklistMark, string>> = { yes: "✓", no: "✗", waiting: "…", unknown: "?", note: "–", skip: "–" };
   return [`Can I merge ${list.activeTaskId}? ${list.sentence}`,
     // A blocker's act is a button on the task's page; in plain text it says where to find it, never a fake button.
     ...list.rows.filter(one => one.mark !== "skip").map(one => `  ${MARK[one.mark]} ${one.label}: ${one.say}${one.act === null ? "" : ` Next: ${CHECKLIST_ACT_LABELS[one.act.kind]}, on the task's page.`}`)];

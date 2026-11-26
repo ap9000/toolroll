@@ -105,7 +105,7 @@ import { applyProjectProfile, runProjectCommand } from "./project-cli.js";
 import { passwordFreeOwner, passwordFreeShell, passwordFreeShellWords, proveTaskBuildsStopped, pullRequestLines, runLocalCompletion, runLocalRevision, runTaskMergeCommand, runTaskOutcomeCommand, type ShellCaller } from "./task-outcome-cli.js";
 import { applyPendingAgentChanges, planAgainAsLocalOwner, requestPlanAsLocalOwner, retryAsLocalOwner } from "./local-owner-acts.js";
 import { withTaskAlias } from "./task-aliases.js";
-import { checklistLines, landedNowOf, mergeChecklistOf } from "./merge-checklist.js";
+import { checklistLines, landedNowOf, landedRowsOf, mergeChecklistOf } from "./merge-checklist.js";
 import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
 /**
  * The commands that actually move work: authoring tasks, and the claim loop.
@@ -333,7 +333,8 @@ import { workIndexPage, workIndexTask, WorkIndexCursorError, type WorkIndexPage 
 import { readExecutorOf } from "./read-executor.js";
 import { parseWorkView } from "./workspace-ui.js";
 import { taskWorkSummaryOf } from "./work-summary.js";
-import { assignmentOf, assignmentBrief, syncAssignmentHandoffs } from "./assignment.js";
+import { assignmentOf, assignmentBrief, syncAssignmentHandoffs, type AssignmentSnapshot } from "./assignment.js";
+import { completedByOf } from "./task-status.js";
 import { createScheduledFlow, describeSchedule, parseSchedule } from "./flow-schedule.js";
 import { fileTaskProposal, validateTaskText } from "./proposal.js";
 import { TEMPLATES, templateByName } from "./templates.js";
@@ -10154,7 +10155,9 @@ function listTasks(flags: Map<string, string | true>, context: Context): number 
     return fail(write, json, 'task list', 'usage', 'Invalid page cursor. Start again without --cursor.', EXIT.usage);
   };
   const show = (page: WorkIndexPage): number => {
-    const tasks = page.items.map(item => ({ ...item, id: item.rootId }));
+    // Complete work already on its branch carries where it landed (display only), as the workbench's rows do.
+    const landed = landedRowsOf(store, page.items);
+    const tasks = page.items.map(item => ({ ...item, id: item.rootId, ...(landed.has(item.rootId) ? { landed: landed.get(item.rootId)! } : {}) }));
     if (json) {
       write(envelopeJson({ ok: true, command: 'task list', count: tasks.length, tasks,
         totals: page.totals, nextCursor: page.nextCursor, limit: page.limit, view: page.view, evidence: 'recorded' }));
@@ -10162,7 +10165,13 @@ function listTasks(flags: Map<string, string | true>, context: Context): number 
     }
     if (tasks.length === 0) write(wanted === undefined ? 'The task list is empty.' : `Nothing is ${wanted}.`);
     const width = Math.max(0, ...tasks.map(task => task.id.length));
-    for (const task of tasks) write(task.archived === undefined ? `  ${task.id.padEnd(width)}  ${task.status.label.padEnd(16)}  ${task.title}`
+    // The same short marks as the workbench's rows: where Complete work landed, and a check since acceptance that holds it.
+    const AFTER: Readonly<Record<string, string>> = { failed: 'checks failed after acceptance', stale: 'checks out of date', unreadable: "checks couldn't be read" };
+    const marks = (task: (typeof tasks)[number]): string => {
+      const said = [...('landed' in task ? [`${task.landed.charAt(0).toLowerCase()}${task.landed.slice(1)}`] : []), ...(task.check === undefined ? [] : [AFTER[task.check]!])];
+      return said.length === 0 ? '' : ` · ${said.join(' · ')}`;
+    };
+    for (const task of tasks) write(task.archived === undefined ? `  ${task.id.padEnd(width)}  ${task.status.label.padEnd(16)}  ${task.title}${marks(task)}`
       : `  ${task.id.padEnd(width)}  ${'Archived'.padEnd(16)}  ${task.title} — by ${task.archived.byKind === 'tidy' ? 'tidy' : task.archived.by}: ${task.archived.reason}`);
     if (page.nextCursor !== null) write(`Next page: --cursor ${page.nextCursor}`);
     return EXIT.ok;
@@ -10277,6 +10286,8 @@ function showTask(positional: readonly string[], context: Context): number {
     // One status word, the one every surface says (the raw lifecycle state stays in --json as `state`).
     `${task.id}  ${shared?.headline ?? detail.work?.status.label ?? task.state}${ref.deliverable === "report" ? "  (scout — delivers a report)" : ""}`,
     `  ${task.title}`,
+    // Where its work landed comes first, right under the title (the task page leads with it too).
+    ...(landedNow === null ? [] : [`  landing: ${landedNow}`]),
     ...(detail.work === null ? [] : [
       `  status: ${shared?.headline ?? detail.work.status.label}${shared === null ? "" : `${shared.headline === "On hold" ? " · " : " — "}${shared.sentence}`}`,
       // Accepted work has no "open the result" step left (stranger 13): the next line says only what is still to do.
@@ -10288,6 +10299,12 @@ function showTask(positional: readonly string[], context: Context): number {
     // gives every other surface, so the CLI and the console agree.
     ...(task.state !== "done" || detail.proofVerdict === null
       ? []
+      // Accepted (Complete): the person's yes is the check now, never a verdict still waiting (stranger 17).
+      : shared?.headline === "Complete" ? [
+          `  checked: ${acceptedWords(current?.completion ?? null)}`,
+          ...matrixWords(shownMatrix),
+          ...(detail.semanticCoverage === null ? [] : coverageWords(detail.semanticCoverage).map(line => `  ${line}`)),
+        ]
       : [
           `  checked: ${proofVerdictWords(current?.receipt?.runId === latestFinished?.id ? current?.readiness?.verdict ?? detail.proofVerdict : detail.proofVerdict, detail.proofReasons).word}${detail.proofAccepted ? " (accepted)" : ""}`,
           ...(shownReasons.length > 0 ? [`    ${shownReasons.map(plainReasonWords).join(" ")}`] : []),
@@ -10304,7 +10321,6 @@ function showTask(positional: readonly string[], context: Context): number {
           ]
         : [`  report: ${detail.report.problem} (build #${detail.report.run})`]),
     ...pullRequestLines(detail.pullRequest),
-    ...(landedNow === null ? [] : [`  landing: ${landedNow}`]),
     ...(base === null ? [] : [`  base: ${baseStandingWords(base, landedNow !== null)}`]),
     ...(detail.blockedBy.length > 0 ? [`  waits for ${detail.blockedBy.join(", ")}`] : []),
     ...(detail.position === null
@@ -16070,3 +16086,11 @@ function verifyRepoOf(store: Store, raw: string): string {
 
 /** Where landing works on an install with no password yet (everyday-9 C3). */
 const LAND_NEEDS_PASSWORD = "Land it from the workbench (B) or the task page in the browser; from a shell it needs a Toolroll password (`toolroll password set`).";
+
+/** `task show`'s checked line for Complete work: who accepted it ("accepted by sam"), or that Toolroll completed it
+ * because its work landed. */
+function acceptedWords(completion: AssignmentSnapshot["completion"]): string {
+  if (completion?.landed !== undefined) return `accepted automatically: ${completion.landed}`;
+  const by = completedByOf(completion);
+  return by === null ? "accepted" : `accepted by ${by}`;
+}

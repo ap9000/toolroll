@@ -294,6 +294,8 @@ pub struct Item {
     pub waiting: Option<toolroll_api::Waiting>,
     /// Complete work whose check since it was accepted failed, is out of date or can't be read (Work's `check`).
     pub check: Option<String>,
+    /// Complete work already on its branch: "Landed on main (abc1234)" (Work's `landed`).
+    pub landed: Option<String>,
 }
 
 impl Item {
@@ -682,12 +684,19 @@ pub fn current_build_of(steps: &StepCards) -> Option<i64> {
 /// A build's attempt number on its task (1: the task's first build), from the build card's builds, newest first. The
 /// console's build ids count across every task, so a person reads this one: a task's first build is "attempt 1".
 pub fn attempt_of(steps: &StepCards, run: i64) -> Option<usize> {
-    let runs = &steps
+    // Every build of the task, its revisions' included (the task page numbers its results the same); an older console
+    // sends only this version's builds, on its build card.
+    let card = &steps
         .cards
         .iter()
         .flatten()
         .find(|c| c.key == "build")?
         .runs;
+    let runs = if steps.family_builds.is_empty() {
+        card
+    } else {
+        &steps.family_builds
+    };
     match runs.iter().position(|r| *r == run) {
         Some(at) => Some(runs.len() - at),
         // The live build before the card lists it: the next attempt.
@@ -1807,6 +1816,21 @@ impl App {
         self.selected_item()
             .filter(|i| i.is_task && !i.thread && i.section == Section::Recent && i.tone == "done")
             .map(|i| i.id.clone())
+    }
+
+    /// The selected task's work already on its branch, said as a fact for Land: "Already landed on main (abc1234)." (a later
+    /// commit that reverted it is said as the task page says it). None when its step cards don't say it landed.
+    pub fn landed_here(&self) -> Option<String> {
+        let landing = self.steps_here()?.landing.as_ref()?;
+        let words = clean(&landing.words);
+        let words = words.trim_end_matches('.');
+        if words.is_empty() {
+            return None;
+        }
+        Some(match words.strip_prefix("Landed ") {
+            Some(rest) if !landing.reverted => format!("Already landed {rest}."),
+            _ => format!("{words}."),
+        })
     }
 
     /// What Run checks again posts for the selected task: its task, the build and the level its step cards offer (when its
@@ -5406,6 +5430,12 @@ impl App {
                 }
             },
             Action::Land => match self.land_here() {
+                // Already on its branch: a plain fact, never a refusal (its step cards say where it landed).
+                Some(_) if self.landed_here().is_some() => {
+                    let words = self.landed_here().unwrap_or_default();
+                    self.say(Tone::Said, &words);
+                    vec![]
+                }
                 Some(task) => {
                     self.say(Tone::Said, "Reading what lands…");
                     self.act(
@@ -7576,6 +7606,7 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
         thread: false,
         waiting: r.waiting.clone(),
         check: r.check.clone(),
+        landed: r.landed.as_deref().map(clean),
     };
     for r in &rows.rows {
         let section = section_of(r);
@@ -7625,6 +7656,7 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
                 thread: false,
                 waiting: None,
                 check: None,
+                landed: None,
             });
         }
     }

@@ -1,5 +1,5 @@
 {
-  "digest": "ed0c176b6546bc4bae0b1f16d79568338812f2fda185cb7e870714f318dd3932",
+  "digest": "b908eaa0dd8b6d5352735401ee3ab0e741b8ba7188c424526b6671bf4b805ead",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -1085,6 +1085,9 @@
                   "unreadable"
                 ]
               },
+              "landed": {
+                "type": "string"
+              },
               "detail": {
                 "type": [
                   "string",
@@ -1712,6 +1715,14 @@
               "type": "null"
             }
           ]
+        },
+        "familyBuilds": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          }
         },
         "models": {
           "anyOf": [

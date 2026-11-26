@@ -295,6 +295,15 @@ pub fn build_wait(steps: &StepCards, card: &StepCard) -> Option<&'static str> {
     }
 }
 
+/// "Landed on main" → "landed on main": a fact inside a row's quiet second line.
+fn lower_first(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_lowercase().chain(c).collect(),
+        None => String::new(),
+    }
+}
+
 /// "Fix" → "Fix" ("attempt 2" → "Attempt 2").
 fn upper_first(s: &str) -> String {
     let mut c = s.chars();
@@ -314,6 +323,15 @@ fn facts_line(app: &App, steps: &StepCards, w: usize) -> Option<Line<'static>> {
         .flatten()
         .find(|c| c.key == "build" && (c.state == "current" || !c.runs.is_empty()))?;
     let mut parts = vec![];
+    // Work already on its branch: where it landed, the first fact under the title (the task page leads with it too).
+    let landed = steps
+        .landing
+        .as_ref()
+        .map(|l| clean(&l.words).trim_end_matches('.').to_string())
+        .filter(|l| !l.is_empty());
+    if let Some(landed) = &landed {
+        parts.push(landed.clone());
+    }
     let agent = card.agent.as_ref().map(|agent| {
         clean(&format!(
             "{} {}",
@@ -1214,6 +1232,10 @@ fn card_lines(
     // Complete work whose check since acceptance holds it back says so (only a failure is said as one).
     if let Some(words) = item.check.as_deref().and_then(after_check_words) {
         meta.insert(0, words.to_string());
+    }
+    // Complete work already on its branch says where it landed, first ("landed on main (abc1234)").
+    if let Some(landed) = item.landed.as_deref().filter(|l| !l.is_empty()) {
+        meta.insert(0, lower_first(landed));
     }
     if meta.is_empty() {
         meta.push(item.detail.clone());
@@ -2605,7 +2627,12 @@ fn layout_steps(
         }
         // The task's attempt, and the console's own build id beside it (here only: the details).
         if let Some(newest) = card.runs.first() {
-            let n = card.runs.len();
+            // A build's attempt counts every build of the task (attempt_of); a plan's, its own planning attempts.
+            let n = if card.key == "build" {
+                crate::app::attempt_of(steps, *newest).unwrap_or(card.runs.len())
+            } else {
+                card.runs.len()
+            };
             // A planning attempt is never a build: no build number on the Plan card.
             facts.push(if card.key == "plan" {
                 format!("plan attempt {n}")

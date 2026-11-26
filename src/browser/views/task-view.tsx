@@ -392,7 +392,7 @@ function ReleaseBox({ release }: { release: NonNullable<BrowserTaskView["release
  * own field and the person's own note starting empty; Run checks and Retry post exactly as their own boxes do. Nothing
  * here acts on its own. */
 function MergeReadyBox({ ready, retry }: { ready: NonNullable<BrowserTaskView["mergeReady"]>; retry: BrowserTaskView["retry"] }) {
-  const MARK: Readonly<Record<string, string>> = { yes: "✓", no: "✗", waiting: "…", unknown: "?" };
+  const MARK: Readonly<Record<string, string>> = { yes: "✓", no: "✗", waiting: "…", unknown: "?", note: "–" };
   const chip = ready.answer === "yes" || ready.answer === "merged" ? <KChip word={ready.answer === "merged" ? "Merged" : "Ready"} tone="done" />
     // "Not yet" is an answer, not a request: a plain chip (the ink one is only for what waits on the viewer).
     : <KChip word="Not yet" />;

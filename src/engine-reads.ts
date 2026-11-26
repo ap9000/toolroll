@@ -178,8 +178,18 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
     // check that ran again), out of date (its command changed) or unreadable. A terminal marks only a failure as one.
     ...(card?.status.check === "failed" || card?.status.check === "stale" || card?.status.check === "unreadable" ? { check: card.status.check } : {}),
     ...(() => { const offer = runChecksOfferOf(store, assignment, card?.status.check ?? null); return offer === null ? {} : { runChecks: offer }; })(),
+    // Every build of this task, its revisions' included, newest first: "attempt N" is the Nth of them, as the task page
+    // numbers its results (one count the person reads everywhere; the console's build ids count across tasks).
+    familyBuilds: familyBuildsOf(store, family, current.refId, runs),
     room: `task:${encodeURIComponent(root.id)}`,
   };
+}
+
+/** The builds of every version of a task, newest first (the current version's runs already read are reused). */
+function familyBuildsOf(store: Store, family: TaskFamily, currentRef: number, currentRuns: readonly Run[]): number[] {
+  const isBuild = (run: Run) => run.role === "builder" || run.role === "scout" || run.role === "repair";
+  return family.versions.flatMap(version => version.refId === currentRef ? currentRuns : store.runsFor(version.refId))
+    .filter(isBuild).map(run => run.id).sort((a, b) => b - a);
 }
 
 /** What Run checks again posts (POST /r/<run>/checks `level`, the task page's own Run checks): the current result's build
