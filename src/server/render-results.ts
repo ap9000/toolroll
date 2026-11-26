@@ -878,7 +878,7 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   const unanswered = accepted || youCheck == null ? [] : youCheck.items.length > 0 ? youCheck.items.map(one => one.statement === "" ? one.words : one.statement) : youCheck.lines;
   const base = !acceptsHere ? null : acceptWordsOf({
     // Checks Off that a release check already covers read as passed (release-coverage.ts).
-    checks: checks === undefined ? null : ({ passed: "passed", failed: "failed", running: "running", "not-run": "not-run", off: "off", unreadable: "unavailable" } as const)[approvedCheckStateOf(checks)!],
+    checks: checks === undefined ? null : ({ passed: "passed", failed: "failed", running: "running", "not-run": "not-run", off: "off", stale: "unavailable", unreadable: "unavailable" } as const)[approvedCheckStateOf(checks)!],
     // Release-aware words (task-status.ts): a requirement waiting only on a release check, or covered by one, isn't unmet.
     unmet: matrix.filter(row => !["Met", "You check", CHECKED_AT_RELEASE].includes(requirementWordOf(row, null, checks === undefined ? undefined : checkBackingOf(checks)))).length,
     action: complete !== null ? "complete" : "accept",

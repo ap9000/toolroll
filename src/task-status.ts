@@ -106,20 +106,24 @@ export function approvedCheckOf(verdict: string | null | undefined, reasons: rea
 }
 
 /** How the approved check reads, in one word every surface shares (from `approvedCheckOf`'s answer): `running` while a
- * check is underway on the commit, else what it recorded. `unreadable`: it couldn't be read or the records disagree. */
-export type ApprovedCheckState = "passed" | "failed" | "running" | "not-run" | "off" | "unreadable";
-export function approvedCheckStateOf(checks: Pick<ChecksFact, "status" | "level" | "release" | "running" | "batch"> | null | undefined): ApprovedCheckState | null {
+ * check is underway on the commit, else what it recorded. `stale`: its saved files are intact but the project's check
+ * command was approved again since it ran — out of date, never a failure. `unreadable`: it couldn't be read or the
+ * records disagree. Neither counts as passed. */
+export type ApprovedCheckState = "passed" | "failed" | "running" | "not-run" | "off" | "stale" | "unreadable";
+export function approvedCheckStateOf(checks: Pick<ChecksFact, "status" | "level" | "release" | "running" | "batch" | "cause"> | null | undefined): ApprovedCheckState | null {
   if (checks == null) return null;
   // A failure stands while a new check runs: only its result can change the answer. A check that couldn't be read (a
   // result waiting for its batch check has none yet) reads running while one is underway, and never passed.
   if (checks.status === "failed") return "failed";
   if (checksUnderway(checks) || checks.status === "running") return "running";
-  if (checks.status === "unavailable") return "unreadable";
+  if (checks.status === "unavailable") return checks.cause === "command-changed" ? "stale" : "unreadable";
   if (checks.status === "passed") return "passed";
   if (checks.level === "off") return checks.release != null ? "passed" : "off";
   return "not-run";
 }
 
+/** The road's Checks step for a check whose command was approved again since it ran: out of date, never a failure. */
+export const CHECKS_OUT_OF_DATE = "Checks out of date";
 /** A saved check that can't be read, in the words every surface uses. */
 export const CHECK_UNREADABLE = "The check result couldn't be read.";
 export const CHECK_UNREADABLE_ASK = `${CHECK_UNREADABLE} Run checks on it, or open the result to see why.`;
@@ -208,8 +212,10 @@ function resultAsk(facts: Pick<TaskStatusFacts, "report" | "checks" | "requireme
   if (blocker !== undefined) return blocker.message;
   const req = facts.requirements;
   if (req != null && facts.accepted !== true && req.unverified !== true && (req.yours > 0 || (req.unshown ?? 0) > 0) && req.ask != null) return req.ask;
-  // A check that can't be read is never a pass: a person runs it again or looks at why, unless they already accepted.
-  if (facts.accepted !== true && approvedCheckStateOf(facts.checks) === "unreadable") return unreadableAsk(facts.checks);
+  // A check that can't be read, or is out of date, is never a pass: a person runs it again or looks at why, unless they
+  // already accepted.
+  const check = approvedCheckStateOf(facts.checks);
+  if (facts.accepted !== true && (check === "unreadable" || check === "stale")) return unreadableAsk(facts.checks);
   return null;
 }
 

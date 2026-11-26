@@ -96,7 +96,7 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
   else if (check === "not-run" && assignment.repo !== null && !projectCheckSet(store, assignment.repo)) {
     row("checks", "no", noCheckSetWords(assignment.repo));
   }
-  else row("checks", "no", check === "unreadable" ? "The check result couldn't be read." : "No check ran on this commit.", { kind: "run-checks", run: receipt.runId });
+  else row("checks", "no", check === "unreadable" ? "The check result couldn't be read." : check === "stale" ? "The check command changed since they ran on this commit." : "No check ran on this commit.", { kind: "run-checks", run: receipt.runId });
 
   // Requirements: the result's own blockers, as Accept reads them.
   const criteria = assignment.readiness?.blockers.filter(one => one.key === "criteria" || one.key === "high") ?? [];

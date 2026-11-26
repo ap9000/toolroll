@@ -199,6 +199,9 @@ test("a task's road says only what happened: no Checks for a report, skipped che
   // A completion is history (everyday-9 C1): Ready stays done, and the check fact stands beside it, never done.
   expect(road({ stage: "complete" }, true, true, { checks: "unreadable" }).slice(3)).toEqual(["checks:stuck:Checks unreadable", "ready:done:Ready"]);
   expect(road({ stage: "complete" }, true, true, { checks: "failed" }).slice(3)).toEqual(["checks:stuck:Checks failed", "ready:done:Ready"]);
+  // A check command approved again since: out of date, its own word (never "unreadable", never a failure).
+  expect(road({ stage: "finished" }, true, true, { checks: "stale" }).slice(3)).toEqual(["checks:stuck!:Checks out of date", "ready:todo:Ready"]);
+  expect(road({ stage: "complete" }, true, true, { checks: "stale" }).slice(3)).toEqual(["checks:stuck:Checks out of date", "ready:done:Ready"]);
   expect(road({ stage: "finished" }, true, true, { checks: "failed" }).slice(3)).toEqual(["checks:stuck:Checks failed", "ready:todo:Ready"]);
   expect(road({ stage: "finished" }, true, true, { checks: "running" })[3]).toBe("checks:current:Checks running");
   expect(road({ stage: "finished" }, true, true, { checks: "passed" })[3]).toBe("checks:done:Checks");

@@ -17,7 +17,7 @@ export function acceptanceStatus(proof: { verdict: string; reasons: readonly str
   if (accepted) return manualReviewOnly(proof) ? "Accepted by a person" : "Accepted with an exception";
   if (manualReviewOnly(proof)) return "You check the remaining requirements";
   if (proof?.verdict === "verified" && check !== "passed") {
-    return check === undefined ? "Open the result to see its checks" : check === "failed" ? "Checks failed" : check === "running" ? "Checks running" : "The check result couldn't be read";
+    return check === undefined ? "Open the result to see its checks" : check === "failed" ? "Checks failed" : check === "running" ? "Checks running" : check === "stale" ? "The check command changed since they ran" : "The check result couldn't be read";
   }
   return proof === null ? "No checks recorded" : ({ verified: "Checks passed", attested: "Checks reported by the agent", short: "Some required material is missing", refuted: "Saved result doesn't match the approved plan" }[proof.verdict] ?? "Some required material is missing");
 }

@@ -929,6 +929,25 @@ export function recognisedOnBranch(store: Store, repo: string, rootId: string, c
   return { words: reverted ? `${where} · a later commit reverted it` : where, reverted };
 }
 
+/**
+ * A task's landing history: the one answer the task page, its "Can I merge?" checklist, its result's review controls,
+ * `task show` and the workbench read, kept apart from whether it could land now (everyday-9 E1). `landed`: its work is
+ * on the branch as Toolroll recorded it, or as Toolroll recognises it there (merged by hand, or its handed-off commit
+ * brought in: `recorded` false); `reverted`: a later commit exactly reverted it (revertedOnBranch). A landing undone
+ * through Toolroll reads "…, then undone." with `landed` false. `candidate` is the accepted result's commit (null when
+ * the task isn't complete: then only a recorded landing counts). Display only: it never lands, undoes or allows anything.
+ */
+export type LandingHistory = { words: string; landed: boolean; reverted: boolean; recorded: boolean };
+export function landingHistoryOf(store: Store, repo: string, rootId: string, candidate: string | null, read: GitLook): LandingHistory | null {
+  const record = landingOf(store, rootId);
+  if (record === null || record.undone) {
+    const onBranch = recognisedOnBranch(store, repo, rootId, candidate, read);
+    if (onBranch !== null) return { ...onBranch, landed: true, recorded: false };
+  }
+  const standing = landedStanding(store, rootId, read);
+  return standing === null ? null : { ...standing, landed: record !== null && !record.undone, recorded: true };
+}
+
 /** Whether a landing commit Toolroll handed the person is on its branch now (they brought it in) with no landing record
  * yet: the page offers Undo, whose yes records it as landed first (reconcileHandoff). Display only. */
 export function broughtInOnBranch(store: Store, repo: string, rootId: string, read: GitLook): boolean {

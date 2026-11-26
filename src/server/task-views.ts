@@ -1,5 +1,5 @@
 import { localOwnerRefusal } from "../local-owner.js";
-import { broughtInOnBranch, keptHandoffOf, landedStanding, landingOf, publishesThroughPullRequests, recognisedOnBranch } from "../local-landing.js";
+import { broughtInOnBranch, keptHandoffOf, landingHistoryOf, landingOf, publishesThroughPullRequests } from "../local-landing.js";
 import type { TaskLanding } from "./render-tasks.js";
 import { requestContext } from "./request-context.js";
 import { heldFindingCount } from "../findings.js";
@@ -778,10 +778,10 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     const person = who.via === "cookie" && who.role === "approver";
     // Already on the branch though Toolroll didn't land it (merged by hand, or its handed-off commit brought in): said,
     // with no Land. Display only (everyday-9 A3): it grants nothing.
-    const onBranch = record === null || record.undone ? recognisedOnBranch(runtime.store, repo, rootId, complete ? assignment?.receipt?.head ?? null : null, baseGit) : null;
+    const history = landingHistoryOf(runtime.store, repo, rootId, complete ? assignment?.receipt?.head ?? null : null, baseGit);
     // A later commit that exactly reverted it (the person's own revert) is said, and Undo, which would revert it again, isn't offered.
-    if (onBranch !== null) return { taskId: rootId, landed: onBranch.words, canLand: false, canUndo: person && !onBranch.reverted && broughtInOnBranch(runtime.store, repo, rootId, baseGit) };
-    const standing = landedStanding(runtime.store, rootId, baseGit);
+    if (history !== null && !history.recorded) return { taskId: rootId, landed: history.words, canLand: false, canUndo: person && !history.reverted && broughtInOnBranch(runtime.store, repo, rootId, baseGit) };
+    const standing = history;
     // A landing commit kept for the person's own merge (their folder had the branch checked out): its exact command,
     // read from the record, so a reload after Land still shows it.
     const kept = complete && (record === null || record.undone) ? keptHandoffOf(runtime.store, repo, rootId, assignment?.receipt?.head ?? null) : null;
