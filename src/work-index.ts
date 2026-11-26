@@ -615,7 +615,10 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
     'publication_url',(SELECT pr_url FROM publication WHERE run=page_result_id),
     'result_role',(SELECT role FROM run WHERE id=page_result_id),'result_head',(SELECT head_revision FROM run WHERE id=page_result_id),'live_role',(SELECT role FROM run WHERE id=page.live_run),
     'check_status',(SELECT status FROM run_check WHERE run=page_result_id),
-    'check_stale',CASE WHEN code='complete' THEN (SELECT vc.approved_at > r.started_at FROM verify_command vc JOIN run r ON r.id=page_result_id WHERE vc.repo IS page.repo AND vc.revoked_at IS NULL) END,
+    'check_stale',CASE WHEN code='complete' THEN (SELECT vc.approved_at > r.started_at AND NOT EXISTS (SELECT 1 FROM action_ledger q WHERE q.run_id=page_result_id AND q.action='checks requested'
+      AND EXISTS (SELECT 1 FROM verify_command cv WHERE cv.repo IN (page.repo,'quick:'||page.repo) AND cv.revoked_at IS NULL AND q.detail LIKE '% · '||cv.digest)
+      AND EXISTS (SELECT 1 FROM action_ledger f WHERE f.run_id=page_result_id AND f.action='checks finished' AND f.outcome LIKE q.id||':%'))
+      FROM verify_command vc JOIN run r ON r.id=page_result_id WHERE vc.repo IS page.repo AND vc.revoked_at IS NULL) END,
     'check_level',(SELECT outcome FROM ${kept ? 'led' : 'action_ledger'} WHERE repo IS page.repo AND run_id=page_result_id AND action='checks used' ORDER BY id DESC LIMIT 1),
     'check_follows',(SELECT json_group_array(q.outcome||' '||COALESCE((SELECT substr(f.outcome,instr(f.outcome,':')+1) FROM action_ledger f WHERE f.repo IS page.repo AND f.run_id=page_result_id
       AND f.action='checks finished' AND f.outcome LIKE q.id||':%' LIMIT 1),'open')) FROM (SELECT id,outcome FROM ${kept ? 'led' : 'action_ledger'} WHERE repo IS page.repo AND run_id=page_result_id AND action='checks requested' ORDER BY id) q),
@@ -754,14 +757,6 @@ function listChecksOf(own: 'passed' | 'failed' | null, level: string | null, fol
   const read = withFollowUps({ status: own ?? 'not-run', level: ran, exitCode: null, head: null }, done);
   if (own === null && read.status === 'not-run' && ran !== 'off' && read.running === null) return null;
   return { status: read.status, exitCode: null, head: null, level: read.level, running: read.running };
-}
-
-/** Whether any follow-up check (Run checks) on the row's result finished, passed or failed. */
-function followUpFinished(follows: unknown): boolean {
-  try {
-    return ((typeof follows === 'string' ? JSON.parse(follows) : Array.isArray(follows) ? follows : []) as unknown[])
-      .some(one => { const said = String(one).split(' ')[1]; return said === 'passed' || said === 'failed'; });
-  } catch { return false; }
 }
 
 type ReadinessFacts = Pick<TaskStatusFacts, 'requirements' | 'accepted' | 'blockers'> & { checks: ChecksFact | null };
@@ -962,10 +957,11 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   // Only a recorded check is a pass; a verdict alone isn't one (task-status.ts approvedCheckOf reads it with the receipt).
   const own = checkStatus === 'failed' || n(row, 'proof_failed_check') === 1 ? 'failed' as const : checkStatus === 'passed' ? 'passed' as const : null;
   const listed = !finished ? null : listChecksOf(own, s(row, 'check_level'), row['check_follows']);
-  // Complete work whose own check passed before its project's check command was approved again, with no check since:
-  // out of date (assignment.ts buildChecks' rule, verification-evidence.ts: the command approved after the build began),
-  // so the list says what the task page says, never a pass. Display only (everyday-9 E2).
-  const recordedChecks = code === 'complete' && own === 'passed' && n(row, 'check_stale') === 1 && listed?.status === 'passed' && listed.running == null && !followUpFinished(row['check_follows'])
+  // Complete work whose check passed before its project's check command was approved again, with no check since under
+  // the command as it stands now (a recheck that finished under an earlier command doesn't count): out of date
+  // (assignment.ts buildChecks' rule, verification-evidence.ts: the command approved after the build began), so the list
+  // says what the task page says, never a pass. Display only (everyday-9 E2).
+  const recordedChecks = code === 'complete' && n(row, 'check_stale') === 1 && listed?.status === 'passed' && listed.running == null
     ? { ...listed, status: 'unavailable' as const, cause: 'command-changed' as const } : listed;
   // A read without the evidence files claims no pass (unreadChecksOf); the readiness read below says the rest.
   const listedChecks = readable ? recordedChecks : unreadChecksOf(recordedChecks);

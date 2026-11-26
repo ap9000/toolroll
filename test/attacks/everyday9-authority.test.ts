@@ -265,7 +265,7 @@ describe("Run checks again from the workbench: the page's own act, over the term
   const requests = (runId: number) => world.store.handle.prepare("SELECT actor, detail FROM action_ledger WHERE action = 'checks requested' AND run_id = ?").all(runId).map(row => ({ ...row }));
   const steps = async (session: { cookie: string }, id: string) => JSON.parse((await world.send(`/t/${id}/steps`, "GET", { cookie: session.cookie, accept: "application/json" })).body) as { check?: string; runChecks?: { run: number; level: string } };
   /** The project's check command approved again after the result was built: its saved check is out of date. */
-  const commandChanged = () => world.store.setVerifyCommand({ repo: world.repo, command: "npm test -- --ci", timeoutMs: 300_000, approvedBy: "alex" }, new Date(Date.now() + 60_000));
+  const commandChanged = (command = "npm test -- --ci", later = 60_000) => world.store.setVerifyCommand({ repo: world.repo, command, timeoutMs: 300_000, approvedBy: "alex" }, new Date(Date.now() + later));
 
   test("the local owner: the step cards offer it on an out-of-date check, and the post asks once, as the local owner's request", async () => {
     const session = await world.localSession();
@@ -294,6 +294,14 @@ describe("Run checks again from the workbench: the page's own act, over the term
     commandChanged();
     expect(await row()).toMatchObject({ status: { label: "Complete" }, check: "stale" });
     expect(await steps(session, result.id)).toMatchObject({ check: "stale", runChecks: { run: result.runId } });
+    // Run again under the command as it stands, and passed: current again.
+    expect((await terminalAsk(session, result)).status).toBe(303);
+    const asked = Number(world.store.handle.prepare("SELECT id FROM action_ledger WHERE action = 'checks requested' AND run_id = ?").get(result.runId)!["id"]);
+    world.store.recordAction({ at: new Date().toISOString(), actor: "system", repo: world.repo, taskId: result.id, runId: result.runId, action: "checks finished", outcome: `${asked}:passed`, source: "work", detail: "" });
+    expect((await row())?.check).toBeUndefined();
+    // The command changed once more: that recheck ran under the earlier command, so it is out of date again (review round 1).
+    commandChanged("npm test -- --ci --strict", 120_000);
+    expect(await row()).toMatchObject({ status: { label: "Complete" }, check: "stale" });
   });
 
   test("a signed-in approver asks as themselves; a viewer, someone outside the project and an ended session ask for nothing", async () => {
