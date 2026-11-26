@@ -425,6 +425,8 @@ export type WorkFacts = {
   openDecision?: { id: number; runId: number; question: string; overdue: boolean } | null;
   /** Findings of this task's family that used their rounds and wait on a person (findings.ts). */
   heldFindings?: number;
+  /** Its family is complete now, read as the Work list reads it (work-summary.ts completionStands, everyday-9 C1). */
+  completed?: boolean;
 };
 
 export type WorkStatus = DisplayStatus & {
@@ -632,16 +634,24 @@ export function resultHeadlineOf<T extends DisplayStatus>(status: T): T {
 /** The one shared headline (task-status.ts) over the work status below: the
  * token, views, rank, action and diagnostics stay; the words and tone are
  * the eight headlines'. */
+/** What a saved completion yields to in the raw reading: an open question, held findings, a stop under way or paused. */
+const COMPLETION_YIELDS: ReadonlySet<string> = new Set(["waiting-decision", "finding-held", "stopping", "stopped"]);
+
 export function workStatusOf(facts: WorkFacts, resultDisplay?: DisplayStatus): WorkStatus {
   const status = workStatusWordsOf(facts, resultDisplay);
   const done = facts.state === "done" && status.token !== "waiting-decision";
   const read = done ? RESULT_NEEDS_YOU.has(status.token) ? { stage: "needs-you" as const, need: "other" as const } : stageOfCode(status.token, { needsPerson: false })
     : stageOfCode(status.token, { needsPerson: status.views.includes("needs-you"), planning: facts.dispatch?.code === "running" && facts.dispatch.role === "planner", operatorHold: facts.dispatch?.action === "unhold" });
-  const stage = done && read.stage !== "needs-you" && read.stage !== "failed" ? "finished" as const : read.stage;
+  // Complete is the saved completion's, as the Work list and the task page read it (everyday-9 C1): a result's own
+  // reading (Ready, or Needs you for a check it owes) never reopens it; a question, held findings or a stop under way
+  // still come first.
+  const complete = done && facts.completed === true && !COMPLETION_YIELDS.has(status.token) && (facts.control?.kind ?? "none") === "none";
+  const stage = complete ? "complete" as const : done && read.stage !== "needs-you" && read.stage !== "failed" ? "finished" as const : read.stage;
   const level = facts.result?.checkLevel ?? null;
   const shared = taskStatusOf({ stage, ...(read.need === undefined ? {} : { need: read.need }), ...(read.wait === undefined ? {} : { wait: read.wait }), reason: plainReasonOf(stage, status.token, status.detail),
-    report: facts.result?.role === "scout", ...(facts.machine === true ? { machine: true } : {}), checks: stage !== "finished" ? null : VERIFIED_RESULT.has(status.token) ? { status: "passed", exitCode: null, head: null, level }
+    report: facts.result?.role === "scout", ...(facts.machine === true ? { machine: true } : {}), checks: stage !== "finished" && stage !== "complete" ? null : VERIFIED_RESULT.has(status.token) ? { status: "passed", exitCode: null, head: null, level }
       : level === "off" ? { status: "not-run", exitCode: null, head: null, level } : null });
+  if (complete) return { ...status, label: shared.headline, tone: workToneOf(shared.headline), detail: shared.sentence, action: null, views: status.views.filter(view => view !== "needs-you"), rank: 3 };
   return { ...status, label: shared.headline, tone: workToneOf(shared.headline), detail: stage === "finished" && level !== "off" ? status.detail : shared.sentence };
 }
 

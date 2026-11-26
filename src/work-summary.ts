@@ -4,11 +4,13 @@
  * never credentials or permission to bypass an owning operation. */
 import { heldFindingCount } from "./findings.js";
 import { machineChecked } from "./machine-check.js";
-import { resultCheckLevel } from "./result-follow-ups.js";
+import { FOLLOW_UP_LOG, FOLLOW_UP_RECEIPT, resultCheckLevel } from "./result-follow-ups.js";
+import { COMPLETER_ACTOR, COMPLETION_ACTION } from "./result-completion.js";
+import { approvalOf } from "./scope.js";
 import { projectCheckSet } from "./check-levels.js";
 import { diagnoseTaskDispatch, type DispatchAction } from "./dispatch.js";
 import { isAlive } from "./runner.js";
-import type { Store } from "./store.js";
+import { refArchived, stopFactOf, type Store } from "./store.js";
 import { taskControlOf } from "./task-control.js";
 import { buildReviewOf } from "./review-switch.js";
 import { reviewFactsOf, workStatusOf, type DisplayStatus, type WorkFacts, type WorkStatus } from "./workspace-ui.js";
@@ -127,6 +129,7 @@ export function taskWorkSummaryOf(store: Store, taskId: string, now: Date, acces
   const publication = result === null ? null : store.publicationForRun(result.id);
   const facts: WorkFacts = {
     id: task.id, title: task.title, repo: ref.repo, state: task.state, updatedAt: task.updatedAt,
+    ...(task.state === "done" && completionStands(store, task.id, now) ? { completed: true } : {}),
     ...(machineChecked(store, task.id) ? { machine: true } : {}),
     dispatch: diagnoseTaskDispatch(store, taskId, now, access.dependencyRepos ?? null), liveRunId: live?.id ?? null,
     unfinishedRunId: runs.find(one => one.outcome === null && one.role !== "reviewer")?.id ?? null,
@@ -151,4 +154,51 @@ export function taskWorkSummaryOf(store: Store, taskId: string, now: Date, acces
     },
   };
   return workSummaryOf(facts, access.principal);
+}
+
+/**
+ * Whether `taskId`'s family is complete now, read as the Work list reads it (work-index.ts `ready` and `checked`), so
+ * this raw reading never says Ready or Needs you about work the list and the task page call Complete (everyday-9 C1,
+ * review round 1). The task is its family's current, finished version with a valid result, under approved terms whose
+ * digest is the result's, with no earlier version active, no unfinished run, live lease, hold, stop or unsettled
+ * custody; and a completer recorded the completion of that result after every change and saved file of the family (a
+ * follow-up check's own log and receipt aside: a check run later is a separate fact) and after its latest verdict and
+ * acceptance. Questions, held findings and a stop under way keep their precedence in workStatusOf. Grants nothing.
+ */
+export function completionStands(store: Store, taskId: string, now: Date): boolean {
+  try {
+    const family = store.taskFamilyOf(taskId, null, true);
+    if (family === null || family.problem !== null || family.current.id !== taskId || family.current.state !== "done") return false;
+    const current = family.current;
+    const runs = store.runsFor(current.refId);
+    const result = runs.find(run => run.finishedAt !== null && (run.role === "builder" || run.role === "scout"));
+    if (result === undefined || result.finishedAt === null) return false;
+    const valid = result.role === "scout" ? result.outcome === "built"
+      : (result.outcome === "built" || result.outcome === "no-change") && /^[0-9a-f]{40}$/.test(result.headRevision ?? "");
+    if (!valid) return false;
+    const scope = store.getScope(current.id);
+    if (scope === null || scope.termsProblem != null || !approvalOf(scope).approved || scope.digest !== result.scopeDigest) return false;
+    const busy = (refId: number) => store.currentLiveLease(refId, now) !== null || store.runsFor(refId).some(run => run.outcome === null && run.role !== "reviewer");
+    if (family.versions.some(version => version.id !== current.id && ((version.state === "queued" && !refArchived(store, version.refId)) || version.state === "running" || busy(version.refId)))) return false;
+    if (busy(current.refId) || store.activeHolds(current.refId, now).length > 0 || store.applicableStopFor(result.id) !== null) return false;
+    const custody = stopFactOf(store, result.id);
+    if (custody !== null && custody.kind !== "open") return false;
+    const ids = JSON.stringify(family.versions.map(version => version.id));
+    const one = (sql: string, ...values: (string | number)[]) => store.handle.prepare(sql).get(...values);
+    const updated = String(one("SELECT MAX(updated_at) AS v FROM task WHERE id IN (SELECT value FROM json_each(?))", ids)?.["v"] ?? "");
+    const changed = Number(one(`SELECT MAX(id) AS v FROM action_ledger WHERE task_id IN (SELECT value FROM json_each(?))
+      AND action IN ('task state changed','scope approved','task placed','run started','run finished')`, ids)?.["v"] ?? 0);
+    const saved = String(one(`SELECT MAX(ar.created_at) AS v FROM artifact ar JOIN run r ON r.id = ar.run JOIN task_ref tr ON tr.id = r.task_ref
+      WHERE tr.backend = 'built-in' AND tr.external_id IN (SELECT value FROM json_each(?))
+        AND NOT (ar.kind = 'structured-output' AND ar.capture IN (?, ?))`, ids, FOLLOW_UP_LOG, FOLLOW_UP_RECEIPT)?.["v"] ?? "");
+    const after = [updated, result.finishedAt, scope.approvedAt ?? "", scope.proposedAt ?? ""];
+    const rows = store.handle.prepare(`SELECT id, at, actor FROM action_ledger WHERE task_id = ? AND run_id = ? AND action = ? AND source = 'work'
+      AND repo IS ? AND length(outcome) = 64 AND outcome NOT GLOB '*[^a-f0-9]*' ORDER BY id DESC`).all(family.root.id, result.id, COMPLETION_ACTION, current.repo);
+    return rows.some(row => {
+      const at = String(row["at"]);
+      if (!COMPLETER_ACTOR.test(String(row["actor"])) || Number(row["id"]) < changed || at < saved || after.some(one => at < one)) return false;
+      return one("SELECT 1 AS hit FROM proof_verdict WHERE run = ? AND decided_at > ?", result.id, at) === undefined
+        && one("SELECT 1 AS hit FROM proof_acceptance WHERE run = ? AND accepted_at > ?", result.id, at) === undefined;
+    });
+  } catch { return false; }
 }

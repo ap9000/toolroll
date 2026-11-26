@@ -16,6 +16,7 @@ import { assignmentOf } from "./assignment.js";
 import { CHECKS_FINISHED, CHECKS_REQUESTED, FOLLOW_UP_LOG, FOLLOW_UP_RECEIPT } from "./result-follow-ups.js";
 import { workIndexPage, workIndexTask } from "./work-index.js";
 import { stepCardsOf } from "./engine-reads.js";
+import { taskWorkSummaryOf } from "./work-summary.js";
 import { mintCoordinator } from "./coordinator.js";
 import { assignmentStatusFacts, headlineOf } from "./task-status.js";
 
@@ -209,18 +210,25 @@ describe("a completion stays complete when the check command changes", () => {
     expect(cards.headline).toBe("Complete");
     expect(cards.cards?.find(card => card.key === "ready")?.state).toBe("done");
     expect(cards.cards?.find(card => card.key === "checks")?.sentence).toBe("The checks failed when they ran again");
+    // The raw work reading (work-summary.ts), which the task's other reads build on, says the same (review round 1).
+    const raw = taskWorkSummaryOf(store, "t-recheck", LATER, access)!;
+    expect(raw.status.label).toBe("Complete");
+    expect(raw.status.views).not.toContain("needs-you");
     // Something else saved on the result later is changed evidence: not covered by the completion, on any surface.
     storeEvidence(store, root(), runId, "structured-output", "other.json", Buffer.from("{}"), "something else", LATER, { captureStatus: "ok" });
     expect(snapshot("t-recheck").state).not.toBe("complete");
     expect(workIndexTask(store, "t-recheck", LATER, access, root())!.assignmentState).not.toBe("complete");
+    expect(taskWorkSummaryOf(store, "t-recheck", LATER, access)!.status.label).not.toBe("Complete");
   });
 
   test("changed scope or damaged evidence still reopens it", async () => {
     built("t-scope");
     await complete("t-scope");
     store.setVerifyCommand({ repo: REPO, command: "npm test", timeoutMs: 60_000, approvedBy: "alex" }, LATER);
+    expect(taskWorkSummaryOf(store, "t-scope", LATER, { principal: "operator", repos: [REPO] })!.status.label).toBe("Complete");
     propose(store, { taskId: "t-scope", goal: "Do something else", touches: ["src/b.ts"], acceptance: [{ id: "c1", statement: "it works", how: null, evidence: ["check"] }], now: LATER });
     expect(snapshot("t-scope").state).not.toBe("complete");
+    expect(taskWorkSummaryOf(store, "t-scope", LATER, { principal: "operator", repos: [REPO] })!.status.label).not.toBe("Complete");
 
     store.setVerifyCommand({ repo: REPO, command: "true", timeoutMs: 60_000, approvedBy: "alex" }, NOW);
     const runId = built("t-damaged");
