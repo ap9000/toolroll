@@ -413,13 +413,23 @@ public final class CanvasImageCache {
 public struct WindowGlassConfigurator: NSViewRepresentable {
     public init() {}
 
+    private func configure(_ window: NSWindow) {
+        if !window.styleMask.contains(.fullSizeContentView) {
+            window.styleMask.insert(.fullSizeContentView)
+        }
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        if window.isOpaque {
+            window.isOpaque = false
+            window.backgroundColor = .clear
+        }
+    }
+
     public func makeNSView(context: Context) -> NSView {
         let view = NSView()
         DispatchQueue.main.async { [weak view] in
             guard let window = view?.window else { return }
-            window.isOpaque = false
-            window.backgroundColor = .clear
-            window.titlebarAppearsTransparent = true
+            configure(window)
         }
         return view
     }
@@ -427,11 +437,7 @@ public struct WindowGlassConfigurator: NSViewRepresentable {
     public func updateNSView(_ nsView: NSView, context: Context) {
         DispatchQueue.main.async { [weak nsView] in
             guard let window = nsView?.window else { return }
-            if window.isOpaque {
-                window.isOpaque = false
-                window.backgroundColor = .clear
-                window.titlebarAppearsTransparent = true
-            }
+            configure(window)
         }
     }
 }
