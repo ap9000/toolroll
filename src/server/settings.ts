@@ -132,6 +132,9 @@ import { applySavedKnowledge,changeKnowledge,knowledgeVersion,knowledgeView,type
 import { changeLearning } from "../project-learning.js";
 import { listDecisions,recordDecision,retireDecision,searchMemory } from "../project-memory.js";
 import { changeSkills,githubSkill,importSkill,reviseSkillTest,skillsView,testSkill,type SkillFile } from "../project-skills.js";
+import { changeLibrarySkill, currentLibrary, dismissHeldBundleUpdate, enabledLibrarySkills, importGithubSkillBundle, importLibrarySkill, rollbackSkillBundle, setBundleAutoUpdate, setProjectSkillOptOut, skillLibraryView, sweepSkillBundleUpdates } from "../skill-library.js";
+import { LOCAL_SKILL_TOOLS, setLocalSkillSync, syncEnabledLocalTools, type LocalSkillTool } from "../skill-local-sync.js";
+import { skillLibrarySectionHtml } from "../skills-ui.js";
 import { signedIn } from "../oauth-run-token.js";
 import { addToolTo,catalogTool,localAppOf,removeToolFrom,setToolSecret,splitCommandLine,testToolOf,toolSecretStorage,type ToolSpec } from "../project-tools.js";
 import { liftAuthPause } from "../provider-auth.js";
@@ -346,12 +349,25 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const chosen = url.searchParams.get("repo") ?? project ?? projects[0] ?? "";
     if (chosen && !projects.includes(chosen)) return refuse(response,who,403,"That project is outside your access.","/projects");
     const selector = projectPicker("/settings/skills", projects.map(repo => ({ repo, name: projectName(repo) })), chosen);
-    let content: Html = html`<p>Add a project to manage its skills.</p>`;
+    const canManage = who.role === "approver";
+    const csrf = who.via === "cookie" ? who.session.csrf : "";
+    let globalContent: Html = html``;
+    try {
+      const libView = skillLibraryView(store, { repo: chosen || null });
+      globalContent = skillLibrarySectionHtml(libView, libView.localSync, csrf, canManage, {
+        repo: chosen,
+        said: url.searchParams.get("said"),
+        error: url.searchParams.get("problem"),
+      });
+    } catch (error) {
+      globalContent = html`<p class="problem" role="alert">${error instanceof Error ? error.message : "Global skill library is unavailable."}</p>`;
+    }
+    let content: Html = html`<p>Add a project to manage project-specific skills.</p>`;
     if (chosen) {
-      try { const agent=resolvePhaseAgent(store,'build',chosen,{});content = (skillsHtml(skillsView(store,chosen,who.name),who.via==='cookie'?who.session.csrf:'',who.role==='approver',{focus:url.searchParams.get('skill')??'',agent:agent.ok?`Report agent: ${agent.spec.provider} · ${agent.spec.model??'default'}. Change it on the test task before approval`:'Choose a report agent on the test task before approval'})); }
+      try { const agent=resolvePhaseAgent(store,'build',chosen,{});content = (skillsHtml(skillsView(store,chosen,who.name),csrf,canManage,{focus:url.searchParams.get('skill')??'',agent:agent.ok?`Report agent: ${agent.spec.provider} · ${agent.spec.model??'default'}. Change it on the test task before approval`:'Choose a report agent on the test task before approval'})); }
       catch(error) { content = html`<p class="problem" role="alert">${error instanceof Error?error.message:'Skills are unavailable. Reload to retry.'}</p>`; }
     }
-    return sendScreen(response,200,screen('Skills',settingsSubPage("agents", "Skills", html`${url.searchParams.get('saved')==='1'?html`<p role="status">Saved.</p>`:''}${selector}${content}`),{chrome:chromeFor(chosen||project,'settings'),functional:{script:skillsScript()}}));
+    return sendScreen(response,200,screen('Skills',settingsSubPage("agents", "Skills", html`${url.searchParams.get('saved')==='1'?html`<p role="status">Saved.</p>`:''}${globalContent}${selector}${content}`),{chrome:chromeFor(chosen||project,'settings'),functional:{script:skillsScript()}}));
   }
   async function toolsPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, project } = ctx;
@@ -2520,6 +2536,7 @@ ${postForm("/settings/chat-approval/save", html`\
     "settings.skills-revise": skillsRevise,
     "settings.skills-import": skillsAct("import"),
     "settings.skills-change": skillsAct("change"),
+    "settings.skills-library": skillsLibraryAct,
     "spend.budget": spendBudget,
     "settings.project-concurrency": projectConcurrency,
     "settings.project-live-view": projectLiveView,
@@ -3280,6 +3297,115 @@ ${postForm("/settings/chat-approval/save", html`\
       : html`<p>Pick a project.</p>${projectPicker(path, mine.map(repo => ({ repo, name: projectName(repo) })), "")}`;
     sendScreen(response, 200, screen(title, settingsSubPage("projects", title, body), { chrome: chromeFor(project, "projects") }));
     return null;
+  }
+  async function skillsLibraryAct(ctx: HandlerContext): Promise<void> {
+    const { response, posted } = ctx;
+    const who = browserCaller(ctx.who);
+    const body = readForm(posted, CONSOLE_FORMS.skillsLibrary);
+    const repo = body.get("repo") ?? "";
+    const backBase = repo ? `/settings/skills?repo=${encodeURIComponent(repo)}` : "/settings/skills";
+    const backWith = (key: "said" | "problem", msg: string) =>
+      redirect(response, `${backBase}${backBase.includes("?") ? "&" : "?"}${key}=${encodeURIComponent(msg)}`);
+    if (repo && (!visible(repo) || !consoleProjects().includes(repo))) {
+      return refuse(response, who, 403, "That project is outside your access.", "/projects");
+    }
+    const action = body.get("action") ?? "";
+    const now = clock();
+    try {
+      let said = "Saved.";
+      if (action === "import-bundle") {
+        const res = await importGithubSkillBundle(store, {
+          url: body.get("url") ?? "",
+          actor: who.name,
+          autoUpdate: body.get("autoUpdate") === "1",
+        }, now);
+        said = `Imported ${res.importedCount} skill${res.importedCount === 1 ? "" : "s"} from ${res.bundle.owner}/${res.bundle.repoName} (${res.bundle.pinnedCommit.slice(0, 12)}).`;
+      } else if (action === "import-skill") {
+        const method = body.get("method") ?? "paste";
+        let files: SkillFile[], source: string;
+        if (method === "paste") {
+          files = [{ path: "SKILL.md", base64: Buffer.from(body.get("content") ?? "").toString("base64") }];
+          source = "Global library (pasted SKILL.md)";
+        } else if (method === "folder") {
+          files = JSON.parse(body.get("files") ?? "[]") as SkillFile[];
+          source = "Global library (uploaded folder)";
+        } else if (method === "github") {
+          const imported = await githubSkill(body.get("url") ?? "");
+          files = imported.files;
+          source = imported.source;
+        } else {
+          throw Error("Choose how to add the skill.");
+        }
+        const saved = importLibrarySkill(store, { actor: who.name, files, source, enable: true }, now);
+        said = `Added ${saved.skill.name} to the global skill library.`;
+      } else if (action === "enable-skill" || action === "disable-skill") {
+        const revRaw = body.get("revision");
+        const revision = revRaw !== null && revRaw !== "" ? Number(revRaw) : currentLibrary(store).revision;
+        changeLibrarySkill(store, {
+          actor: who.name,
+          revision,
+          action: action === "enable-skill" ? "enable" : "disable",
+          sha: body.get("sha") ?? "",
+        }, now);
+        said = action === "enable-skill" ? "Skill enabled across all projects." : "Skill disabled globally.";
+      } else if (action === "project-opt-out") {
+        if (!repo) throw Error("Choose a project first.");
+        const skillName = body.get("skill") ?? "*";
+        const optOut = body.get("optedOut") === "1";
+        setProjectSkillOptOut(store, { repo, skillName, optOut, actor: who.name }, now);
+        said = skillName === "*"
+          ? (optOut ? "This project opted out of the global skill library." : "Global skill library re-enabled for this project.")
+          : (optOut ? `Opted this project out of ${skillName}.` : `Included ${skillName} in this project.`);
+      } else if (action === "sweep-bundle") {
+        const bundleId = body.get("bundle") ?? "";
+        const results = await sweepSkillBundleUpdates(store, { actor: who.name, ...(bundleId ? { onlyBundleId: bundleId } : {}), force: true, now });
+        const hit = results[0];
+        if (!hit) said = "No matching bundle found.";
+        else if (hit.status === "updated") {
+          said = `Updated bundle to ${hit.commit?.slice(0, 12) ?? "latest"}.`;
+        } else if (hit.status === "held") {
+          said = `Held update (${hit.commit?.slice(0, 12) ?? "latest"}) for review: ${(hit.reasons ?? []).join(" ")}`;
+        } else if (hit.status === "up-to-date" || hit.status === "skipped-recent") {
+          said = "Bundle is already up to date.";
+        } else {
+          throw Error(hit.error ?? "Bundle update check failed.");
+        }
+      } else if (action === "apply-held") {
+        const bundleId = body.get("bundle") ?? "";
+        const results = await sweepSkillBundleUpdates(store, { actor: who.name, onlyBundleId: bundleId, allowSuspiciousForId: bundleId, force: true, now });
+        const hit = results[0];
+        if (hit?.status === "error") throw Error(hit.error ?? "Could not apply held update.");
+        said = hit?.status === "updated" ? `Applied held update (${hit.commit?.slice(0, 12) ?? ""}).` : "No held update to apply.";
+      } else if (action === "dismiss-held") {
+        dismissHeldBundleUpdate(store, body.get("bundle") ?? "");
+        said = "Dismissed held update.";
+      } else if (action === "bundle-auto-update") {
+        const autoUpdate = body.get("autoUpdate") === "1";
+        setBundleAutoUpdate(store, body.get("bundle") ?? "", autoUpdate);
+        said = autoUpdate ? "Daily automatic updates enabled." : "Daily automatic updates paused.";
+      } else if (action === "rollback-bundle") {
+        const rolled = rollbackSkillBundle(store, { id: body.get("bundle") ?? "", actor: who.name }, now);
+        said = `Rolled back ${rolled.bundle.owner}/${rolled.bundle.repoName} to ${rolled.bundle.pinnedCommit.slice(0, 12)}.`;
+      } else if (action === "local-sync") {
+        const tool = body.get("tool") ?? "";
+        if (!LOCAL_SKILL_TOOLS.includes(tool as LocalSkillTool)) throw Error("Unknown local tool.");
+        const enabled = body.get("enabled") === "1";
+        const lib = enabledLibrarySkills(store);
+        const res = setLocalSkillSync(store, { tool: tool as LocalSkillTool, enabled, actor: who.name, skills: lib.packages, libraryRevision: lib.revision }, now);
+        said = enabled && res
+          ? `Synced ${res.written.length} skill${res.written.length === 1 ? "" : "s"} to ${tool}${res.skippedForeign.length ? ` (left ${res.skippedForeign.length} of your own skills untouched)` : ""}.`
+          : `Turned off local sync for ${tool} and removed Toolroll-managed skills.`;
+      } else if (action === "local-sync-now") {
+        const lib = enabledLibrarySkills(store);
+        const synced = syncEnabledLocalTools(store, { actor: who.name, skills: lib.packages, libraryRevision: lib.revision }, now);
+        said = synced.length ? "Local tool skill folders synced." : "No local tools have sync enabled.";
+      } else {
+        throw Error("Choose a supported skill library action.");
+      }
+      return backWith("said", said);
+    } catch (error) {
+      return backWith("problem", error instanceof Error ? error.message : "Could not update the skill library.");
+    }
   }
   return { registrations, modelsView };
 }

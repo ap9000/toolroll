@@ -727,8 +727,10 @@ export async function beginFlexibleThreadTurn(store: Store, sessions: FlexibleSe
     exited: listener => { child.once("exit", listener); }, ...clocked });
   if (!attached.ok) return attached;
   session.title ??= cardText(input.message.split("\n")[0], 80) || null;
-  // The agent is fresh: it gets the conversation so far from Toolroll's records, quoted, ahead of the person's message.
-  const handed = await conversationFor(store, { thread: turn.thread, turn: input.turn, seq: turn.seq, message: input.message });
+  // The agent is fresh: it gets the conversation so far from Toolroll's records, quoted, ahead of the person's message,
+  // plus any pinned skills materialized into the thread's read-only home folder.
+  const baseHanded = await conversationFor(store, { thread: turn.thread, turn: input.turn, seq: turn.seq, message: input.message });
+  const handed = started.skillsPrompt ? `${started.skillsPrompt}\n${baseHanded}` : baseHanded;
   session.records.push({ k: "you", at: (input.clock ?? systemClock)().toISOString(), t: saidLines(input.message) });
   try { session.agent?.stdin.write(`${userFrame(handed, randomUUID())}\n`); } catch { /* its exit settles the turn */ }
   bump(sessions, turn.thread);

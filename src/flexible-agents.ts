@@ -34,6 +34,8 @@ import { flexibleThread, flexibleThreadFence, flexibleThreadSpawn, stopFlexibleT
 import { beginFlexibleTurn, finishFlexibleTurn, flexibleTurn, interruptFlexibleTurnsOf, withdrawFlexibleTurn, withdrawFlexibleTurnsAbove, type FlexibleClock, type FlexibleTurnRefusal } from "./flexible-turns.js";
 import { CLAUDE_BUILD_ISOLATION_ARGV, HEADLESS_DISALLOWED_TOOLS } from "./provider.js";
 import type { ProtectedStorage } from "./protected-storage.js";
+import { effectiveSkillsForRepo, materializeProjectSkills } from "./project-skills.js";
+import { formatSkillsBrief } from "./skill-library.js";
 import type { Store } from "./store.js";
 
 export type FlexibleAgentRefusal = { ok: false; reason: "not-available" | "codex-unsupported" | "invalid-request" | "level-pending" | "not-owner" | "not-lower" | "thread-unknown" | "stale-generation"; message: string };
@@ -102,7 +104,7 @@ export type FlexibleTurnStartInput = {
 /** Test seams (parameters, never settings): the spawn's own, and `exitSettled`, told when the stop a launch's own exit
  * set off has answered (so a test waits on that fact, never on time). */
 export type FlexibleTurnSeams = FlexibleThreadSpawnSeams & { exitSettled?: (launch: string, settled: SettleResult | FlexibleThreadRefusal | null) => void };
-export type FlexibleTurnStarted = { ok: true; launched: "started"; launchId: string; pid: number; child: ChildProcess; stopWatching: () => void };
+export type FlexibleTurnStarted = { ok: true; launched: "started"; launchId: string; pid: number; child: ChildProcess; stopWatching: () => void; skillsPrompt?: string };
 
 /** Why a begun turn may no longer open its agent's start gate, or null: re-checked under the lock at the last moment. */
 function stillMayStart(store: Store, turnId: string, holder: string): string | null {
@@ -190,6 +192,20 @@ async function startLocked(store: Store, input: FlexibleTurnStartInput): Promise
       outcome: "refused", detail: `thread ${turn.thread} · turn ${turn.id} · ${providerProblem}` });
     return { ok: false, reason: "setup-failed", message: "The agent's configuration folder isn't the one Toolroll made, so it didn't start. Nothing was removed." };
   }
+  // Materialize pinned skills (global library + project selection) into the thread's read-only home folder so the
+  // agent can read them inside its existing read-only boundary without widening the fence.
+  let skillsDir: string | null = null;
+  let skillsPrompt = "";
+  try {
+    const snapshot = effectiveSkillsForRepo(store, turn.repo);
+    if (snapshot.packages.length > 0) {
+      const supplied = materializeProjectSkills(snapshot, join(fenced.paths.home, "skills"), turn.id.slice(0, 16));
+      skillsDir = supplied.directory;
+      skillsPrompt = formatSkillsBrief(supplied.catalog, "Skills supplied for this thread. ");
+    }
+  } catch {
+    // Skills unavailable: the turn still runs cleanly without them.
+  }
   // The relay grant is issued for exactly the launch once it has its id (its variables come with it); everything else
   // of the agent's environment is known now.
   let endpoint: FlexibleRelayEndpoint | null = null;
@@ -197,7 +213,7 @@ async function startLocked(store: Store, input: FlexibleTurnStartInput): Promise
     endpoint = input.relay.issue({ thread: turn.thread, turn: turn.id, launch: launchId });
     const spec = flexibleAgentLaunch(turn.provider, turn.level, { model: turn.model, relay: { url: relayInside, token: endpoint.token }, configHome });
     if (!spec.ok) throw new Error(spec.message);
-    return spec.spec.env;
+    return skillsDir === null ? spec.spec.env : { ...spec.spec.env, TOOLROLL_SKILLS_DIR: skillsDir };
   };
   const spawned = await flexibleThreadSpawn(store, { id: turn.thread, network, storage: input.storage,
     proxyEnv: input.network.proxyEnv, agentEnvFor, launch: { provider: turn.provider, level: turn.level, turn: turn.id, holder: input.holder },
@@ -221,7 +237,7 @@ async function startLocked(store: Store, input: FlexibleTurnStartInput): Promise
     void stopFlexibleThreadAgent(store, { id: turn.thread, reason: "its agent exited", expect: { launch: launchId, holder: input.holder }, ...(input.seams?.io === undefined ? {} : { io: input.seams.io }) })
       .then(settled => { input.seams?.exitSettled?.(launchId, settled); }, () => { input.seams?.exitSettled?.(launchId, null); /* a later stop or recovery settles it */ });
   });
-  return { ok: true, launched: "started", launchId: spawned.launchId, pid: spawned.pid, child: spawned.child, stopWatching };
+  return { ok: true, launched: "started", launchId: spawned.launchId, pid: spawned.pid, child: spawned.child, stopWatching, ...(skillsPrompt !== "" ? { skillsPrompt } : {}) };
 }
 
 // ---- lowering a thread's level -----------------------------------------------------------------------------------------------
