@@ -14606,7 +14606,9 @@ async function newTaskCommand(positional: readonly string[], flags: Map<string, 
   if (fromLink !== undefined) return importTaskCommand(fromLink, flags, context, name);
   const words = positional.join(" ").trim();
   const repo = text(flags, "repo");
-  if (words === "" || repo === undefined) return fail(write, json, command, "usage", "`toolroll task new \"<what should change>\" --repo <project>`", EXIT.usage);
+  // Each missing part said on its own (everyday-9 E5): what should change, or which project (no folder is guessed).
+  if (words === "") return fail(write, json, command, "usage", `Say what should change: \`toolroll task new "<what should change>" --repo ${repo ?? "<project>"}\``, EXIT.usage);
+  if (repo === undefined) return fail(write, json, command, "usage", "Name the project it's for with --repo (its folder, or `--repo .` for the one you're in): `toolroll task new \"<what should change>\" --repo <project>`", EXIT.usage);
   const placed = canonicalProject(repo) ?? resolve(repo);
   // A password given on this command (`--token`) is checked before anything is shown, whatever the mode: a wrong one
   // files nothing and says so (review round 1). With a password set and Passwordless off, Build takes a password given

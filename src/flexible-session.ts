@@ -1539,7 +1539,7 @@ export async function flexibleThreadChanges(store: Store, input: { thread: strin
 
 /** Said beside Ship's refusal on a project that can't take a Ship (everyday 9, B1): Save as branch works there. */
 function saveInsteadWords(thread: string): string {
-  return `To use its work now, save it as a branch in your repository instead (S on the thread in \`toolroll\`, or \`toolroll thread save ${thread.slice(0, 8)}\`).`;
+  return `To use its work now, save it as a branch in your repository instead (S on the thread, or \`toolroll thread save ${thread.slice(0, 8)}\`).`;
 }
 
 /** Whether the thread's agent edited files in what this console holds of it (an `edit` step in its records): for the

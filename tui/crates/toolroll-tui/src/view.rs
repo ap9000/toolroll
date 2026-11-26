@@ -3732,8 +3732,10 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
         } else {
             if !ended {
                 v.push((&[Steer], "reply"));
+                // An ended thread's footer offers Save (it works everywhere), never Ship (everyday-9 E5): whether its
+                // project can take a Ship is the console's to say, as End's own words do.
+                v.push((&[Accept], "ship"));
             }
-            v.push((&[Accept], "ship"));
             v.push((&[ThreadSave], "save"));
         }
         if !ended {

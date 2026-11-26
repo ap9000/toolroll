@@ -275,8 +275,9 @@ fn an_added_file_shown_whole_draws_no_more_lines_below() {
     };
     // The patch says the whole file (2 lines): nothing hidden after it.
     assert_eq!(gaps(&file(Some(2))), 0);
-    // Not known (a changed file): the marker stays, as before.
-    assert_eq!(gaps(&file(None)), 1);
+    // Not known, but the patch shows the file ends there (no context after its change, everyday-9 E5): nothing
+    // hidden after it either. A change followed by a full three lines of context keeps the marker (review.rs tests).
+    assert_eq!(gaps(&file(None)), 0);
 }
 
 #[test]
