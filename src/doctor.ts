@@ -26,7 +26,7 @@ import { run as runCommand } from "./exec.js";
 import { OWN_KEY_ENV } from "./keys.js";
 import { processIdentityProblem } from "./process-identity.js";
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
-import { SANDBOX_RUNTIME, sandboxRuntimeProblem, sandboxRuntimeRepair, sandboxRuntimeWords } from "./sandbox-runtime.js";
+import { SANDBOX_RUNTIME, sandboxAdviceLines, sandboxRuntimeDiagnosis, sandboxRuntimeWords, UNCONFINED_OPT_IN } from "./sandbox-runtime.js";
 
 /** Something that holds a credential a build could read, by name only, and what the owner does about it. */
 export type DoctorFinding = { where: string; names: string[]; steps: string[] };
@@ -35,7 +35,7 @@ export type DoctorUnreadable = { where: string; problem: string; steps: string[]
 export type DoctorReport = { ok: boolean; checked: string[]; findings: DoctorFinding[]; unreadable: DoctorUnreadable[]; notes: string[];
   /** The sandbox every build runs in (sandbox-runtime.ts): Anthropic's sandbox-runtime, its version, and why it can't
    * sandbox here (null when it can). */
-  sandbox?: { engine: string; version: string; problem: string | null; repair?: string[] };
+  sandbox?: { engine: string; version: string; problem: string | null; kind?: string; repair?: string[] };
   /** Agent installs Toolroll won't run for their sign-in check (a trust failure), each with its repair in words. */
   agents?: { name: string; problem: string }[];
   /** The installed git against Toolroll's floor (git-floor.ts): null when it is new enough (or unreadable). */
@@ -420,7 +420,8 @@ export function doctorLines(report: DoctorReport): string[] {
     gap.steps.forEach((step, index) => lines.push(`  ${index + 1}. ${step}`));
   }
   for (const note of report.notes) lines.push("", `Note: ${note}`);
-  if (report.sandbox !== undefined) lines.push("", `Sandbox: ${sandboxRuntimeWords()}${report.sandbox.problem === null ? ", working here." : `, not available here: ${report.sandbox.problem}. Builds don't start unless an instance operator allows unconfined agents.`}`);
+  const optIn = report.sandbox?.repair?.includes(UNCONFINED_OPT_IN) === true;
+  if (report.sandbox !== undefined) lines.push("", `Sandbox: ${sandboxRuntimeWords()}${report.sandbox.problem === null ? ", working here." : `, not available here: ${report.sandbox.problem}. Builds don't start ${optIn ? "here." : "unless an instance operator allows unconfined agents."}`}`);
   if (report.sandbox?.repair !== undefined && report.sandbox.repair.length > 0) lines.push(...report.sandbox.repair);
   for (const agent of report.agents ?? []) lines.push("", `${agent.name}: ${agent.problem}`);
   if (report.checked.length > 0) lines.push("", "Checked:", ...report.checked.map(one => `  ${one}`));
@@ -438,8 +439,8 @@ export async function runDoctorCommand(argv: readonly string[], write: (line: st
     return 2;
   }
   const report = await auditServiceEnvironment(deps);
-  const problem = sandboxRuntimeProblem();
-  report.sandbox = { engine: SANDBOX_RUNTIME.name, version: SANDBOX_RUNTIME.version, problem, ...(problem === null ? {} : { repair: sandboxRuntimeRepair() }) };
+  const diagnosis = sandboxRuntimeDiagnosis();
+  report.sandbox = { engine: SANDBOX_RUNTIME.name, version: SANDBOX_RUNTIME.version, problem: diagnosis.ok ? null : diagnosis.why, ...(diagnosis.ok ? {} : { kind: diagnosis.kind, repair: sandboxAdviceLines(diagnosis) }) };
   report.agents = await (deps.agentProblems ?? (() => agentTrustProblems(deps.env ?? process.env, deps.uid ?? process.getuid?.() ?? -1)))();
   // A git older than the floor: named here too, and the console and worker won't start on it.
   report.git = { floor: GIT_FLOOR_WORDS, problem: deps.gitFloorProblem === undefined ? installedGitFloorProblem() : deps.gitFloorProblem };

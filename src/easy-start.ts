@@ -433,11 +433,12 @@ export function defaultEasyStartSeams(options: {
       remote: (await import("./local-owner.js")).localOwnerRequested(),
     }),
     sandbox: async () => {
-      const { missingLinuxSandboxTools, sandboxRuntimeProblem, sandboxRuntimeRepair } = await import("./sandbox-runtime.js");
-      if (process.platform !== "linux") return { missing: [], problem: sandboxRuntimeProblem() };
-      const missing = missingLinuxSandboxTools();
-      const problem = missing.length > 0 ? null : sandboxRuntimeProblem();
-      return { missing, problem, repair: problem === null ? [] : sandboxRuntimeRepair() };
+      const { missingLinuxSandboxTools, sandboxAdviceLines, sandboxRuntimeDiagnosis } = await import("./sandbox-runtime.js");
+      const missing = process.platform === "linux" ? missingLinuxSandboxTools() : [];
+      if (missing.length > 0) return { missing, problem: null };
+      // Why, by kind: a trust failure's exact repair, or what the probe said, its evidenced cause and the remedies.
+      const diagnosis = sandboxRuntimeDiagnosis();
+      return diagnosis.ok ? { missing, problem: null } : { missing, problem: diagnosis.why, repair: sandboxAdviceLines(diagnosis) };
     },
     prerequisites: async () => (await import("./preflight.js")).startPrerequisites(),
     passwordByLaptopStart: () => {

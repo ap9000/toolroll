@@ -62,31 +62,132 @@ const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
  * still can, so it proves nothing). */
 export const SEATBELT_PROBE = "(version 1)(deny default)(allow process-exec)(allow process-fork)(allow file-read*)(allow sysctl-read)(allow mach-lookup)";
 
+/**
+ * Why the runtime can't sandbox here, as a kind: a program missing, one that fails its trust check, a processor the
+ * runtime ships no helper for, a probe that couldn't start or didn't finish, or a sandbox the system denied. A denial
+ * names its cause only with evidence this machine shows (a readable setting); otherwise the cause is unknown. `detail`:
+ * the probe's own words, bounded.
+ */
+export type SandboxDiagnosis = { ok: true } | { ok: false; kind: "unsupported-platform" | "missing-tool" | "trust" | "unsupported-arch" | "launch-error" | "timeout" | "sandbox-denied"; why: string; detail?: string; cause?: SandboxDenialCause | null };
+/** A cause shown by a setting this machine lets Toolroll read, with what an administrator can do about it. */
+export type SandboxDenialCause = { words: string; fix: string };
+
+/** What the probe reads besides running bubblewrap (a test's stand-in). */
+export type SandboxIo = { read?: (file: string) => string; exists?: (file: string) => boolean };
+
+const DETAIL_MAX = 300;
+/** A probe's output, kept short and on one line (it may carry anything: never more than this). */
+const bounded = (text: string): string => text.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, DETAIL_MAX);
+
 /** Why the runtime can't sandbox here, or null when it can (checked before every launch; nothing runs bare). */
 export function sandboxRuntimeProblem(platform: NodeJS.Platform = process.platform): string | null {
+  const diagnosis = sandboxRuntimeDiagnosis(platform);
+  return diagnosis.ok ? null : diagnosis.why;
+}
+
+/** sandboxRuntimeProblem, as a kind with its evidence (see SandboxDiagnosis). */
+export function sandboxRuntimeDiagnosis(platform: NodeJS.Platform = process.platform, io: SandboxIo = {}): SandboxDiagnosis {
   if (platform === "darwin") {
-    if (!existsSync(SANDBOX_EXEC)) return "this Mac has no sandbox-exec";
-    const probe = spawnSync(SANDBOX_EXEC, ["-p", SEATBELT_PROBE, "/usr/bin/true"], { timeout: 5_000, stdio: "ignore" });
-    return probe.status === 0 ? null : "sandbox-exec can't start a sandbox here (is this already inside one?)";
+    if (!existsSync(SANDBOX_EXEC)) return { ok: false, kind: "missing-tool", why: "this Mac has no sandbox-exec" };
+    const probe = spawnSync(SANDBOX_EXEC, ["-p", SEATBELT_PROBE, "/usr/bin/true"], { timeout: 5_000, stdio: ["ignore", "ignore", "pipe"], encoding: "utf8" });
+    return probe.status === 0 ? { ok: true } : { ok: false, kind: "sandbox-denied", why: "sandbox-exec can't start a sandbox here (is this already inside one?)", detail: bounded(probe.stderr ?? "") };
   }
   if (platform === "linux") {
     // The programs it needs, named with the line that installs them (LINUX_SANDBOX_TOOLS), before anything else.
     const missing = missingLinuxSandboxTools();
-    if (missing.length > 0) return `${toolWords(missing)} ${missing.length === 1 ? "is" : "are"} not installed (${linuxSandboxInstallLine(missing)})`;
+    if (missing.length > 0) return { ok: false, kind: "missing-tool", why: `${toolWords(missing)} ${missing.length === 1 ? "is" : "are"} not installed (${linuxSandboxInstallLine(missing)})` };
     // Each program the sandbox runs, by a path Toolroll trusts (never a PATH lookup): none, and no sandbox starts.
     const resolved = linuxSandboxTools();
-    if (!resolved.ok) return resolved.why;
+    if (!resolved.ok) {
+      const kind = /isn't available for this processor/.test(resolved.why) ? "unsupported-arch" : /has no copy owned by root/.test(resolved.why) ? "missing-tool" : "trust";
+      return { ok: false, kind, why: resolved.why };
+    }
     const { tools } = resolved;
     const paths = { bwrapPath: tools.bwrap.real, socatPath: tools.socat.real, seccompConfig: { applyPath: tools.seccomp.real } };
     const checked = checkLinuxDependencies(paths);
-    if (checked.errors.length > 0) return checked.errors.join("; ");
-    if (!getLinuxDependencyStatus(paths).hasSeccompApply) return "the sandbox runtime's seccomp helper isn't available for this processor";
+    if (checked.errors.length > 0) return { ok: false, kind: "launch-error", why: checked.errors.join("; ") };
+    if (!getLinuxDependencyStatus(paths).hasSeccompApply) return { ok: false, kind: "unsupported-arch", why: "the sandbox runtime's seccomp helper isn't available for this processor" };
     // The runtime finds nested protected names (a subfolder's .git/hooks, .vscode, shell profiles) with ripgrep.
-    if (spawnSync(tools.rg.real, ["--version"], { timeout: 5_000, stdio: "ignore" }).status !== 0) return `ripgrep (${tools.rg.real}) doesn't run`;
-    const probe = spawnSync(tools.bwrap.real, ["--ro-bind", "/", "/", "--unshare-pid", "--unshare-user", "--proc", "/proc", "--new-session", "--", "true"], { timeout: 5_000, stdio: "ignore" });
-    return probe.status === 0 ? null : "bubblewrap can't start a sandbox here (unprivileged user namespaces may be off)";
+    if (spawnSync(tools.rg.real, ["--version"], { timeout: 5_000, stdio: "ignore" }).status !== 0) return { ok: false, kind: "launch-error", why: `ripgrep (${tools.rg.real}) doesn't run` };
+    // The probe runs as this user, with Toolroll's own checked bubblewrap: what a launch needs (a user and pid namespace).
+    const probe = spawnSync(tools.bwrap.real, ["--ro-bind", "/", "/", "--unshare-pid", "--unshare-user", "--proc", "/proc", "--new-session", "--", "true"], { timeout: 5_000, stdio: ["ignore", "ignore", "pipe"], encoding: "utf8", maxBuffer: 64 * 1024 });
+    if (probe.status === 0) return { ok: true };
+    const detail = bounded(probe.stderr ?? "");
+    const code = (probe.error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ETIMEDOUT") return { ok: false, kind: "timeout", why: "bubblewrap didn't finish starting a sandbox in time", detail };
+    if (probe.error !== undefined) return { ok: false, kind: "launch-error", why: `bubblewrap (${tools.bwrap.real}) couldn't be started (${code ?? "error"})`, detail };
+    const cause = userNamespaceCause(io);
+    return { ok: false, kind: "sandbox-denied", cause, detail,
+      why: cause === null ? "this system denied the user namespace the sandbox needs; the cause isn't visible from inside this machine" : `this system denied the user namespace the sandbox needs: ${cause.words}` };
   }
-  return `the sandbox runtime has no sandbox for ${platform}`;
+  return { ok: false, kind: "unsupported-platform", why: `the sandbox runtime has no sandbox for ${platform}` };
+}
+
+/**
+ * Why this Linux denies an unprivileged user namespace, only from a setting it lets this user read (null otherwise:
+ * EPERM, a container marker or a seccomp filter alone can't tell seccomp from AppArmor from anything else).
+ */
+export function userNamespaceCause(io: SandboxIo = {}): SandboxDenialCause | null {
+  const read = (file: string): string | null => { try { return (io.read ?? (one => readFileSync(one, "utf8")))(file).trim(); } catch { return null; } };
+  if (read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") === "1") return {
+    words: "AppArmor restricts unprivileged user namespaces on this computer (kernel.apparmor_restrict_unprivileged_userns = 1)",
+    fix: "An administrator can give bubblewrap an AppArmor profile that allows user namespaces (a profile for /usr/bin/bwrap with `userns,`), rather than lifting the restriction for every program.",
+  };
+  if (read("/proc/sys/kernel/unprivileged_userns_clone") === "0") return {
+    words: "unprivileged user namespaces are turned off (kernel.unprivileged_userns_clone = 0)",
+    fix: "An administrator can turn them on: `sudo sysctl -w kernel.unprivileged_userns_clone=1`, kept in a file under /etc/sysctl.d/.",
+  };
+  if (read("/proc/sys/user/max_user_namespaces") === "0") return {
+    words: "user namespaces are turned off (user.max_user_namespaces = 0)",
+    fix: "An administrator can allow them: `sudo sysctl -w user.max_user_namespaces=15000`, kept in a file under /etc/sysctl.d/.",
+  };
+  return null;
+}
+
+/** Whether this looks like a container (a marker file, or a seccomp filter on this process): only to word the advice. */
+function looksContained(io: SandboxIo): boolean {
+  const exists = io.exists ?? existsSync;
+  if (exists("/.dockerenv") || exists("/run/.containerenv")) return true;
+  try { return /^Seccomp:\s*2$/m.test((io.read ?? (one => readFileSync(one, "utf8")))("/proc/self/status")); } catch { return false; }
+}
+
+/**
+ * What a person can do when the sandbox can't start, as lines (none for a missing program: its install line says it,
+ * and a trust failure: its repair does). An administrator's targeted policy first; weakening a container's own
+ * protection only as the last, said so; then the existing opt-in, which runs agents without OS confinement and stays an
+ * instance operator's logged choice (never automatic, refused in local mode).
+ */
+export function sandboxRemedyLines(diagnosis: SandboxDiagnosis, io: SandboxIo = {}): string[] {
+  if (diagnosis.ok || diagnosis.kind === "missing-tool" || diagnosis.kind === "trust") return [];
+  const lines: string[] = [];
+  if (diagnosis.kind === "sandbox-denied" && diagnosis.cause != null) lines.push(diagnosis.cause.fix);
+  else if (diagnosis.kind === "sandbox-denied" && looksContained(io)) {
+    lines.push("In a container (Docker, a devcontainer, Codespaces) its seccomp or AppArmor profile usually denies user namespaces: an administrator can allow them with a profile for this container. Starting it with `--security-opt seccomp=unconfined --security-opt apparmor=unconfined` also works, but weakens the container's own protection.");
+  }
+  if (diagnosis.kind === "unsupported-arch") lines.push("This processor has no sandbox helper: Toolroll's sandbox runs on 64-bit Intel/AMD (x64) and ARM (arm64) Linux.");
+  lines.push(UNCONFINED_OPT_IN);
+  return lines;
+}
+
+/** The existing opt-in, as every surface names it: an instance operator's choice, never automatic. */
+export const UNCONFINED_OPT_IN = "Or an instance operator can let agents run without OS confinement: `toolroll config unconfined-agents allow` (their password, logged; refused while Toolroll runs without a password).";
+
+/** The lines after "the sandbox isn't available here": a trust failure's exact repair, else what the probe said and the
+ * remedies (sandboxRemedyLines). None when it works or a program is missing (its install line is in the reason). */
+export function sandboxAdviceLines(diagnosis: SandboxDiagnosis, io: SandboxIo = {}): string[] {
+  if (diagnosis.ok || diagnosis.kind === "missing-tool") return [];
+  if (diagnosis.kind === "trust") return sandboxRuntimeRepair();
+  return [...diagnosis.detail === undefined || diagnosis.detail === "" ? [] : [`(${diagnosis.kind === "sandbox-denied" || diagnosis.kind === "timeout" ? "bubblewrap" : "it"} said: ${diagnosis.detail})`], ...sandboxRemedyLines(diagnosis, io)];
+}
+
+/**
+ * The refusal when nothing can confine `what` ("an agent", "the build's commands"): why (the diagnosis, never "install"
+ * when the programs are installed), what fixes it, and the opt-in. Read now, on the refusal's own path.
+ */
+export function noConfinementWords(what: string, done: string, diagnosis: SandboxDiagnosis = sandboxRuntimeDiagnosis()): string {
+  const why = diagnosis.ok ? "its sandbox isn't available to this run" : diagnosis.why;
+  const fix = diagnosis.ok || diagnosis.kind === "missing-tool" ? "" : diagnosis.kind === "trust" ? " `toolroll doctor` prints the exact fix." : diagnosis.kind === "sandbox-denied" && diagnosis.cause != null ? ` ${diagnosis.cause.fix}` : "";
+  return `This machine can't confine ${what}, so ${done}: ${why}.${fix} ${UNCONFINED_OPT_IN}`;
 }
 
 /** Linux: when the sandbox's own seccomp helper fails its trust check, what fails and the exact repair, as lines

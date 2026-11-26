@@ -30,6 +30,22 @@ don't exist, and the sandbox needs all three. Until they're installed,
 `toolroll` says which are missing and doesn't start. See
 [Security](security.md).
 
+## When the sandbox can't start
+
+The sandbox needs unprivileged user namespaces. When the system denies one,
+`toolroll` and `toolroll doctor` say so, name the cause only when this
+machine shows it (Ubuntu's `kernel.apparmor_restrict_unprivileged_userns`,
+Debian's `kernel.unprivileged_userns_clone`, `user.max_user_namespaces`),
+and show what bubblewrap said. The fix belongs to whoever runs the
+computer: an AppArmor profile for `/usr/bin/bwrap` that allows `userns`, or
+turning the setting on. In a container (Docker, devcontainers, Codespaces),
+its seccomp or AppArmor profile usually denies it: allow user namespaces in
+a profile for that container. `--security-opt seccomp=unconfined
+--security-opt apparmor=unconfined` also works, but weakens the container's
+own protection. Without a sandbox, an instance operator can still let agents
+run without OS confinement with `toolroll config unconfined-agents allow`
+(their password; logged; not while Toolroll runs without a password).
+
 ## When Toolroll says a program "can't be trusted"
 
 Toolroll only runs its sandbox helper and your agents' sign-in checks from
