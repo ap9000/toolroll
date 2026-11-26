@@ -3572,9 +3572,22 @@ impl App {
         }
         self.tab = tab;
         match (tab, self.selected_id()) {
-            (Tab::Diff, Some(id)) if self.diff.is_none() => vec![self.ask_diff(id)],
+            (Tab::Diff, Some(id)) if self.diff.is_none() || !self.diff_is_waiting_result() => {
+                vec![self.ask_diff(id)]
+            }
             _ => vec![],
         }
+    }
+
+    /// Whether the kept diff is the selected task's result waiting now (everyday-9 E4): a revision that reached Ready
+    /// while another tab was open is a new result, and its own changes are read again, never the previous attempt's.
+    /// With no result waiting (a finished or running task), the kept diff stands.
+    fn diff_is_waiting_result(&self) -> bool {
+        let waiting = self
+            .steps_here()
+            .and_then(|s| s.review.as_ref())
+            .map(|r| r.run);
+        waiting.is_none() || self.diff.as_ref().map(|d| d.run) == Some(waiting)
     }
 
     // ---- keys ---------------------------------------------------------------------------------------------------

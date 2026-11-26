@@ -163,6 +163,9 @@ export type DirectChatDiffSummary = {
   changedFiles: string[];
   diffText: string;
   dirty: boolean;
+  /** The last read of the clone failed (its git binding didn't verify, or git refused): the files are what an earlier
+   * read saw, if any, never "no changes" (everyday-9 E4). */
+  unread?: boolean;
 };
 
 export type DirectChatStreamEvent =
@@ -768,10 +771,29 @@ async function defaultPrepareCloneAsync(input: { stateRoot: string; repo: string
   };
 }
 
+/** A read that couldn't say what changed: never the same answer as "no changes". */
+const UNREAD_DIFF: DirectChatDiffSummary = Object.freeze({ changedFiles: [], diffText: "", dirty: false, unread: true });
+
+/** A thread's saved diff (diff_cache_json) as read back: what its last read saw, and whether that read failed. */
+function diffCacheOf(raw: unknown): DirectChatDiffSummary {
+  if (typeof raw !== "string" || raw === "") return { changedFiles: [], diffText: "", dirty: false };
+  try {
+    const parsed = JSON.parse(raw) as Partial<DirectChatDiffSummary>;
+    return {
+      changedFiles: Array.isArray(parsed.changedFiles) ? parsed.changedFiles.filter((x): x is string => typeof x === "string") : [],
+      diffText: typeof parsed.diffText === "string" ? parsed.diffText : "",
+      dirty: parsed.dirty === true,
+      ...(parsed.unread === true ? { unread: true } : {}),
+    };
+  } catch {
+    return { changedFiles: [], diffText: "", dirty: false };
+  }
+}
+
 function defaultReadDiff(input: { binding: TrustedCloneBinding; baseSha: string }): DirectChatDiffSummary {
-  if (!existsSync(input.binding.clonePath)) return { changedFiles: [], diffText: "", dirty: false };
+  if (!existsSync(input.binding.clonePath)) return { ...UNREAD_DIFF };
   const verified = assertTrustedCloneGit(input.binding);
-  if (!verified.ok) return { changedFiles: [], diffText: "", dirty: false };
+  if (!verified.ok) return { ...UNREAD_DIFF };
   try {
     const statusLines = runTrustedCloneGit(input.binding, ["status", "--porcelain"])
       .split("\n")
@@ -799,7 +821,7 @@ function defaultReadDiff(input: { binding: TrustedCloneBinding; baseSha: string 
       dirty: allFiles.length > 0 || statusLines.length > 0,
     };
   } catch {
-    return { changedFiles: [], diffText: "", dirty: false };
+    return { ...UNREAD_DIFF };
   }
 }
 
@@ -1051,7 +1073,11 @@ export class DirectChatHost {
 
   refreshDiffCache(thread: DirectChatThreadRow): DirectChatDiffSummary {
     const binding = this.bindingOf(thread);
-    const diff = binding === null ? { ...EMPTY_DIFF } : this.readDiffFn({ binding, baseSha: thread.baseSha });
+    const read = binding === null ? { ...EMPTY_DIFF } : this.readDiffFn({ binding, baseSha: thread.baseSha });
+    // A read that failed never replaces what an earlier read saw with "no changes": the saved files stay, marked unread
+    // (everyday-9 E4: a first turn's changes were shown as none after a later read failed).
+    const saved = this.store.handle.prepare(`SELECT diff_cache_json FROM direct_chat_thread WHERE id = ?`).get(thread.id)?.["diff_cache_json"];
+    const diff: DirectChatDiffSummary = read.unread === true ? { ...diffCacheOf(saved), unread: true } : { changedFiles: read.changedFiles, diffText: read.diffText, dirty: read.dirty };
     this.store.handle
       .prepare(`UPDATE direct_chat_thread SET diff_cache_json = ? WHERE id = ?`)
       .run(JSON.stringify(diff), thread.id);
@@ -2276,19 +2302,7 @@ export class DirectChatHost {
         mainDirtyFiles = [];
       }
     }
-    let diffCache: DirectChatDiffSummary = { changedFiles: [], diffText: "", dirty: false };
-    if (typeof raw["diff_cache_json"] === "string" && raw["diff_cache_json"] !== "") {
-      try {
-        const parsed = JSON.parse(raw["diff_cache_json"]) as Partial<DirectChatDiffSummary>;
-        diffCache = {
-          changedFiles: Array.isArray(parsed.changedFiles) ? parsed.changedFiles.filter((x): x is string => typeof x === "string") : [],
-          diffText: typeof parsed.diffText === "string" ? parsed.diffText : "",
-          dirty: parsed.dirty === true,
-        };
-      } catch {
-        diffCache = { changedFiles: [], diffText: "", dirty: false };
-      }
-    }
+    const diffCache = diffCacheOf(raw["diff_cache_json"]);
     return {
       id: String(raw["id"]),
       owner: String(raw["owner"]),

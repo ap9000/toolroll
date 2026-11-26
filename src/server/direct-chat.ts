@@ -281,7 +281,8 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
       })),
       attachments: found.attachments.map(toArtifactView),
       ships,
-      diff: responseDiff,
+      // The contract's three facts (a failed read's mark is the page's to say).
+      diff: { changedFiles: responseDiff.changedFiles, diffText: responseDiff.diffText, dirty: responseDiff.dirty },
     } satisfies DirectChatDetail);
   }
 
@@ -648,8 +649,10 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
       turn.errorText === null ? "" : html`<p class="problem">${turn.errorText}</p>`}</section>`);
     const shownDiff = diff.diffText.length > DIFF_SHOWN ? `${diff.diffText.slice(0, DIFF_SHOWN)}\n… (shortened)` : diff.diffText;
     // The saved diff is the clone as of its last turn, said so: never presented as the files right now.
-    const changes = diff.changedFiles.length === 0 ? html`<p class="k-note">No changes in its copy of the project.</p>`
-      : html`<p class="k-note">${diff.changedFiles.length} ${diff.changedFiles.length === 1 ? "file" : "files"} changed in its own copy of the project, as of its last turn${running ? " (it's still working)" : ""}.</p><ul>${diff.changedFiles.map(file => html`<li class="k-mono">${file}</li>`)}</ul>${shownDiff === "" ? "" : html`<details><summary>The changes</summary><pre class="k-mono" data-direct-chat-diff>${shownDiff}</pre></details>`}`;
+    // A read that failed says so (everyday-9 E4): never "No changes"; what an earlier read saw stays listed.
+    const unread = diff.unread === true ? html`<p class="k-note" data-direct-chat-diff-unread>Toolroll couldn't read its copy of the project after its last turn${diff.changedFiles.length === 0 ? "" : ", so these are the changes it saw before"}.</p>` : "";
+    const changes = diff.changedFiles.length === 0 ? unread !== "" ? unread : html`<p class="k-note">No changes in its copy of the project.</p>`
+      : html`${unread}<p class="k-note">${diff.changedFiles.length} ${diff.changedFiles.length === 1 ? "file" : "files"} changed in its own copy of the project, as of its last turn${running ? " (it's still working)" : ""}.</p><ul>${diff.changedFiles.map(file => html`<li class="k-mono">${file}</li>`)}</ul>${shownDiff === "" ? "" : html`<details><summary>The changes</summary><pre class="k-mono" data-direct-chat-diff>${shownDiff}</pre></details>`}`;
     const ships = listDirectChatShips(store, thread.id);
     // A saved branch, as a thread's Save as branch says it: the exact merge to run in the project (its saved commit, so a
     // branch moved since never changes what it brings in; local-landing.ts gitCommand quotes the recorded folder).
