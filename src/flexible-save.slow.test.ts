@@ -6,10 +6,11 @@
  * Ship follows from the saved branch; and removing the thread's copy keeps the branch the person saved.
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { prepareFlexibleThread, removeFlexibleThread, type FlexibleThreadPaths, type FlexibleThreadRow } from "./flexible-thread.js";
-import { flexibleSaveDigestOf, saveFlexibleBranch } from "./flexible-save.js";
+import { flexibleSaveDigestOf, flexibleUncommittedFiles, saveFlexibleBranch } from "./flexible-save.js";
+import { LEFTOVER_COMMIT_MESSAGE } from "./flexible-import.js";
 import { flexibleShipsOf, flexibleShipTerms, mergeArmedFlexible, reconcileFlexibleShips, removeFlexibleImport, shipFlexible } from "./flexible-ship.js";
 import { canonicalJson } from "./canonical-json.js";
 import { enableFlexible, proposedFlexibleTerms } from "./flexible.js";
@@ -194,5 +195,96 @@ describe("Save as branch", () => {
     expect(await save()).toMatchObject({ ok: true, seq: 3, candidate: second });
     expect(branchAt()).toBe(second);
   });
-});
 
+  // Stranger 17: the thread's last edit was left uncommitted; after End, saving said "Already saved … nothing to merge"
+  // and the edit was never saved, with no word anywhere.
+  describe("edits the agent left uncommitted", () => {
+    const leave = (files: Record<string, string>) => { for (const [name, text] of Object.entries(files)) writeFileSync(join(paths.repo, name), text); };
+    const launch = (state: string) => store.handle.prepare(`INSERT INTO flexible_thread_launch (id, thread, provider, level, fence_digest, holder, host, marker, state, started_at)
+      VALUES (?, ?, 'claude', 'full', ?, 'h', 'here', ?, ?, ?)`).run("d".repeat(32), thread.id, "f".repeat(32), "9".repeat(32), state, NOW.toISOString());
+
+    test("with its agent stopped, saving commits them with the project's identity, after an earlier save too; then it's really already saved", async () => {
+      tgit(world.project, "config", "user.name", "Sam Stranger");
+      tgit(world.project, "config", "user.email", "sam@example.com");
+      const first = commit({ "math.js": "export const f1 = a => a;\n" });
+      expect(await save()).toMatchObject({ ok: true, already: false, candidate: first });
+      // The agent's next edit, never committed (the thread then ended: no launch is unsettled).
+      leave({ "math.js": "export const f1 = a => a;\nexport const f2 = a => a * 2;\n", "notes.md": "new file\n" });
+      expect(await flexibleUncommittedFiles(store, { thread: thread.id })).toEqual(["math.js", "notes.md"]);
+      const saved = await save();
+      expect(saved, JSON.stringify(saved)).toMatchObject({ ok: true, already: false, seq: 2, changedPaths: ["math.js", "notes.md"] });
+      if (!saved.ok) return;
+      expect(saved.candidate).not.toBe(first);
+      expect(saved.next).toMatch(/^It includes the edits the agent hadn't committed \(2 files\)\. To put it on /);
+      expect(branchAt()).toBe(saved.candidate);
+      expect(tgit(world.project, "rev-parse", `${saved.candidate}^`)).toBe(first);
+      expect(tgit(world.project, "show", "-s", "--format=%an <%ae>|%cn <%ce>|%B", saved.candidate)).toBe(`Sam Stranger <sam@example.com>|Sam Stranger <sam@example.com>|${LEFTOVER_COMMIT_MESSAGE.trim()}`);
+      expect(tgit(world.project, "show", `${saved.candidate}:math.js`)).toContain("f2");
+      // The thread's copy is clean and on its branch, as if the agent had committed; its placeholders stay out.
+      expect(tgit(paths.repo, "status", "--porcelain")).toBe("");
+      expect(tgit(world.project, "show", "--name-only", "--format=", saved.candidate).split("\n").sort()).toEqual(["math.js", "notes.md"]);
+      expect(await flexibleUncommittedFiles(store, { thread: thread.id })).toEqual([]);
+      // Nothing new now: already saved, with no note.
+      const again = await save();
+      expect(again).toMatchObject({ ok: true, already: true, candidate: saved.candidate });
+      if (again.ok) expect(again.next).not.toMatch(/uncommitted/);
+    });
+
+    test("with nothing committed at all, the uncommitted edits alone are saved", async () => {
+      leave({ "app.js": "console.log('changed');\n" });
+      const saved = await save();
+      expect(saved, JSON.stringify(saved)).toMatchObject({ ok: true, already: false, changedPaths: ["app.js"] });
+    });
+
+    test("while its agent may still write, they're only found and said, never committed", async () => {
+      const first = commit({ "math.js": "one\n" });
+      leave({ "math.js": "one\ntwo\n" });
+      launch("spawning");
+      const saved = await save();
+      expect(saved).toMatchObject({ ok: true, already: false, candidate: first });
+      if (saved.ok) expect(saved.next).toMatch(/^The agent's uncommitted edits \(1 file\) aren't in it while its agent is running: end the thread, then save again\. /);
+      expect(tgit(paths.repo, "status", "--porcelain")).toBe("M math.js");
+      expect(tgit(paths.repo, "rev-parse", "HEAD")).toBe(first);
+      // End's words don't read a copy its agent may still write.
+      expect(await flexibleUncommittedFiles(store, { thread: thread.id })).toEqual([]);
+      // Saving again isn't "already saved" in silence: the edits are said again.
+      const again = await save();
+      expect(again).toMatchObject({ ok: true, already: true });
+      if (again.ok) expect(again.next).toMatch(/uncommitted edits \(1 file\) aren't in it/);
+    });
+
+    // The thread's copy is the agent's (attacker input): committing what it left runs no command it planted.
+    test("a filter or hook planted in the thread's copy never runs: a config that names a command is refused, a hook is skipped", async () => {
+      const marker = join(world.dir, "ran");
+      const first = commit({ "a.txt": "one\n" });
+      writeFileSync(join(paths.repo, ".git", "hooks", "pre-commit"), `#!/bin/sh\ntouch '${marker}'\n`, { mode: 0o755 });
+      writeFileSync(join(paths.repo, ".git", "hooks", "post-commit"), `#!/bin/sh\ntouch '${marker}'\n`, { mode: 0o755 });
+      leave({ "a.txt": "one\ntwo\n" });
+      // A hook alone: the commit is made, and no hook ran.
+      const saved = await save();
+      expect(saved, JSON.stringify(saved)).toMatchObject({ ok: true, already: false, changedPaths: ["a.txt"] });
+      expect(existsSync(marker)).toBe(false);
+      // A filter driver in its config, named by its attributes: refused before git runs, nothing committed, and said.
+      tgit(paths.repo, "config", "filter.evil.clean", `touch '${marker}'; cat`);
+      tgit(paths.repo, "config", "filter.evil.smudge", `touch '${marker}'; cat`);
+      leave({ ".gitattributes": "* filter=evil\n", "a.txt": "one\ntwo\nthree\n" });
+      const tip = tgit(paths.repo, "rev-parse", "HEAD");
+      const again = await save();
+      expect(again, JSON.stringify(again)).toMatchObject({ ok: true, already: true });
+      if (again.ok) expect(again.next).toMatch(/^Toolroll couldn't check the thread's copy for uncommitted edits: /);
+      expect(existsSync(marker)).toBe(false);
+      expect(tgit(paths.repo, "rev-parse", "HEAD")).toBe(tip);
+      expect(first).not.toBe(tip);
+    });
+
+    test("what the import would refuse for good is kept out, said, and the committed work is still saved", async () => {
+      const first = commit({ "a.txt": "one\n" });
+      leave({ "config.js": `const key = "${["AKIA", "Q7ZK", "M3XW", "P9TR", "B2NV"].join("")}";\n` });
+      const saved = await save();
+      expect(saved, JSON.stringify(saved)).toMatchObject({ ok: true, already: false, candidate: first });
+      if (saved.ok) expect(saved.next).toMatch(/^The agent's uncommitted edits \(1 file\) weren't saved: an added line looks like a real key\. They stay in the thread's copy\. /);
+      expect(tgit(paths.repo, "rev-parse", "HEAD")).toBe(first);
+      expect(tgit(paths.repo, "status", "--porcelain")).toBe("?? config.js");
+    });
+  });
+});

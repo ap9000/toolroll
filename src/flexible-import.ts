@@ -48,6 +48,7 @@ import { scanPatchForSecrets } from "./evidence.js";
 import { PROOF_LIMITS } from "./proof.js";
 import { run, type ExecResult } from "./exec.js";
 import { hardenedGit, recordedCommonDir } from "./teardown-git.js";
+import { identityEnv, projectGitIdentity, THREAD_IDENTITY } from "./git-identity.js";
 import type { Store } from "./store.js";
 import type { Runner } from "./worktree.js";
 
@@ -861,4 +862,123 @@ export async function settleInterruptedImport(store: Store, input: { thread: str
     if (back.code === 0) branchState = "restored";
   }
   return { ok: true, importRef: importState, branch: branchState };
+}
+
+// ---- edits the agent left uncommitted ------------------------------------------------------------------------------
+
+/** What a thread's copy holds beyond its committed work: nothing; edits found (not committed: asked not to); edits
+ * Toolroll committed onto the thread's branch; edits kept as they are, and why in words; or that its copy couldn't be
+ * read for them. */
+export type FlexibleLeftover =
+  | { state: "none" }
+  | { state: "found"; paths: string[] }
+  | { state: "committed"; commit: string; paths: string[] }
+  | { state: "kept"; paths: string[]; why: string }
+  | { state: "unknown"; why: string };
+
+/** The message of the commit Toolroll makes of a thread's uncommitted edits. */
+export const LEFTOVER_COMMIT_MESSAGE = "Edits the thread's agent left uncommitted\n\nCommitted by Toolroll when the thread's work was saved.\n";
+
+/** Whether the thread's repository's HEAD names its own branch, read as plain bytes (no git runs to read it). */
+function onThreadBranch(paths: FlexibleThreadPaths, id: string): boolean {
+  const file = join(paths.repo, ".git", "HEAD");
+  try {
+    const held = lstatSync(file);
+    if (!held.isFile() || held.isSymbolicLink() || held.size > 512) return false;
+    return readFileSync(file, "utf8") === `ref: refs/heads/${flexibleThreadBranch(id)}\n`;
+  } catch { return false; }
+}
+
+/** `status --porcelain=v1 -z --no-renames` output's paths, parsed strictly; null when it isn't exactly that. */
+function statusPaths(stdout: string): string[] | null {
+  const fields = stdout.split("\0");
+  if (fields.at(-1) === "") fields.pop();
+  const paths: string[] = [];
+  for (const field of fields) {
+    if (!/^[ MADRCUT?!]{2} ./.test(field)) return null;
+    paths.push(field.slice(3));
+  }
+  return [...new Set(paths)].sort();
+}
+
+/**
+ * The edits a thread's agent left uncommitted in its copy (stranger 17: an ended thread's last edit was never saved, and
+ * nothing said so). Found with the shared hardened runner's read (a view of the thread's repository whose config may
+ * name no command, no hooks, no fsmonitor, attributes from the empty tree), as Toolroll reads any checkout an agent
+ * writes. With `commit`, they become one commit on the thread's branch, made by Toolroll the way it commits a build's
+ * work (builder.ts): the hardened runner's write view, every change staged (`add -A`, the thread's own exclude keeping
+ * its placeholders out), and the commit carrying the project's identity (git-identity.ts), never this computer's name.
+ * The caller holds the thread's lock and has proved nothing of the thread's agent runs (no turn, no unsettled launch),
+ * so nothing changes the copy while this reads it; the import (importFlexibleCandidate) then checks the new commit as it
+ * checks every other.
+ *
+ * Before the commit, what the import would refuse for good is kept out instead, so leftover edits never block saving
+ * the committed work: a nested repository, a protected name or a link at one, one of Toolroll's placeholders, a link
+ * that leads out of the project, anything but a plain file or link (or a file with another name elsewhere), and an
+ * added line that looks like a real key. Then the index goes back to the branch and the edits stay as they are, said.
+ */
+export async function flexibleLeftover(store: Store, input: { thread: string; commit: boolean; runner?: Runner }): Promise<FlexibleLeftover> {
+  const limits = limitsOf(undefined);
+  const deadline = Date.now() + limits.importMs;
+  const source = sourceOf(store, input.thread, limits, deadline);
+  if ("ok" in source) return { state: "unknown", why: source.message };
+  const tip = threadBranchTip(source.paths, source.thread.id);
+  if (tip === null || tip.length !== source.thread.baseSha.length) return { state: "unknown", why: "its branch couldn't be read" };
+  if (!onThreadBranch(source.paths, source.thread.id)) return { state: "unknown", why: "its copy isn't on the thread's branch" };
+  const inner = input.runner ?? run;
+  const repo = source.paths.repo;
+  const read = gitIn(inner, "read", deadline);
+  try {
+    const status = await read(repo, ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"], { maxBuffer: 32 * 1024 * 1024 });
+    const found = status.code === 0 ? statusPaths(status.stdout) : null;
+    if (found === null) return { state: "unknown", why: "its files couldn't be read" };
+    if (found.length === 0) return { state: "none" };
+    if (!input.commit) return { state: "found", paths: found };
+    const identity = await projectGitIdentity(source.project, THREAD_IDENTITY, inner);
+    if (!identity.ok) return { state: "kept", paths: found, why: `the project's git identity couldn't be read (${identity.why})` };
+    const write = (args: readonly string[], env: Record<string, string> = {}, maxBuffer?: number) => {
+      const left = deadline - Date.now();
+      if (left <= 0) throw new DeadlinePassed("the time ran out");
+      return hardenedGit(inner, "build", { repo })("git", [...IMPORT_FLAGS, ...args], { cwd: repo, timeoutMs: Math.max(1, Math.min(60_000, left)), env, ...(maxBuffer === undefined ? {} : { maxBuffer }) });
+    };
+    const keep = async (why: string): Promise<FlexibleLeftover> => {
+      await write(["reset", "-q"]);
+      return { state: "kept", paths: found, why };
+    };
+    if ((await write(["add", "-A"])).code !== 0) return keep("they couldn't be staged");
+    const raw = await write(["diff", "--cached", "--raw", "--no-renames", "--no-abbrev", "-z", tip], {}, 32 * 1024 * 1024);
+    const staged = raw.code === 0 ? parseRawDiff(raw.stdout) : null;
+    if (staged === null) return keep("they couldn't be read");
+    if (staged.length === 0) return keep("git saw no change to commit");
+    if (staged.length > PROOF_LIMITS.changed) return keep(`they change ${staged.length} files, more than Toolroll saves at once`);
+    const added = staged.filter(one => one.status !== "D");
+    if (added.some(one => one.newMode === "160000")) return keep("they hold another repository");
+    const placeholders = placeholderBlobs(source.format);
+    if (added.some(one => PLACEHOLDER_NAMES.has(one.path) && placeholders.has(one.newSha))) return keep("they include one of Toolroll's placeholder files");
+    const names = staged.map(one => foldPath(one.path));
+    if (names.some(one => one.split("/").includes(".git")) || protectedChanges(names).length > 0
+      || protectedLinks(added.filter(one => one.newMode === "120000").map(one => foldPath(one.path))).length > 0) return keep("they touch a file Toolroll protects");
+    for (const one of added) {
+      let held: import("node:fs").Stats;
+      try { held = lstatSync(join(repo, one.path)); } catch { return keep("a file changed while it was read"); }
+      if (one.newMode === "120000") {
+        if (!held.isSymbolicLink()) return keep("a file changed while it was read");
+        const target = await write(["cat-file", "blob", one.newSha]);
+        if (target.code !== 0 || linkLeadsOut(one.path, target.stdout)) return keep("they add a link that leads outside the project");
+      } else if (!held.isFile() || held.nlink > 1) return keep("they include a file Toolroll can't save safely");
+      else if (held.size > limits.blobBytes) return keep(`a file is over ${Math.round(limits.blobBytes / 1024 / 1024)} MB`);
+    }
+    const patch = await write(["diff", "--cached", "-p", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", tip], {}, limits.patchBytes);
+    if (patch.code !== 0) return keep("they couldn't be read whole");
+    if (scanPatchForSecrets(patch.stdout).length > 0) return keep("an added line looks like a real key");
+    const made = await write(["commit", "-q", "--no-verify", "--no-gpg-sign", "-m", LEFTOVER_COMMIT_MESSAGE], identityEnv(identity.identity));
+    if (made.code !== 0) return keep("git refused the commit");
+    const after = threadBranchTip(source.paths, source.thread.id);
+    if (after === null || after === tip) return { state: "unknown", why: "its branch couldn't be read after the commit" };
+    const parents = await read(repo, ["rev-list", "--parents", "-n", "1", after]);
+    if (parents.code !== 0 || parents.stdout.trim() !== `${after} ${tip}`) return { state: "unknown", why: "the commit isn't on top of the thread's work" };
+    return { state: "committed", commit: after, paths: staged.map(one => one.path).sort() };
+  } catch (error) {
+    return { state: "unknown", why: error instanceof DeadlinePassed ? "the time ran out" : "its files couldn't be read" };
+  }
 }

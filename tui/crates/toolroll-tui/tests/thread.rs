@@ -1459,7 +1459,7 @@ fn a_diff_read_still_on_its_way_when_the_turn_ends_is_superseded_by_a_fresh_one(
     app.update(Msg::Diff(old, Ok(parse(thread_diff(Some("No committed changes yet. Ask the agent to commit its work: Ship sends committed work only."))))));
     let shown = screen(&mut app, 120, 30);
     assert!(!shown.contains("No committed changes yet."), "{shown}");
-    app.update(Msg::Diff(fresh, Ok(parse(thread_diff(Some("The agent has uncommitted edits. Ask it to commit them: Ship and Save as branch take committed work only."))))));
+    app.update(Msg::Diff(fresh, Ok(parse(thread_diff(Some("The agent has uncommitted edits. Ask it to commit them, or end the thread and save it as a branch: that saves them too."))))));
     let shown = screen(&mut app, 120, 30);
     assert!(shown.contains("uncommitted edits"), "{shown}");
 }

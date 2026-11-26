@@ -7,8 +7,13 @@
  * - The transfer is the controlled import, unchanged (flexible-import.ts importFlexibleCandidate): the thread's
  *   candidate read from its ref as plain bytes, every check (lineage, no merges, limits, and on every commit no
  *   submodule, placeholder, protected name, link out of the project or secret) in a quarantine before any ref moves,
- *   then a create-only import ref and the thread's branch moved by compare-and-swap. No git ever runs in the thread's
- *   folder, and nothing here fetches from it.
+ *   then a create-only import ref and the thread's branch moved by compare-and-swap. The import runs no git in the
+ *   thread's folder, and nothing here fetches from it.
+ * - Edits the agent left uncommitted are saved too (flexible-import.ts flexibleLeftover): once nothing of its agent
+ *   runs (no turn, no unsettled launch, so after Stop or End), Toolroll commits them onto the thread's branch first, as
+ *   it commits a build's work (the hardened runner, the project's identity), and the import checks that commit like
+ *   any other. While its agent may still write, they are only found, and the words say so. "Already saved" is said
+ *   only when nothing new is left, committed or not.
  * - A save is recorded as a send of the thread (flexible_ship, the same numbering as Ship's, so a later Ship's import
  *   follows from the branch a save left and a crash mid-import is settled by the same reconciler) whose terms are their
  *   own kind, `flexible-save`: never a Ship's terms, so nothing reads it as a Ship (flexible-ship.ts readRow), it arms
@@ -22,7 +27,8 @@
 import { createHash } from "node:crypto";
 import { canonicalJson } from "./canonical-json.js";
 import { flexibleStanding } from "./flexible.js";
-import { flexibleImportRef, importFlexibleCandidate, projectMergeHint, projectThreadBranch, readFlexibleCandidate, type FlexibleImportRefusal } from "./flexible-import.js";
+import { flexibleImportRef, flexibleLeftover, importFlexibleCandidate, projectMergeHint, projectThreadBranch, readFlexibleCandidate, type FlexibleImportRefusal, type FlexibleLeftover } from "./flexible-import.js";
+import { unsettledLaunch } from "./flexible-launch.js";
 import { branchHeld, nextSeq, turnRunning } from "./flexible-ship.js";
 import { flexibleThread, flexibleThreadBranch, withFlexibleThreadLock } from "./flexible-thread.js";
 import { machineActing } from "./scope.js";
@@ -102,8 +108,23 @@ export async function saveFlexibleBranch(store: Store, input: { thread: string; 
   const runner = input.runner === undefined ? {} : { runner: input.runner };
   const locked = await withFlexibleThreadLock(input.thread, async (): Promise<FlexibleSaved | FlexibleSaveRefusal | FlexibleImportRefusal> => {
     if (turnRunning(store, input.thread)) return refuse("thread-running");
+    // The person proved again before anything is written, even to the thread's own copy (check and write together: the
+    // save's own transaction below proves them once more before the project's repository is touched).
+    const standing = store.transact(() => {
+      const thread = flexibleThread(store, input.thread);
+      if (thread === null) return refuse("thread-unknown");
+      if (thread.state !== "ready") return refuse("thread-removed");
+      return saverStanding(store, thread, input.by) ?? (input.prove() ? null : refuse("stale-generation"));
+    });
+    if (standing !== null) return standing;
+    // Edits the agent left uncommitted are committed first, onto the thread's branch, once nothing of its agent runs
+    // (stranger 17: after End they were never saved, and nothing said so); while its agent may still write, they are
+    // only found and said.
+    const leftover = await flexibleLeftover(store, { thread: input.thread, commit: unsettledLaunch(store, input.thread) === null, ...runner });
+    const note = leftoverNote(leftover);
+    const withNote = (next: { next: string; command: string | null }) => note === null ? next : { ...next, next: `${note} ${next.next}` };
     const read = await readFlexibleCandidate(store, { thread: input.thread, ...runner });
-    if (!read.ok) return read;
+    if (!read.ok) return note !== null && "check" in read && read.check === "nothing-to-send" ? { ...read, message: `${read.message} ${note}` } : read;
     const branch = flexibleThreadBranch(input.thread);
     const held = branchHeld(store, input.thread);
     if (held === read.candidate) {
@@ -112,7 +133,7 @@ export async function saveFlexibleBranch(store: Store, input: { thread: string; 
       const actual = await projectThreadBranch(store, { thread: input.thread, ...runner });
       if (actual === null) return refuse("branch-gone");
       if (actual !== read.candidate) return refuse("branch-moved");
-      return { ok: true, already: true, branch, candidate: read.candidate, seq: null, changedPaths: read.changedPaths, ...(await nextWords(store, input.thread, read.candidate, branch, input.runner)) };
+      return { ok: true, already: true, branch, candidate: read.candidate, seq: null, changedPaths: read.changedPaths, ...withNote(await nextWords(store, input.thread, read.candidate, branch, input.runner)) };
     }
     const at = input.now.toISOString();
     // The save recorded first (check and write together), so a crash mid-import is settled like a Ship's.
@@ -146,7 +167,7 @@ export async function saveFlexibleBranch(store: Store, input: { thread: string; 
       return imported;
     }
     store.transact(() => { store.handle.prepare("UPDATE flexible_ship SET state = 'imported', state_at = ? WHERE id = ? AND state = 'approved'").run(at, recorded.digest); });
-    return { ok: true, already: false, branch, candidate: read.candidate, seq: recorded.seq, changedPaths: read.changedPaths, ...(await nextWords(store, input.thread, read.candidate, branch, input.runner)) };
+    return { ok: true, already: false, branch, candidate: read.candidate, seq: recorded.seq, changedPaths: read.changedPaths, ...withNote(await nextWords(store, input.thread, read.candidate, branch, input.runner)) };
   });
   if (locked.ok === false && (locked.reason === "not-available" || locked.reason === "thread-unknown")) return refuse("thread-unknown");
   return locked as FlexibleSaved | FlexibleSaveRefusal | FlexibleImportRefusal;
@@ -163,4 +184,26 @@ export function latestFlexibleSave(store: Store, thread: string): { seq: number;
   const newest = rows[0];
   if (newest === undefined || !isFlexibleSave(newest["terms_json"])) return null;
   return { seq: Number(newest["seq"]), candidate: String(newest["candidate"]), at: String(newest["state_at"]) };
+}
+
+/** What a save says about the edits the agent left uncommitted, or null when there were none. */
+function leftoverNote(leftover: FlexibleLeftover): string | null {
+  switch (leftover.state) {
+    case "none": return null;
+    case "committed": return `It includes the edits the agent hadn't committed (${filesWord(leftover.paths.length)}).`;
+    case "found": return `The agent's uncommitted edits (${filesWord(leftover.paths.length)}) aren't in it while its agent is running: end the thread, then save again.`;
+    case "kept": return `The agent's uncommitted edits (${filesWord(leftover.paths.length)}) weren't saved: ${leftover.why}. They stay in the thread's copy.`;
+    case "unknown": return `Toolroll couldn't check the thread's copy for uncommitted edits: ${leftover.why}.`;
+  }
+}
+const filesWord = (n: number): string => `${n} file${n === 1 ? "" : "s"}`;
+
+/**
+ * The files a thread's agent left uncommitted in its copy, for End's words; empty when there are none, while its agent
+ * may still run (End says it is stopping), or when its copy can't be read. A read: nothing is committed or changed.
+ */
+export async function flexibleUncommittedFiles(store: Store, input: { thread: string; runner?: Runner }): Promise<string[]> {
+  if (unsettledLaunch(store, input.thread) !== null) return [];
+  const found = await flexibleLeftover(store, { thread: input.thread, commit: false, ...(input.runner === undefined ? {} : { runner: input.runner }) });
+  return found.state === "found" ? found.paths : [];
 }

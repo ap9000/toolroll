@@ -4,7 +4,7 @@ import { readStoredGeminiStatus, refreshSubscriptions } from "./subscription-usa
 import { liveCommandsShown } from "./live-detail.js";
 import { flexibleArmedPass } from "./flexible-ship.js";
 import { directChatArmedPass } from "./direct-chat-ship.js";
-import { saveFlexibleBranch } from "./flexible-save.js";
+import { flexibleUncommittedFiles, saveFlexibleBranch } from "./flexible-save.js";
 import { closeFlexibleThread, flexibleShipNeedsFor, flexibleThreadRecords, flexibleThreadShipTerms, flexibleThreadTitleOf, latestFlexibleShip, removeFlexibleThreadCopy, shipFlexibleThread, stopFlexibleThreadsEverywhere, type FlexibleStopReport } from "./flexible-session.js";
 import { runCardCommand } from "./card-cli.js";
 import { mintSecret } from "./secret-mint.js";
@@ -15783,7 +15783,10 @@ async function threadCommand(positional: readonly string[], flags: Map<string, s
     // closes the rest); no other thread is touched.
     if (done.stopPending) await stopFlexibleThreadsEverywhere(store, { reason: "its owner ended the thread", thread, clock });
     const keeps = flexibleShipNeedsFor(store, thread) === null ? "ship its work, or save it as a branch," : `save its work as a branch (\`toolroll thread save ${thread.slice(0, 8)}\`)`;
-    return succeed(write, json, command, { thread, already: done.already }, () => [done.already ? "This thread had already ended." : `Ended. You can still ${keeps} for a week; then its copy is tidied.`]);
+    // Edits its agent left uncommitted are said, with the save that keeps them (stranger 17).
+    const left = done.already ? 0 : (await flexibleUncommittedFiles(store, { thread })).length;
+    const leftWords = `Ended. Its agent left uncommitted edits in ${left} file${left === 1 ? "" : "s"}: \`toolroll thread save ${thread.slice(0, 8)}\` saves them with its work as a branch. Its copy is kept for a week.`;
+    return succeed(write, json, command, { thread, already: done.already }, () => [done.already ? "This thread had already ended." : left > 0 ? leftWords : `Ended. You can still ${keeps} for a week; then its copy is tidied.`]);
   }
   // save: its committed work as the branch toolroll/code-<id> in its project (flexible-save.ts: the controlled import, no
   // pull request, task or merge). The same proof End takes, asked again inside the save's own transaction.

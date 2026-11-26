@@ -29,7 +29,7 @@ import { flexibleAvailable } from "../flexible-available.js";
 import { laptopShipProblem } from "../flexible-laptop.js";
 import { threadsStatusNote, tidyFlexibleSignIns } from "../flexible-sign-in.js";
 import { FLEXIBLE_UNAVAILABLE } from "../flexible.js";
-import { saveFlexibleBranch } from "../flexible-save.js";
+import { flexibleUncommittedFiles, saveFlexibleBranch } from "../flexible-save.js";
 import { admitFlexibleThreadOwner, answerFlexibleRequest, cancelFlexibleThreadShip, closeFlexibleSessions, closeFlexibleThread, continueFlexibleThread, flexibleShipNeedsFor, flexibleThreadShipTerms, latestFlexibleShip, sendBackFlexibleThread, shipFlexibleThread, tidyEndedFlexibleThreads, flexibleThreadChangeOf, flexibleThreadEdited, flexibleThreadLiveOf, flexibleThreadsOf, FLEXIBLE_WAIT_MS, flexibleThreadsExist, flexibleWorkOpen, openFlexibleSessions,
   recoverFlexibleHolders, startFlexibleThread, settleFlexibleStops, tickFlexibleSessions, waitFlexibleThreadChange, flexibleThreadChanges, flexibleThreadTipOf, type FlexibleChoice, type FlexibleSessions } from "../flexible-session.js";
 import { createFlexibleLauncher, type FlexibleLauncher } from "../flexible-launcher.js";
@@ -652,8 +652,11 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     if (held === null || !held()) return acted(response, 403, "refused", "Only a person signed in here can do that.");
     const done = await closeFlexibleThread(store, flexible, { thread: id, by: { name: who.name, generation: who.session.generation }, act });
     if (!done.ok) return acted(response, 409, "refused", done.message);
+    // Edits its agent left uncommitted are said, with the save that keeps them (stranger 17), once its agent has stopped.
+    const left = act === "end" && !done.already && !done.stopPending ? (await flexibleUncommittedFiles(store, { thread: id })).length : 0;
     const words = act === "end"
       ? done.already ? "This thread had already ended." : done.stopPending ? "Ended. Stopping its agent…"
+        : left > 0 ? `Ended. Its agent left uncommitted edits in ${left} file${left === 1 ? "" : "s"}: save its work as a branch (S on the thread) to keep them.`
         // Ship promised only where this project can take one; Save as branch works everywhere.
         : flexibleShipNeedsFor(store, id) === null ? "Ended. You can still ship its work, or save it as a branch." : "Ended. You can still save its work as a branch (S on the thread)."
       : done.stopPending ? "Stopping its agent…" : "Stopped. Reply to go on.";
