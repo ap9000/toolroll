@@ -13,7 +13,7 @@ import { addApprover } from "./scope.js";
 import { openStore, type Store } from "./store.js";
 import { prepareLockFile, prepareRuntimeUpdate, readRuntimeUpdate, resumeRuntimeUpdate, type RuntimeUpdateJournal, type UpdateSystem } from "./toolroll-update.js";
 import { lockHeld, sqliteLock } from "./desktop-update.js";
-import { autoUpdateAttempts, cancelAutomaticUpdate, linkAutoUpdateJournal, reconcileAutoUpdates, reserveAutoUpdate, setAutoUpdatePolicy, AUTO_UPDATE_STALE_MS } from "./auto-update.js";
+import { autoUpdateAttempts, autoUpdateDecision, autoUpdatePass, cancelAutomaticUpdate, type AutoUpdateFacts, linkAutoUpdateJournal, reconcileAutoUpdates, reserveAutoUpdate, setAutoUpdatePolicy, AUTO_UPDATE_STALE_MS } from "./auto-update.js";
 
 const T0 = new Date("2026-11-26T03:00:00.000Z");
 const later = (ms: number) => new Date(T0.getTime() + ms);
@@ -200,5 +200,91 @@ describe("one update at a time, and Off", () => {
     expect(outcome).toMatchObject({ ok: true, phase: "cancelled" });
     expect(asked).toBe(0);
     expect(existsSync(join(j.stageDir, "runtime"))).toBe(false);
+  });
+});
+
+describe("the decision", () => {
+  const ON = { on: true, revision: 1, by: "alex", at: T0.toISOString() };
+  const base: AutoUpdateFacts = { policy: ON, enablerStands: true, kind: "managed", current: "0.9.120", latest: "0.9.121", attempted: false, journal: "none" };
+  test.each([
+    ["on, managed, a newer stable release, never tried, nothing under way", {}, { go: true, version: "0.9.121" }],
+    ["an earlier update finished", { journal: "terminal" }, { go: true, version: "0.9.121" }],
+    ["off", { policy: { ...ON, on: false } }, { go: false, why: "off" }],
+    ["a policy that can't be read", { policy: null }, { go: false, why: "policy-unreadable" }],
+    ["the person who turned it on no longer stands", { enablerStands: false }, { go: false, why: "enabler-gone" }],
+    ["an npm install", { kind: "npm" }, { go: false, why: "not-managed" }],
+    ["a Homebrew install", { kind: "homebrew" }, { go: false, why: "not-managed" }],
+    ["the desktop app", { kind: "desktop" }, { go: false, why: "not-managed" }],
+    ["a source checkout", { kind: "source" }, { go: false, why: "not-managed" }],
+    ["no release known (checks off or offline)", { latest: null }, { go: false, why: "no-release" }],
+    ["a prerelease", { latest: "0.9.121-beta.1" }, { go: false, why: "prerelease" }],
+    ["a nightly", { latest: "0.9.121-nightly.20261126" }, { go: false, why: "prerelease" }],
+    ["the same version", { latest: "0.9.120" }, { go: false, why: "not-newer" }],
+    ["an older version (never a downgrade)", { latest: "0.9.119" }, { go: false, why: "not-newer" }],
+    ["tried before (failed, restored or rolled back)", { attempted: true }, { go: false, why: "attempted" }],
+    ["history that can't be read", { attempted: null }, { go: false, why: "history-unreadable" }],
+    ["an update under way (manual or automatic)", { journal: "active" }, { go: false, why: "update-active" }],
+    ["a journal that can't be read", { journal: "unreadable" }, { go: false, why: "journal-unreadable" }],
+  ] as [string, Partial<AutoUpdateFacts>, ReturnType<typeof autoUpdateDecision>][])("%s", (_name, change, want) => {
+    expect(autoUpdateDecision({ ...base, ...change })).toEqual(want);
+  });
+});
+
+describe("the pass", () => {
+  const pass = (w: { dir: string; databaseFile: string; store: Store }, more: Partial<Parameters<typeof autoUpdatePass>[1]> = {}) => {
+    const launched: string[] = [];
+    const result = autoUpdatePass(w.store, { stateDir: w.dir, databaseFile: w.databaseFile, current: { version: "0.9.120", dist: join(w.dir, "dist") }, kind: "managed", latest: "0.9.121",
+      now: () => T0, launch: async args => { launched.push(args.id); }, ...more });
+    return { result, launched };
+  };
+
+  test("starts the prepared journal through the independent launcher once; a restart or a second pass never starts another", async () => {
+    const w = world();
+    const first = pass(w);
+    const started = await first.result;
+    expect(started).toMatchObject({ started: "0.9.121" });
+    const j = readRuntimeUpdate(w.dir)!;
+    expect(first.launched).toEqual([j.id]);
+    expect(j).toMatchObject({ phase: "scheduled", when: "when-idle", at: null, actor: "automatic update (turned on by alex)", to: { version: "0.9.121" }, from: { version: "0.9.120" } });
+    expect(autoUpdateAttempts(w.store)?.[0]).toMatchObject({ version: "0.9.121", journalId: j.id, launchedAt: T0.toISOString(), outcome: null, policyRevision: 1 });
+    expect(ledger(w.store)).toEqual([{ actor: "automatic update (turned on by alex)", outcome: "started" }]);
+    // The console restarted with the update still journaled: nothing new starts.
+    const again = pass(w);
+    expect(await again.result).toEqual({ held: "attempted" });
+    expect(await pass(w, { latest: "0.9.122" }).result).toEqual({ held: "update-active" });
+    expect(again.launched).toEqual([]);
+  });
+
+  test("a launch that fails refuses the journal and settles the attempt as not started; the version is not tried again", async () => {
+    const w = world();
+    expect(await pass(w, { launch: async () => { throw new Error("launchctl said no"); } }).result).toEqual({ failed: "The update could not start: launchctl said no", version: "0.9.121" });
+    expect(readRuntimeUpdate(w.dir)).toMatchObject({ phase: "refused" });
+    expect(autoUpdateAttempts(w.store)?.[0]).toMatchObject({ outcome: "not-started", detail: "The update could not start: launchctl said no" });
+    expect(await pass(w).result).toEqual({ held: "attempted" });
+    // A person can still update to it by hand: the manual road never reads the attempts.
+    expect("refused" in prepareRuntimeUpdate({ stateDir: w.dir, databaseFile: w.databaseFile, current: { version: "0.9.120", dist: join(w.dir, "dist") }, actor: "alex", version: "0.9.121", when: "when-idle" }, T0)).toBe(false);
+  });
+
+  test("a crash after the reservation never makes the version eligible again", async () => {
+    const w = world();
+    // The console stopped between reserving and preparing.
+    const reserved = reserveAutoUpdate(w.store, { version: "0.9.121", from: "0.9.120", now: T0 });
+    expect(reserved.ok).toBe(true);
+    expect(await pass(w).result).toEqual({ held: "attempted" });
+    expect(readRuntimeUpdate(w.dir)).toBeNull();
+    expect(await pass(w, { now: () => later(AUTO_UPDATE_STALE_MS) }).result).toEqual({ held: "attempted" });
+    expect(autoUpdateAttempts(w.store)?.[0]).toMatchObject({ outcome: "not-started" });
+  });
+
+  test("off, unsupported installs, prereleases and old versions start nothing; a person's update under way holds it", async () => {
+    const w = world();
+    expect(await pass(w, { kind: "npm" }).result).toEqual({ held: "not-managed" });
+    expect(await pass(w, { latest: "0.9.121-beta.1" }).result).toEqual({ held: "prerelease" });
+    expect(await pass(w, { latest: "0.9.119" }).result).toEqual({ held: "not-newer" });
+    journal(w, "0.9.121");
+    expect(await pass(w, { latest: "0.9.122" }).result).toEqual({ held: "update-active" });
+    setAutoUpdatePolicy(w.store, false, "alex", T0);
+    expect(await pass(w).result).toEqual({ held: "off" });
+    expect(autoUpdateAttempts(w.store)).toEqual([]);
   });
 });

@@ -15,7 +15,8 @@
 import { join } from "node:path";
 import { isNewer } from "./releases.js";
 import type { Store } from "./store.js";
-import { readRuntimeUpdate, requestRuntimeUpdateCancel, runtimeUpdateTerminal, type RuntimeUpdateJournal } from "./toolroll-update.js";
+import type { InstallKind } from "./install-method.js";
+import { abandonRuntimeUpdate, prepareRuntimeUpdate, readRuntimeUpdate, requestRuntimeUpdateCancel, runtimeUpdateTerminal, type RuntimeRef, type RuntimeUpdateJournal } from "./toolroll-update.js";
 
 /** The ledger's action for a change of the switch. */
 export const AUTO_UPDATE_ACTION = "automatic updates";
@@ -203,4 +204,115 @@ export function cancelAutomaticUpdate(store: Pick<Store, "handle">, stateDir: st
     if (said !== "No update is in progress.") return said;
   }
   return null;
+}
+
+// ---- the trigger ---------------------------------------------------------------------------------------------------
+
+/** What the decision reads, each as it stands now; null where it can't be read. */
+export type AutoUpdateFacts = {
+  policy: AutoUpdatePolicy | null;
+  /** Whether the person who turned it on is still an unrestricted active instance operator. */
+  enablerStands: boolean;
+  kind: InstallKind;
+  current: string;
+  /** The newest release the update check knows (its cache), or null. */
+  latest: string | null;
+  /** Whether an automatic attempt was ever reserved for `latest`; null when the history can't be read. */
+  attempted: boolean | null;
+  /** The saved update journal: none, finished, under way, or unreadable. */
+  journal: "none" | "terminal" | "active" | "unreadable";
+};
+
+/** Whether to start an automatic update now, and if not, why. Pure: every fact is passed in. Only a managed install
+ * (a runtime `toolroll update` staged), only a stable x.y.z release newer than the running one, never one tried before,
+ * never while another update is journaled, and only while the switch stands. Unreadable anything holds. */
+export function autoUpdateDecision(facts: AutoUpdateFacts): { go: true; version: string } | { go: false; why: AutoUpdateHold } {
+  if (facts.policy === null) return { go: false, why: "policy-unreadable" };
+  if (!facts.policy.on) return { go: false, why: "off" };
+  if (!facts.enablerStands) return { go: false, why: "enabler-gone" };
+  if (facts.kind !== "managed") return { go: false, why: "not-managed" };
+  if (facts.latest === null) return { go: false, why: "no-release" };
+  if (!/^\d+\.\d+\.\d+$/.test(facts.latest)) return { go: false, why: "prerelease" };
+  if (!isNewer(facts.latest, facts.current)) return { go: false, why: "not-newer" };
+  if (facts.attempted === null) return { go: false, why: "history-unreadable" };
+  if (facts.attempted) return { go: false, why: "attempted" };
+  if (facts.journal === "unreadable") return { go: false, why: "journal-unreadable" };
+  if (facts.journal === "active") return { go: false, why: "update-active" };
+  return { go: true, version: facts.latest };
+}
+
+export type AutoUpdatePassOptions = {
+  stateDir: string; databaseFile: string; current: RuntimeRef; kind: InstallKind;
+  /** The release the update check just read (latestRelease: its daily cache; never asked again here). */
+  latest: string | null;
+  now: () => Date;
+  /** Starts the independent updater for one prepared journal (toolroll-update.ts launchRuntimeUpdate). */
+  launch: (args: { databaseFile: string; id: string }) => Promise<void>;
+};
+export type AutoUpdatePassResult = { started: string; journal: string } | { held: AutoUpdateHold } | { failed: string; version: string };
+
+/**
+ * The update check's automatic step (releases.ts startUpdateChecks, beside the console): settle earlier attempts, then,
+ * when the decision allows, reserve the version and prepare its journal under the prepare lock, and launch the same
+ * independent updater Settings → Updates launches (prepare → a one-off job → resume that journal id only). The updater
+ * never runs inside the service it stops. Never a downgrade, never a prerelease, one attempt per version.
+ */
+export async function autoUpdatePass(store: Pick<Store, "handle" | "transact" | "isInstanceOperator" | "recordAction">, o: AutoUpdatePassOptions): Promise<AutoUpdatePassResult> {
+  reconcileAutoUpdates(store, { stateDir: o.stateDir, current: o.current.version, now: o.now() });
+  const policy = autoUpdatePolicy(store);
+  let journal: AutoUpdateFacts["journal"];
+  try { const saved = readRuntimeUpdate(o.stateDir); journal = saved === null ? "none" : runtimeUpdateTerminal(saved.phase) ? "terminal" : "active"; }
+  catch { journal = "unreadable"; }
+  const decided = autoUpdateDecision({ policy, enablerStands: policy?.by != null && store.isInstanceOperator(policy.by), kind: o.kind, current: o.current.version, latest: o.latest,
+    attempted: o.latest === null ? false : autoUpdateAttempted(store, o.latest), journal });
+  if (!decided.go) return { held: decided.why };
+  const version = decided.version;
+  let attempt: AutoUpdateAttempt | null = null, held: AutoUpdateHold | null = null;
+  // Reserved inside the prepare lock, once nothing is under way, and bound to its journal before the lock is let go.
+  const prepared = prepareRuntimeUpdate({ stateDir: o.stateDir, databaseFile: o.databaseFile, current: o.current, actor: autoUpdateActor(policy!.by!), version, when: "when-idle", at: null }, o.now(), {
+    reserve: () => {
+      const reserved = reserveAutoUpdate(store, { version, from: o.current.version, now: o.now() });
+      if (!reserved.ok) { held = reserved.why; return `Not reserved: ${reserved.why}.`; }
+      attempt = reserved.attempt;
+      return null;
+    },
+    prepared: j => { if (attempt === null || !linkAutoUpdateJournal(store, attempt.id, j.id)) throw new Error("its attempt record could not be written"); },
+  });
+  const reservedAttempt = attempt as AutoUpdateAttempt | null;
+  if ("refused" in prepared) {
+    if (reservedAttempt === null) return held !== null ? { held } : { failed: prepared.refused, version };
+    recordAutoUpdateOutcome(store, reservedAttempt, "not-started", prepared.refused, o.now());
+    return { failed: prepared.refused, version };
+  }
+  // Turned off while it was being prepared: it never starts.
+  const still = autoUpdatePolicy(store);
+  if (still === null || !still.on || still.revision !== reservedAttempt!.policyRevision) {
+    const why = "Automatic updates were turned off before it started.";
+    abandonRuntimeUpdate(o.stateDir, prepared.id, why, o.now());
+    recordAutoUpdateOutcome(store, reservedAttempt!, "cancelled", why, o.now());
+    return { held: "off" };
+  }
+  try { await o.launch({ databaseFile: o.databaseFile, id: prepared.id }); }
+  catch (error) {
+    const why = `The update could not start: ${(error as Error).message}`;
+    abandonRuntimeUpdate(o.stateDir, prepared.id, why, o.now());
+    recordAutoUpdateOutcome(store, reservedAttempt!, "not-started", why, o.now());
+    return { failed: why, version };
+  }
+  markAutoUpdateLaunched(store, reservedAttempt!.id, o.now());
+  store.recordAction({ at: o.now().toISOString(), actor: autoUpdateActor(reservedAttempt!.enabledBy), repo: null, taskId: null, runId: null, action: AUTO_UPDATE_ATTEMPT_ACTION, outcome: "started", source: "policy",
+    detail: `${o.current.version} → ${version} (policy revision ${reservedAttempt!.policyRevision})` });
+  return { started: version, journal: prepared.id };
+}
+
+/** The console's automatic step after each update check: one pass at a time, never throwing into the check loop. */
+export function automaticUpdates(store: Pick<Store, "handle" | "transact" | "isInstanceOperator" | "recordAction">, o: Omit<AutoUpdatePassOptions, "latest">): (latest: string | null) => Promise<void> {
+  let running = false;
+  return async latest => {
+    if (running) return;
+    running = true;
+    try { await autoUpdatePass(store, { ...o, latest }); }
+    catch { /* a closed store at shutdown, or a record that can't be read: nothing starts */ }
+    finally { running = false; }
+  };
 }
