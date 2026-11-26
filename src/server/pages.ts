@@ -99,7 +99,7 @@ import { workIndexPage } from "../work-index.js";
 import { checkEngineResponse, ENGINE_API_VERSION, type WorkRows } from "../contracts/engine-api.js";
 import { readRunLive } from "./engine-api.js";
 import { waitingForTasks } from "../engine-reads.js";
-import { landedRowsOf } from "../merge-checklist.js";
+import { landedRowsOf } from "../landed-rows.js";
 import { FOUND_PLACES_MAX,FOUND_REPOS_MAX,foundReposCache } from "./found-repos.js";
 /** The common places in the home folder the picker offers as shortcuts (and GET /engine/projects looks in). */
 const PICKER_PLACES = ["Developer", "Documents", "code", "Projects"] as const;

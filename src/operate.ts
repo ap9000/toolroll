@@ -105,7 +105,8 @@ import { applyProjectProfile, runProjectCommand } from "./project-cli.js";
 import { passwordFreeOwner, passwordFreeShell, passwordFreeShellWords, proveTaskBuildsStopped, pullRequestLines, runLocalCompletion, runLocalRevision, runTaskMergeCommand, runTaskOutcomeCommand, type ShellCaller } from "./task-outcome-cli.js";
 import { applyPendingAgentChanges, planAgainAsLocalOwner, requestPlanAsLocalOwner, retryAsLocalOwner } from "./local-owner-acts.js";
 import { withTaskAlias } from "./task-aliases.js";
-import { checklistLines, landedNowOf, landedRowsOf, mergeChecklistOf } from "./merge-checklist.js";
+import { checklistLines, landedNowOf, mergeChecklistOf } from "./merge-checklist.js";
+import { landedRowsOf } from "./landed-rows.js";
 import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
 /**
  * The commands that actually move work: authoring tasks, and the claim loop.
@@ -10300,7 +10301,7 @@ function showTask(positional: readonly string[], context: Context): number {
     ...(task.state !== "done" || detail.proofVerdict === null
       ? []
       // Accepted (Complete): the person's yes is the check now, never a verdict still waiting (stranger 17).
-      : shared?.headline === "Complete" ? [
+      : shared?.headline === "Complete" && current?.completion?.person === true ? [
           `  checked: ${acceptedWords(current?.completion ?? null)}`,
           ...matrixWords(shownMatrix),
           ...(detail.semanticCoverage === null ? [] : coverageWords(detail.semanticCoverage).map(line => `  ${line}`)),
@@ -16087,10 +16088,8 @@ function verifyRepoOf(store: Store, raw: string): string {
 /** Where landing works on an install with no password yet (everyday-9 C3). */
 const LAND_NEEDS_PASSWORD = "Land it from the workbench (B) or the task page in the browser; from a shell it needs a Toolroll password (`toolroll password set`).";
 
-/** `task show`'s checked line for Complete work: who accepted it ("accepted by sam"), or that Toolroll completed it
- * because its work landed. */
+/** `task show`'s checked line for work a person completed: who accepted it ("accepted by sam"). */
 function acceptedWords(completion: AssignmentSnapshot["completion"]): string {
-  if (completion?.landed !== undefined) return `accepted automatically: ${completion.landed}`;
   const by = completedByOf(completion);
   return by === null ? "accepted" : `accepted by ${by}`;
 }

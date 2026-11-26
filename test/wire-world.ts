@@ -27,6 +27,8 @@ import { verifyApproverStanding } from "../src/principal.js";
 import { subscriptionCredentialKey } from "../src/converse.js";
 import { setLimitOverride } from "../src/request-budget.js";
 import type { Store } from "../src/store.js";
+import { workIndexPage } from "../src/work-index.js";
+import { LAND_HANDOFF, LAND_HANDOFF_SETTLED, LAND_INTENT, LAND_SETTLED } from "../src/local-landing.js";
 
 /** The world's clock: every row, every page and every relative age reads this instant. */
 export const WIRE_NOW = new Date("2026-11-02T15:00:00.000Z");
@@ -313,6 +315,29 @@ export function seedWireWorld(store: Store, root: string, options: { tasks?: num
   conversation("alex", { kind: "project", key: repos[2]! }, 12, 1_200);
   conversation("alex", { kind: "task", key: resultTask }, 10, 300);
   conversation("robin", { kind: "lead" }, 20, 700);
+
+  // Landed work (review round 1 of the accepted/landed fixes): Complete rows whose result Toolroll landed on main, or
+  // handed a landing commit for, so the workbench's Completed rows read their landing words under the budget. Picked from
+  // the operator's own first Completed page, so the measured read lists them.
+  const landedRows = workIndexPage(store, WIRE_NOW, { principal: "operator", repos: null, includeUnplaced: true }, { view: "completed", root: evidenceRoot }).items
+    .filter(one => one.assignmentState === "complete" && one.repo !== null && one.resultRunId !== null).slice(0, 4);
+  const landing = (when: string, row: (typeof landedRows)[number], action: string, outcome: string, detail: unknown) => {
+    store.handle.prepare("INSERT INTO action_ledger(at,actor,repo,task_id,run_id,action,outcome,source,detail) VALUES (?,?,?,?,?,?,?,?,?)")
+      .run(when, "toolroll", row.repo, row.rootId, row.resultRunId, action, outcome, "request", JSON.stringify(detail));
+    counts.ledger++;
+    return Number(store.handle.prepare("SELECT max(id) AS id FROM action_ledger").get()!["id"]);
+  };
+  for (const [index, row] of landedRows.entries()) {
+    const candidate = store.getRun(row.resultRunId!)!.headRevision!;
+    const commit = digest(`landed ${row.rootId}`).slice(0, 40), old = digest(`main before ${row.rootId}`).slice(0, 40);
+    if (index % 2 === 0) {
+      const intent = landing(at(30), row, LAND_INTENT, "pending", { v: 1, kind: "land", key: "k", ref: "refs/heads/main", old, commit, mode: "ref", policy: "squash", candidate });
+      landing(at(30), row, LAND_SETTLED, `${intent}:landed`, { v: 1 });
+    } else {
+      const handoff = landing(at(30), row, LAND_HANDOFF, "pending", { v: 1, key: "k", ref: "refs/heads/main", old, commit, keep: `refs/toolroll/land/${row.rootId}/${commit}`, folder: row.repo, candidate });
+      landing(at(30), row, LAND_HANDOFF_SETTLED, `${handoff}:kept`, { v: 1 });
+    }
+  }
 
   return { repos, evidenceRoot, people: { alex: alex.token, robin: robin.token, sam: sam.token }, samProject, probeTask, resultTask, counts };
 }

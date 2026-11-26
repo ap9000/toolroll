@@ -15,7 +15,7 @@ import { shipChecksForTask, type Store } from "./store.js";
 import { approvedCheckStateOf, completedByOf, requirementWordOf } from "./task-status.js";
 import { projectCheckSet } from "./check-levels.js";
 import { projectName } from "./project.js";
-import { LAND_HANDOFF, LAND_INTENT, landingHistoryOf, publishesThroughPullRequests } from "./local-landing.js";
+import { landingHistoryOf, publishesThroughPullRequests } from "./local-landing.js";
 import { recentGitReads, type GitRead, type TaskBaseView } from "./task-base.js";
 
 /** The bounded git reads a checklist's landing history uses (display only, answers kept for a moment). */
@@ -29,26 +29,6 @@ export function landedNowOf(store: Store, assignment: AssignmentSnapshot, read: 
   if (head === null || assignment.repo === null || publishesThroughPullRequests(store, assignment.repo)) return null;
   const history = landingHistoryOf(store, assignment.repo, assignment.rootId, head, read);
   return history !== null && history.landed ? { words: history.words, reverted: history.reverted } : null;
-}
-
-/** Each listed task's landing words ("Landed on main (abc1234)", no closing period) when its accepted work is on its
- * branch, for a list (the workbench's rows, `toolroll task list`): one ledger read for every row, then the landing history
- * (landedNowOf's) only for a row Toolroll landed or handed a landing commit for. Work a person merged by hand with no
- * Toolroll landing is said on its own page only. Display only. */
-export function landedRowsOf(store: Store, rows: readonly { rootId: string; repo: string | null; resultRunId: number | null; assignmentState: string }[],
-  read: GitRead = landingReads): Map<string, string> {
-  const out = new Map<string, string>();
-  const done = rows.filter(one => one.assignmentState === "complete" && one.repo !== null && one.resultRunId !== null);
-  if (done.length === 0) return out;
-  const ids = [...new Set(done.map(one => one.rootId))];
-  const touched = new Set(store.handle.prepare(`SELECT DISTINCT task_id FROM action_ledger WHERE action IN (?, ?) AND task_id IN (${ids.map(() => "?").join(",")})`)
-    .all(LAND_INTENT, LAND_HANDOFF, ...ids).map(row => String(row["task_id"])));
-  for (const one of done) {
-    if (!touched.has(one.rootId) || publishesThroughPullRequests(store, one.repo!)) continue;
-    const history = landingHistoryOf(store, one.repo!, one.rootId, store.getRun(one.resultRunId!)?.headRevision ?? null, read);
-    if (history !== null && history.landed) out.set(one.rootId, history.words.replace(/\.$/, ""));
-  }
-  return out;
 }
 
 export const CHECKLIST_KEYS = ["plan", "build", "checks", "requirements", "pull-request", "pr-ci", "up-to-date", "conflicts", "comments", "release"] as const;
@@ -117,9 +97,11 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
   const head = receipt?.head ?? null;
   const rows: ChecklistRow[] = [];
   const row = (key: ChecklistKey, mark: ChecklistMark, say: string, act: ChecklistAct | null = null) => rows.push({ key, label: CHECKLIST_LABELS[key], mark, say, act });
-  // Accepted: a person's acceptance of this result is on record (a completion is history: it stays when its checks run
-  // again later). It answers every "You check" requirement, as Land reads it; checks and main still count (below).
+  // Complete: its completion is on record (a completion is history: it stays when its checks run again later); Land
+  // lands it on its checks and main alone (below). Only a person's own completion (never a lead's token, a coordinator
+  // or a machine credential) answers the requirements a person checks and says who accepted it.
   const accepted = assignment.state === "complete" && assignment.completion !== null;
+  const acceptedByPerson = accepted && assignment.completion!.person === true;
 
   // Plan approved: the approval as dispatch reads it.
   if (scope === null) row("plan", "no", "There's no plan yet.");
@@ -150,7 +132,7 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
   // Requirements: the result's own blockers, as Accept reads them.
   const criteria = assignment.readiness?.blockers.filter(one => one.key === "criteria" || one.key === "high") ?? [];
   if (receipt === null) row("requirements", "waiting", "Waits for a build.");
-  else if (accepted) { const by = completedByOf(assignment.completion); row("requirements", "yes", by === null ? "Accepted." : `Accepted by ${by}.`); }
+  else if (acceptedByPerson) { const by = completedByOf(assignment.completion); row("requirements", "yes", by === null ? "Accepted." : `Accepted by ${by}.`); }
   else if (criteria.length > 0) row("requirements", "no", criteria[0]!.message, { kind: "fix", run: receipt.runId, note: criteria.map(one => one.message).join("\n") });
   else if (assignment.readiness?.verdict === "refuted") row("requirements", "no", "The result doesn't match its plan.", { kind: "fix", run: receipt.runId, note: "The result doesn't match its plan. Fix it so it does." });
   else {

@@ -2111,8 +2111,9 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
   // Requirements only a person can confirm: plain words and one Accept,
   // in neutral ink — nothing failed. Accepting records the person's
   // decision and leaves the recorded checks as they are.
-  // Accepted work (a completion on record, today's or history's) is the person's yes already: nothing to answer again.
-  const personChecks = proof === null || proof.accepted !== null || detail.landed === true || detail.assignment?.state === "complete" ? [] : [
+  // A person's own completion (today's or history's) is their yes already: nothing to answer again. Work a machine or
+  // the lead completed keeps the person's checks open.
+  const personChecks = proof === null || proof.accepted !== null || detail.landed === true || (detail.assignment?.state === "complete" && detail.assignment.completion?.person === true) ? [] : [
     ...proof.matrix.filter(row => row.state === "manual-review").map(row => personCheckWords(row.statement)),
     ...(proof.matrix.length > 0 ? [] : proof.reasons.filter(reason => manualReviewCriterionOf(reason) !== null).map(() => personCheckWords(null))),
   ];

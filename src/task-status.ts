@@ -188,6 +188,8 @@ export type TaskStatusFacts = {
   blockers?: readonly CompletionBlocker[];
   evidence?: { shortened: number; missing: number; damaged: number } | null;
   completedBy?: string | null;
+  /** Completed by a person themselves (assignment completion `person`): their yes answers the requirements they check. */
+  personCompleted?: true;
   /** Marked complete by Toolroll because its work landed: why, in a few words ("its pull request merged"). */
   landed?: string | null;
   action?: StatusAction | null;
@@ -345,8 +347,9 @@ function detailsOf(headline: Headline, facts: TaskStatusFacts): StatusDetail[] {
   else if (req != null && req.total > 0 && req.unverified === true) row("requirements", "Requirements", "Unverified", "none");
   else if (req != null && req.total > 0) {
     const atRelease = req.atRelease ?? 0;
-    // Complete: the acceptance answered every requirement a person checks; none still waits on "You check".
-    const yours = headline === "Complete" ? 0 : req.yours, met = req.met + req.yours - yours;
+    // Complete by a person: their completion answered every requirement a person checks; none still waits on "You check".
+    // Work a machine or the lead completed keeps them open.
+    const yours = headline === "Complete" && facts.personCompleted === true ? 0 : req.yours, met = req.met + req.yours - yours;
     const unmet = req.total - met - yours - atRelease;
     const text = `${met} of ${req.total} met${atRelease > 0 ? ` · ${atRelease} at release` : ""}${yours > 0 ? ` · You check ${yours}` : ""}`;
     row("requirements", "Requirements", text, unmet > 0 ? problem(headline) : met === req.total ? "ok" : "none",
@@ -639,6 +642,7 @@ export function assignmentStatusFacts(assignment: AssignmentSnapshot, options: {
     ...(withResult && (assignment.readiness?.blockers.length ?? 0) > 0 ? { blockers: assignment.readiness!.blockers } : {}),
     evidence: withResult ? options.evidence ?? evidenceOf(receipt, [...(receipt?.caveats ?? []), ...assignment.attention]) : null,
     completedBy: completedByOf(assignment.completion),
+    ...(assignment.completion?.person === true ? { personCompleted: true as const } : {}),
     ...(assignment.completion?.landed === undefined ? {} : { landed: assignment.completion.landed }),
     action: options.action ?? null,
     ...(options.links === undefined ? {} : { links: options.links }),

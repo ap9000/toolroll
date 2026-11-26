@@ -15,9 +15,12 @@ import { createDecisionServer } from "./serve.js";
 import { runOperate } from "./operate.js";
 import { acceptAndCompleteAsOperator, assignmentOf, checkAssignmentAsOperator } from "./assignment.js";
 import { verifyApproverByPassword } from "./principal.js";
+import { withActor } from "./actor.js";
+import { assignmentStatusFacts, statusOf } from "./task-status.js";
 import { recordActionWhole } from "./action-ledger.js";
 import { LAND_INTENT, LAND_SETTLED } from "./local-landing.js";
-import { checklistFromAssignment, checklistLines, landedRowsOf, mergeChecklistOf, noCheckSetWords, NOT_RECORDED, NOT_RECORDED_LOCAL, type ChecklistKey, type MergeChecklist } from "./merge-checklist.js";
+import { landedRowsOf } from "./landed-rows.js";
+import { checklistFromAssignment, checklistLines, mergeChecklistOf, noCheckSetWords, NOT_RECORDED, NOT_RECORDED_LOCAL, type ChecklistKey, type MergeChecklist } from "./merge-checklist.js";
 import { revisionFormOf, workspaceOf } from "../test/serve-kit.js";
 import { stepCardsOf } from "./engine-reads.js";
 
@@ -309,6 +312,25 @@ describe("accepted work reads as accepted (stranger 17)", () => {
     expect(page.body).not.toContain('"youCheck":{');
     const task = workspaceOf((await http("/t/accepted")).body).view as { mergeReady?: { answer: string; rows: { key: string; mark: string; say: string }[] } };
     expect(task.mergeReady?.rows.find(one => one.key === "requirements")).toMatchObject({ mark: "yes", say: "Accepted by sam." });
+  });
+
+  test("work the lead's token completed keeps the person's own check open: not met, no \"Accepted by\", Looks right still offered (review round 1)", async () => {
+    built("machine-done", ago(8.7), "person");
+    const who = verifyApproverByPassword(store, "sam", password, [REPO]);
+    if (!who.ok) throw new Error("who");
+    const digest = assignmentOf(store, "machine-done", NOW, { principal: "operator", repos: [REPO] }, ev)!.receipt!.digest;
+    expect(withActor({ account: "sam", lead: true }, () => checkAssignmentAsOperator(store, "machine-done", digest, who.who, ago(8.6), ev)).ok).toBe(true);
+    const read = assignmentOf(store, "machine-done", NOW, { principal: "operator", repos: [REPO] }, ev)!;
+    expect(read.state).toBe("complete");
+    expect(read.completion?.person).toBeUndefined();
+    expect(rowOf("machine-done", "requirements")).toMatchObject({ mark: "waiting", say: "You check 1 requirement." });
+    expect(listOf("machine-done").answer).toBe("not-yet");
+    expect((await http(`/t/machine-done?tab=result&run=${runs["machine-done"]}`)).body).toContain('"youCheck":{');
+    const requirements = (id: string) => statusOf(assignmentStatusFacts(assignmentOf(store, id, NOW, { principal: "operator", repos: [REPO] }, ev)!)).details.find(one => one.key === "requirements")?.text;
+    expect(requirements("machine-done")).toBe("0 of 1 met · You check 1");
+    // A person's own completion (the terminal's a, Mark complete) answers it.
+    expect(assignmentOf(store, "marked", NOW, { principal: "operator", repos: [REPO] }, ev)!.completion?.person).toBe(true);
+    expect(requirements("marked")).toBe("1 of 1 met");
   });
 
   test("landed work: the workbench's rows carry where it landed; work never landed carries nothing", async () => {
