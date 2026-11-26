@@ -53,6 +53,7 @@ import { V173_ADDED_COLUMNS } from "./plan-problems-schema.js";
 import { V159_ADDED_COLUMNS } from "./one-step-chat-schema.js";
 import { isNewer, REGISTRY } from "./releases.js";
 import { markNeverIndex } from "./never-index.js";
+import { retireRestoredAutoUpdates, RESTORED_AUTO_UPDATES_OFF } from "./auto-update-schema.js";
 import { readRuntimeUpdateJournal, RUNTIME_PHASES, RUNTIME_UPDATE_STEPS, stagedStartedAt, updaterStartingOf, type RuntimeUpdateJournalRecord } from "./contracts/update-journal.js";
 import { sleep } from "./sleep.js";
 
@@ -472,6 +473,7 @@ const HISTORY_RULES: Record<string, HistoryRule> = {
   // v180 adds a table only (pending_agent_change, a task's pending model change): no rule is needed.
   // v185 adds a table only (flexible_turn_said, what was said in a Flexible thread): no rule is needed.
   // v186 adds tables only (skill_library_change, skill_project_opt_out, skill_bundle, skill_local_sync): no rule is needed.
+  // v187 adds tables only (auto_update_policy, auto_update_attempt): no rule is needed.
   ...Object.fromEntries(Object.entries(addedColumns(V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS, V128_ADDED_COLUMNS, V129_ADDED_COLUMNS, V134_ADDED_COLUMNS, V135_ADDED_COLUMNS, V138_ADDED_COLUMNS, V143_ADDED_COLUMNS, V147_ADDED_COLUMNS, V148_ADDED_COLUMNS, V150_ADDED_COLUMNS, V151_ADDED_COLUMNS, V152_ADDED_COLUMNS, V153_ADDED_COLUMNS, V158_ADDED_COLUMNS, V159_ADDED_COLUMNS, V169_ADDED_COLUMNS, V170_ADDED_COLUMNS, V172_ADDED_COLUMNS, V173_ADDED_COLUMNS))
     .map(([table, rule]) => [table, { ...EARLIER_RULES[table], ...rule }])),
 };
@@ -694,6 +696,8 @@ function restoreDatabase(j: RuntimeUpdateJournal, from: Backups): void {
   restoreFile(j.databaseFile, from.path, from.hash, "database");
   if (from.codingPath && from.codingHash) restoreFile(codingFile(j.databaseFile), from.codingPath, from.codingHash, "coding catalog");
   ungateCoding(j);
+  // Before anything is restarted on it: the backup's automatic updates are off until a person turns them on again.
+  retireAutoUpdatesIn(j);
 }
 
 /** SQLite's own answer for a file it cannot read as a database: corrupt, or not a database at all. Anything else
@@ -914,16 +918,36 @@ function assertNoneActive(stateDir: string): void {
   if (existing && !runtimeUpdateTerminal(existing.phase)) throw new Refusal(`An update to ${existing.to.version} is already ${existing.phase === "scheduled" ? "scheduled" : "under way"} (${existing.detail}) Cancel it with toolroll update --cancel, or resume it with toolroll update --resume.`);
 }
 
+/** What a caller does inside the prepare lock (the automatic pass): `reserve` runs once nothing is under way and before
+ * the journal is made, and refuses with its words; `prepared` binds the saved journal before the lock is let go (when it
+ * throws, the journal is refused and nothing starts). */
+export type PrepareHooks = { reserve?: () => string | null; prepared?: (j: RuntimeUpdateJournal) => void;
+  /** An automatic update's origin, written into the journal itself before it is first saved (after `reserve`). */
+  automatic?: () => NonNullable<RuntimeUpdateJournal["automatic"]> | null;
+  /** A test's seam: how long to wait for another preparer (5 s by default). */
+  lockWaitMs?: number };
+
 /** Record an update without running it: the console's job resumes exactly this journal id. */
-export function prepareRuntimeUpdate(o: StartOptions, now: Date): RuntimeUpdateJournal | { refused: string } {
+export function prepareRuntimeUpdate(o: StartOptions, now: Date, hooks: PrepareHooks = {}): RuntimeUpdateJournal | { refused: string } {
   if (!/^\d+\.\d+\.\d+$/.test(o.version)) return { refused: `${o.version} is not a release version (x.y.z).` };
   if (!o.allowDowngrade && !isNewer(o.version, o.current.version)) return { refused: `Toolroll ${o.version} is not newer than ${o.current.version}. To go back to an older release, run toolroll update --version ${o.version} --allow-downgrade.` };
-  try { assertNoneActive(o.stateDir); keepCompletedUpdate(o.stateDir); } catch (error) { return { refused: (error as Error).message }; }
-  const at = o.when === "at" ? nextAt(o.at ?? "03:00", now).toISOString() : null;
-  const j = newJournal("update", { stateDir: o.stateDir, databaseFile: o.databaseFile, from: o.current, to: { version: o.version, dist: "" }, when: o.when, at, actor: o.actor }, now);
-  save(j, "scheduled", at ? `Scheduled for ${at}.` : "Starting.", now);
-  if (at) ledger(j.databaseFile, now, j.actor, "toolroll update scheduled", "scheduled", `${j.from.version} → ${j.to.version} at ${at}`);
-  return j;
+  try {
+    return withPrepareLock(o.stateDir, () => {
+      assertNoneActive(o.stateDir);
+      const reserved = hooks.reserve?.() ?? null;
+      if (reserved !== null) return { refused: reserved };
+      keepCompletedUpdate(o.stateDir);
+      const at = o.when === "at" ? nextAt(o.at ?? "03:00", now).toISOString() : null;
+      const j = newJournal("update", { stateDir: o.stateDir, databaseFile: o.databaseFile, from: o.current, to: { version: o.version, dist: "" }, when: o.when, at, actor: o.actor }, now);
+      const automatic = hooks.automatic?.() ?? null;
+      if (automatic !== null) j.automatic = automatic;
+      save(j, "scheduled", at ? `Scheduled for ${at}.` : "Starting.", now);
+      try { hooks.prepared?.(j); }
+      catch (error) { save(j, "refused", `The update could not start: ${(error as Error).message}`, now); return { refused: `The update could not start: ${(error as Error).message}` }; }
+      if (at) ledger(j.databaseFile, now, j.actor, "toolroll update scheduled", "scheduled", `${j.from.version} → ${j.to.version} at ${at}`);
+      return j;
+    }, hooks.lockWaitMs);
+  } catch (error) { return { refused: (error as Error).message }; }
 }
 
 /** Start an update: stage, verify, then run the journaled steps. */
@@ -936,14 +960,23 @@ export async function startRuntimeUpdate(o: StartOptions, system: UpdateSystem):
 
 /** Return to the runtime and database backup an update replaced. */
 export async function startRuntimeRollback(o: { stateDir: string; databaseFile: string; current: RuntimeRef; actor: string; when: When }, system: UpdateSystem): Promise<UpdateOutcome> {
-  let last: RuntimeUpdateJournal | null;
-  try { assertNoneActive(o.stateDir); keepCompletedUpdate(o.stateDir); last = lastCompletedUpdate(o.stateDir); } catch (error) { return { ok: false, phase: "refused", message: (error as Error).message, journal: null }; }
-  if (!last || !last.backupPath || !last.backupHash) return { ok: false, phase: "refused", message: "There is no completed update to roll back.", journal: null };
-  if (!existsSync(join(last.from.dist, "bin.js")) || !existsSync(last.backupPath) || (last.codingBackupPath && !existsSync(last.codingBackupPath))) return { ok: false, phase: "refused", message: `The previous runtime (${last.from.version}) or its backup is no longer on this machine. Nothing was changed.`, journal: null };
-  const now = system.now();
-  const j = newJournal("rollback", { stateDir: o.stateDir, databaseFile: o.databaseFile, from: last.to, to: last.from, when: o.when, at: null, actor: o.actor }, now);
-  j.restoreFrom = { path: last.backupPath, hash: last.backupHash, updateId: last.id, ...(last.codingBackupPath && last.codingBackupHash ? { codingPath: last.codingBackupPath, codingHash: last.codingBackupHash } : {}) };
-  return driveRuntimeUpdate(j, system);
+  // Checked and saved under the prepare lock, as an update is: nothing else can start between the two.
+  let prepared: RuntimeUpdateJournal | UpdateOutcome;
+  try {
+    prepared = withPrepareLock(o.stateDir, (): RuntimeUpdateJournal | UpdateOutcome => {
+      assertNoneActive(o.stateDir); keepCompletedUpdate(o.stateDir);
+      const last = lastCompletedUpdate(o.stateDir);
+      if (!last || !last.backupPath || !last.backupHash) return { ok: false, phase: "refused", message: "There is no completed update to roll back.", journal: null };
+      if (!existsSync(join(last.from.dist, "bin.js")) || !existsSync(last.backupPath) || (last.codingBackupPath && !existsSync(last.codingBackupPath))) return { ok: false, phase: "refused", message: `The previous runtime (${last.from.version}) or its backup is no longer on this machine. Nothing was changed.`, journal: null };
+      const now = system.now();
+      const j = newJournal("rollback", { stateDir: o.stateDir, databaseFile: o.databaseFile, from: last.to, to: last.from, when: o.when, at: null, actor: o.actor }, now);
+      j.restoreFrom = { path: last.backupPath, hash: last.backupHash, updateId: last.id, ...(last.codingBackupPath && last.codingBackupHash ? { codingPath: last.codingBackupPath, codingHash: last.codingBackupHash } : {}) };
+      save(j, "scheduled", "Starting.", now);
+      return j;
+    });
+  } catch (error) { return { ok: false, phase: "refused", message: (error as Error).message, journal: null }; }
+  if ("ok" in prepared) return prepared;
+  return driveRuntimeUpdate(prepared, system);
 }
 
 /** Continue a saved update after a crash, where it left off. With `id` (the console's job), only that update:
@@ -963,10 +996,11 @@ export function abandonRuntimeUpdate(stateDir: string, id: string, why: string, 
 }
 
 const CANCELLABLE: readonly RuntimePhase[] = ["scheduled", "verifying", "draining"];
-/** `locked`: a test's seam, called once the updater's lock is held and before the journal is read again. */
-export function requestRuntimeUpdateCancel(stateDir: string, now = new Date(), seams: { locked?: () => void } = {}): string {
+/** `locked`: a test's seam, called once the updater's lock is held and before the journal is read again. `only`: cancel
+ * only the update with this journal id (turning automatic updates off cancels the automatic one, never a person's). */
+export function requestRuntimeUpdateCancel(stateDir: string, now = new Date(), seams: { locked?: () => void } = {}, only?: string): string {
   const j = readRuntimeUpdate(stateDir);
-  if (!j || runtimeUpdateTerminal(j.phase)) return "No update is in progress.";
+  if (!j || runtimeUpdateTerminal(j.phase) || (only !== undefined && j.id !== only)) return "No update is in progress.";
   const tooLate = (at: RuntimeUpdateJournal) => `The update to ${at.to.version} is past the point it can be cancelled (${at.phase}); it will finish or restore on its own.`;
   if (!CANCELLABLE.some(phase => phase === j.phase)) return tooLate(j);
   // No updater is running to see the request: cancel here, so the admission pause does not outlive it.
@@ -980,7 +1014,7 @@ export function requestRuntimeUpdateCancel(stateDir: string, now = new Date(), s
     // An updater may have moved on, finished or been replaced between the first read and the lock.
     const held = readRuntimeUpdate(stateDir);
     if (!held || runtimeUpdateTerminal(held.phase)) return "No update is in progress.";
-    if (held.id !== j.id) return "A different update was saved while cancelling. Nothing was cancelled.";
+    if (held.id !== j.id || (only !== undefined && held.id !== only)) return "A different update was saved while cancelling. Nothing was cancelled.";
     if (!CANCELLABLE.some(phase => phase === held.phase)) return tooLate(held);
     durableJson(cancelFile(held), { id: held.id, action: "cancel" });
     try { ungate(held); } catch { /* no pause yet */ }
@@ -1027,6 +1061,10 @@ async function driveRuntimeUpdate(j: RuntimeUpdateJournal, system: UpdateSystem)
     if (j.phase === "rolling-back" || j.phase === "needs-attention") return await restore(j, system, finish, verb, j.error ?? "An earlier attempt stopped.");
     if (resumedAt < at("switching")) {
       if (resumedAt <= at("verifying")) {
+        // Cancelled before this updater started (turning automatic updates off, or Cancel): nothing is downloaded.
+        if (cancelRequested(j)) return finish(true, "cancelled", `The ${noun} to ${j.to.version} was cancelled before it started. Nothing changed.`, `toolroll ${noun} cancelled`, "cancelled", verb);
+        // An automatic update starts only while the yes it stands on still stands.
+        refuseLapsedAutomatic(j, "started");
         step("verifying", j.kind === "update" ? `Downloading and verifying Toolroll ${j.to.version}.` : `Checking the previous runtime (${j.to.version}) and its backup.`);
         if (j.kind === "update") await verify(j, system);
         else if (fileHash(j.restoreFrom!.path) !== j.restoreFrom!.hash || (j.restoreFrom!.codingPath && fileHash(j.restoreFrom!.codingPath) !== j.restoreFrom!.codingHash)) throw new Refusal("The update's backup changed since it was made. Nothing was changed.");
@@ -1059,6 +1097,8 @@ async function driveRuntimeUpdate(j: RuntimeUpdateJournal, system: UpdateSystem)
       save(j, "backing-up", "Database and coding catalog backed up.", system.now());
       step("rehearsing", `Rehearsing ${j.to.version} on a copy of the database.`);
       j.rehearsal = await rehearse(j, system, j.restoreFrom?.path ?? j.backupPath);
+      // …and is switched only while it still stands (nothing is switched yet: refusing restarts the service unchanged).
+      refuseLapsedAutomatic(j, "switched");
     }
     if (resumedAt <= at("switching")) {
       step("switching", `Switching to ${j.to.version}.`);
@@ -1512,8 +1552,15 @@ export async function launchRuntimeUpdate(args: { databaseFile: string; id: stri
     const npmBin = await (seams.npmBin ?? (() => npmPrefixBin(run)))();
     const pathEnv = [...new Set([dirname(process.execPath), ...(npmBin ? [npmBin] : []), join(home, ".local", "bin"), join(home, "bin"), join(home, "Library", "pnpm"), "/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"])].join(":");
     const unit = launchdPlist({ label: UPDATE_JOB_LABEL, command, workingDirectory: stateDir, logPath: log, pathEnv, keepAlive: false, runAtLoad: false });
-    const started = await installLaunchdService({ platform: "darwin", label: UPDATE_JOB_LABEL, bin: process.execPath, entry: join(dist, "bin.js"), logPath: log, unitPath: jobUnit(home), unitContent: unit }, run);
-    if (!started.ok) throw Error(started.message);
+    // The job's label is this user's, shared by every Toolroll database: installing over a job launchd still runs would
+    // stop that updater mid-update. launchd itself is asked, under one per-user lock; no file can permit replacing it.
+    const lock = jobLock(home);
+    try {
+      const busy = await jobBusy(run, jobUnit(home));
+      if (busy !== null) throw Error(busy);
+      const started = await installLaunchdService({ platform: "darwin", label: UPDATE_JOB_LABEL, bin: process.execPath, entry: join(dist, "bin.js"), logPath: log, unitPath: jobUnit(home), unitContent: unit }, run);
+      if (!started.ok) throw Error(started.message);
+    } finally { lock.close(); }
     return;
   }
   const { spawn } = await import("node:child_process");
@@ -1624,4 +1671,110 @@ async function liveConsoleAt(databaseFile: string, version: string): Promise<boo
   try { return (await proveLiveConsole(databaseFile, { handle } as unknown as Parameters<typeof proveLiveConsole>[1], version)).ok; }
   catch { return false; }
   finally { handle.close(); }
+}
+
+// ---- the prepare lock (kept last: password-freshness.test.ts pins this file's functions by position) ----------------
+
+/** The prepare lock's file (tests look at whether it is held). */
+export const prepareLockFile = (stateDir: string) => join(stateDir, "toolroll-update.prepare.sqlite");
+/** One preparer at a time across every caller on this state folder (Settings, the CLI, a rollback, the automatic pass):
+ * "none active" is checked and the new journal saved while this OS lock is held, so two callers can never both find
+ * nothing under way and each start an update. Waits briefly for another preparer; refuses rather than racing. */
+function withPrepareLock<T>(stateDir: string, body: () => T, waitMs = 5000): T {
+  mkdirSync(stateDir, { recursive: true });
+  const lock = sqliteLock(prepareLockFile(stateDir), waitMs);
+  if (!lock) throw new Refusal("Another update is being prepared right now. Nothing was changed.");
+  try { return body(); } finally { lock.close(); }
+}
+
+/** A database just put back (an update restored, a rollback): automatic updates in it off, checked, with a ledger row.
+ * Throws when that can't be done, so nothing restarts on a restored database that could still install by itself. */
+function retireAutoUpdatesIn(j: RuntimeUpdateJournal): void {
+  const db = new (sqlite().DatabaseSync)(j.databaseFile);
+  let retired: number;
+  const now = new Date().toISOString();
+  try {
+    db.exec("PRAGMA busy_timeout=5000; BEGIN IMMEDIATE");
+    try { retired = retireRestoredAutoUpdates(db as never, j.actor, now); db.exec("COMMIT"); }
+    catch (error) { db.exec("ROLLBACK"); throw error; }
+  } finally { db.close(); }
+  if (retired > 0) ledger(j.databaseFile, new Date(now), j.actor, "automatic updates", "off", RESTORED_AUTO_UPDATES_OFF);
+}
+
+// ---- the one-off job is this user's, shared by every database ----------------------------------------------------
+
+/** One launcher at a time for this user's update job (every Toolroll database on this account shares its label). */
+function jobLock(home: string): DatabaseSync {
+  const dir = join(home, "Library", "Application Support", "Toolroll");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const lock = sqliteLock(join(dir, "update-job.sqlite"), 5000);
+  if (!lock) throw Error("Another Toolroll on this computer is starting an update right now. Try again in a moment.");
+  return lock;
+}
+
+const XML_ENTITIES: Record<string, string> = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"", "&apos;": "'" };
+/**
+ * Why this update's job can't be installed now, or null when it may: launchd itself is asked about the shared label.
+ * Not loaded, or loaded with nothing running (a finished job), may be replaced; a job with a running process (or one
+ * launchd is starting) never is, whatever any file says; an answer that isn't launchd's "no such job" refuses too.
+ * The job definition on disk only adds which state folder it came from to the words.
+ */
+async function jobBusy(run: SupervisorRunner, unitPath: string): Promise<string | null> {
+  const uid = typeof process.getuid === "function" ? process.getuid() : userInfo().uid;
+  const printed = await run("launchctl", ["print", `gui/${uid}/${UPDATE_JOB_LABEL}`]);
+  if (printed.code === 113) return null;
+  if (printed.code !== 0) return "Toolroll couldn't ask launchd whether another Toolroll update is running, so this update didn't start. Try again in a moment.";
+  const running = /\n\s*pid = \d+/.test(`\n${printed.stdout}`) || /\n\s*state = (?:running|spawn scheduled|spawning)\b/.test(`\n${printed.stdout}`);
+  if (!running) return null;
+  const from = jobStateDir(unitPath);
+  return `Another Toolroll update is running${from === null ? "" : ` (from ${from})`}. Try again when it finishes.`;
+}
+/** The state folder the job definition on disk names (its --db's folder), for the words only; null when unknown. */
+function jobStateDir(unitPath: string): string | null {
+  try {
+    const strings = [...readFileSync(unitPath, "utf8").matchAll(/<string>([^<]*)<\/string>/g)].map(match => match[1]!.replace(/&(?:amp|lt|gt|quot|apos);/g, entity => XML_ENTITIES[entity]!));
+    const db = strings[strings.indexOf("--db") + 1];
+    return strings.includes("--db") && db !== undefined && isAbsolute(db) ? dirname(db) : null;
+  } catch { return null; }
+}
+
+// ---- an automatic update's authority, checked again by the updater ------------------------------------------------
+
+/** Refuses (nothing switched) an automatic update whose standing yes no longer stands. A person's own update is never
+ * affected: only a journal an automatic attempt row names. */
+function refuseLapsedAutomatic(j: RuntimeUpdateJournal, before: "started" | "switched"): void {
+  if (j.kind !== "update") return;
+  const lapsed = automaticAuthorityProblem(j);
+  if (lapsed !== null) throw new Refusal(`The automatic update to ${j.to.version} stopped before it ${before}: ${lapsed}. Nothing was changed.`);
+}
+
+/**
+ * Whether the automatic attempt behind this journal still stands: its exact attempt row (the journal's own `automatic`
+ * names it: id, this journal, the person, their account generation, the policy revision), automatic updates on at that
+ * revision, and the person still an active, unrestricted approver at that generation. A journal marked automatic whose
+ * row is missing or different (a restored database no longer holds it) refuses: never treated as a person's update.
+ * An unmarked journal is a person's update, unless an attempt row names it anyway. Anything that can't be read is a lapse.
+ */
+function automaticAuthorityProblem(j: RuntimeUpdateJournal): string | null {
+  const origin = j.automatic;
+  let db: DatabaseSync;
+  try { db = new (sqlite().DatabaseSync)(j.databaseFile, { readOnly: true }); } catch { return "its database can't be read"; }
+  try {
+    db.exec("PRAGMA busy_timeout=5000");
+    const missing = "its automatic update record is missing from the database (a restored database no longer holds it)";
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'auto_update_attempt'").get() === undefined) return origin === undefined ? null : missing;
+    const attempt = origin === undefined
+      ? db.prepare("SELECT enabled_by, enabled_generation, policy_revision FROM auto_update_attempt WHERE journal_id = ?").get(j.id)
+      : db.prepare("SELECT enabled_by, enabled_generation, policy_revision FROM auto_update_attempt WHERE id = ? AND journal_id = ? AND enabled_by = ? AND enabled_generation = ? AND policy_revision = ?")
+        .get(origin.attempt, j.id, origin.by, origin.generation, origin.revision);
+    if (attempt === undefined) return origin === undefined ? null : missing;
+    const policy = db.prepare("SELECT enabled, revision FROM auto_update_policy WHERE id = 1").get();
+    if (policy === undefined || policy["enabled"] !== 1 || policy["revision"] !== attempt["policy_revision"]) return "automatic updates were turned off";
+    const who = db.prepare("SELECT role, revoked_at, generation, projects_json FROM approver WHERE name = ?").get(attempt["enabled_by"] as string);
+    if (who === undefined || who["role"] !== "approver" || who["revoked_at"] !== null || who["generation"] !== attempt["enabled_generation"] || who["projects_json"] !== null) {
+      return `${String(attempt["enabled_by"])}, who turned automatic updates on, can no longer manage this installation`;
+    }
+    return null;
+  } catch { return "its automatic update record can't be read"; }
+  finally { db.close(); }
 }

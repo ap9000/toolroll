@@ -7,6 +7,7 @@
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
+import { autoUpdateAttempts, autoUpdateLine, autoUpdatePolicy } from "./auto-update.js";
 import { installMethod } from "./install-method.js";
 import { isNewer, latestVersionNow } from "./releases.js";
 import { databasePath } from "./store.js";
@@ -75,6 +76,8 @@ export async function runUpdateCommand(args: readonly string[], write: (line: st
   if (has("status")) {
     const j = readRuntimeUpdate(stateDir);
     write(j ? `${j.kind === "update" ? "Update" : "Rollback"} ${j.from.version} → ${j.to.version}: ${j.phase}. ${j.detail}` : "No update has run here.");
+    // Automatic updates, read only: the switch is changed in Settings → Updates by an instance operator, never here.
+    for (const line of automaticStatus(databaseFile, j)) write(line);
     return 0;
   }
   if (has("cancel")) { write(requestRuntimeUpdateCancel(stateDir)); return 0; }
@@ -129,6 +132,22 @@ export async function runUpdateCommand(args: readonly string[], write: (line: st
   const outcome = await startRuntimeUpdate({ stateDir, databaseFile, current, actor, version, when, at: at ?? null, allowDowngrade: downgrade }, system());
   write(outcome.message);
   return outcome.ok ? 0 : 1;
+}
+
+/** `--status`'s automatic-updates lines: the switch as saved and the last automatic attempt, read from the database
+ * without changing it. Nothing when the database can't be opened. */
+function automaticStatus(databaseFile: string, journal: { id: string; phase: string } | null): string[] {
+  let db: import("node:sqlite").DatabaseSync;
+  try { db = new (sqlite().DatabaseSync)(databaseFile, { readOnly: true }); } catch { return []; }
+  try {
+    const store = { handle: db } as unknown as Parameters<typeof autoUpdatePolicy>[0];
+    const policy = autoUpdatePolicy(store);
+    const lines = [policy === null ? "Automatic updates: the setting can't be read, so nothing updates by itself."
+      : policy.on ? `Automatic updates: on (turned on by ${policy.by ?? "someone"}). Change it in Settings → Updates.` : `Automatic updates: off${policy.by === null ? "" : ` (turned off by ${policy.by})`}. Turn them on in Settings → Updates.`];
+    const last = autoUpdateAttempts(store, 1)?.[0];
+    if (last !== undefined) lines.push(`Last automatic update: ${autoUpdateLine(last, last.outcome === null && journal?.id === last.journalId ? journal.phase : null).line}`);
+    return lines;
+  } finally { db.close(); }
 }
 
 function recordsSince(databaseFile: string, since: string): number {

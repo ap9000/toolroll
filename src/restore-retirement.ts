@@ -16,6 +16,7 @@ import { CHAT_PROVIDERS } from "./contracts/chat-tables.js";
 import { revokeCoordinator } from "./coordinator.js";
 import { autoPublishHeld, holdAutoPublish, PUBLISH_ALLOWED_ACTION, PUBLISH_HELD_ACTION } from "./release-auto.js";
 import type { Store } from "./store.js";
+import { retireRestoredAutoUpdates, RESTORED_AUTO_UPDATES_OFF } from "./auto-update-schema.js";
 import { RECOVERY_GENERATION_PATTERN, WORKSPACE_ID_PATTERN } from "./workspace-identity-schema.js";
 
 export type RestoreRetirementSummary = {
@@ -33,6 +34,8 @@ export type RestoreRetirementSummary = {
   chatBindings: number;
   chatPairings: number;
   chatActions: number;
+  /** Automatic updates that were on in the backup (turned off until a person turns them on again). */
+  autoUpdates: number;
 };
 
 /** Every chat button, note and prompt table that can still act: consumed here, by token (`consumed`, or `consumed_at`). */
@@ -174,7 +177,11 @@ export function retireRestoredAuthority(
   for (const table of CHAT_DECIDE_TABLES) store.handle.prepare(`UPDATE ${table} SET consumed_at = ? WHERE consumed_at IS NULL`).run(stamp);
   store.handle.prepare("UPDATE chat_note_draft SET state = 'discarded' WHERE state IN ('pending', 'armed')").run();
 
-  // 10. Strict postcondition verification before commit.
+  // 10. A standing yes to install releases by itself: off until a person turns it on again (checked inside).
+  const autoUpdates = retireRestoredAutoUpdates(store.handle, actor, stamp);
+  if (autoUpdates > 0) store.recordAction({ at: stamp, actor, repo: null, taskId: null, runId: null, action: "automatic updates", outcome: "off", source: "policy", detail: RESTORED_AUTO_UPDATES_OFF });
+
+  // 11. Strict postcondition verification before commit.
   const afterIdentity = store.workspaceIdentity();
   if (afterIdentity.id !== identity.id || afterIdentity.recoveryGeneration !== nextGeneration || excluded.has(afterIdentity.recoveryGeneration)) {
     throw new Error("Restored workspace identity postcondition failed");
@@ -200,6 +207,7 @@ export function retireRestoredAuthority(
     || count(store, "SELECT count(*) AS n FROM chat_room WHERE revoked IS NULL") !== 0
     || count(store, "SELECT count(*) AS n FROM chat_pair WHERE consumed IS NULL") !== 0
     || openChatActions(store) !== 0
+    || count(store, "SELECT count(*) AS n FROM auto_update_policy WHERE enabled = 1") !== 0
   ) {
     throw new Error("Restored credential retirement postcondition failed");
   }
@@ -219,5 +227,6 @@ export function retireRestoredAuthority(
     chatBindings,
     chatPairings,
     chatActions,
+    autoUpdates,
   };
 }

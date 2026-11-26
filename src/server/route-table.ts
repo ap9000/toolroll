@@ -788,6 +788,10 @@ post("settings", "settings.flexible", "/settings/flexible", { callers: ["cookie"
 post("settings", "settings.flexible-sign-in", "/settings/flexible-sign-in", { callers: ["cookie"], scope: "step-up", limited: "self", ...approver("An approver saves their own Claude sign-in for threads.", "/settings/general?section=flexible-sign-in") });
 post("settings", "settings.flexible-sign-in-check", "/settings/flexible-sign-in-check", { callers: ["cookie"], scope: "step-up", limited: "self", ...approver("An approver checks their own Claude sign-in for threads.", "/settings/general?section=flexible-sign-in") });
 post("settings", "settings.flexible-sign-in-clear", "/settings/flexible-sign-in-clear", { callers: ["cookie"], scope: "step-up", limited: "self" });
+// Automatic Toolroll updates (auto-update.ts): an instance operator's step-up from a browser sign-in only (a solo or
+// Passwordless session stands in; otherwise the password typed now; never a token, the lead or the laptop's local owner).
+// The handler proves the person and writes the switch in one transaction.
+post("settings", "settings.updates-auto", "/settings/updates/auto", { callers: ["cookie"], scope: "step-up", limited: "deny", ...operator("An instance operator turns automatic updates on or off.", "/settings/updates") });
 post("settings", "settings.just-me", "/settings/install-mode/solo", { callers: ["cookie"], scope: "step-up", ...operator("An instance operator says it's just them.", "/settings/general?section=install-mode") });
 // Release approval (docs/plans/auto-approve-green.md): an approver of the project, from a browser. Approving releases
 // automatically takes a typed password (the handler proves it as a credential act); asking again is one click.

@@ -403,7 +403,8 @@ describe("where freshness may be honoured", () => {
       // approval's is (a password typed now, or where the existing rules let it stand in, a session or the local owner's act).
       "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/engine-api.ts": 3, "src/server/flows.ts": 9, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2,
       // Settings → General: your own Claude sign-in for threads, checked again or removed with the ordinary step-up.
-      "src/server/settings.ts": 27,
+      // Settings → Updates: turning automatic updates on or off (28), an instance operator's browser step-up.
+      "src/server/settings.ts": 28,
       "src/server/tasks.ts": 6, "src/server/terminals.ts": 2, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/device-pair.ts", "src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
@@ -641,6 +642,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>flexibleSwitchAct@117>saved:store.transact(_)@2": 1,
     "src/server/settings.ts#createSettingsHandlers@1>teamsAct@83><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>updatesAct@55><anonymous>@1": 1,
+    // Settings → Updates → Update automatically: an instance operator's browser step-up, proved and written in one transaction.
+    "src/server/settings.ts#createSettingsHandlers@1>updatesAutoAct@155>saved:store.transact(_)@2": 1,
     "src/server/tasks.ts#createTasksHandlers@2": 2,
     "src/server/tasks.ts#createTasksHandlers@2>codeAct@22><anonymous>@1": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40": 3,

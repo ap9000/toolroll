@@ -69,6 +69,7 @@ import { parseProtectedPaths } from "../approval-policy.js";
 import { approvalRulesHtml, releaseApprovalHtml } from "../approval-rules-ui.js";
 import { releaseApprovalSetting, setReleaseApproval } from "../release-auto.js";
 import { flexibleAvailable, flexibleSetting, setFlexibleSetting } from "../flexible-available.js";
+import { autoUpdateAttempts, autoUpdateLine, autoUpdatePolicy, cancelAutomaticUpdate, setAutoUpdatePolicy, whatsNewUrl } from "../auto-update.js";
 import { flexibleSignInStatus, recheckFlexibleSignIn, removeFlexibleSignIn, saveFlexibleSignIn, setupTokenFromPaste, signInCheckWords, tidyFlexibleSignIns } from "../flexible-sign-in.js";
 import { passwordFreeOwner } from "../task-outcome-cli.js";
 import { realpathSync } from "node:fs";
@@ -177,7 +178,7 @@ import { checkTeamsCredentials,clearTeamsCredentials,loadTeamsCredentials,saveTe
 import { teamsSettingsHtml } from "../teams-settings.js";
 import { telegramSettingsHtml } from "../telegram-settings.js";
 import { hashPairingCode,loadBotToken,mintPairingCode,PAIRING_TTL_MS,redactToken,saveBotToken,TOKEN_ENV } from "../telegram.js";
-import { newerThan,updatesHtml,updatesScript,updateStepsHtml } from "../toolroll-update-ui.js";
+import { newerThan,updatesHtml,updatesScript,updateStepsHtml,type UpdatesView } from "../toolroll-update-ui.js";
 import { abandonRuntimeUpdate,currentRuntime,launchRuntimeUpdate,markWhatsNewSeen,prepareRuntimeUpdate,requestRuntimeUpdateCancel,runningWorkWords,runtimeUpdateStatus,runtimeUpdateTerminal,type When } from "../toolroll-update.js";
 import { TOOLS_PROJECT_SCRIPT,toolsHtml,toolsProjectPicker } from "../tools-ui.js";
 import { effectivePrimary,isMessagingChannel,savePrimary } from "../webhooks.js";
@@ -509,7 +510,10 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     // The last answer npm gave (the background checks ask while update checks are on; Check now asks once).
     const checksOff = updateChecksOff(process.env, options.configDir ?? dirname(databaseFile)).off;
     const known = lastChecks.known<{ version: string } | { problem: string }>("release")?.value ?? null;
-    const view = { current, latest: active ? { version: current } : known ?? (checksOff ? { off: true as const } : { pending: true as const }), method: options.updates?.method ?? installMethod(), journal: status.journal, running: status.running, whatsNew: status.whatsNew, rollbackTo: status.lastUpdate?.to === current ? status.lastUpdate.from : null, csrf: who.session.csrf };
+    const method = options.updates?.method ?? installMethod();
+    // Update automatically: only where `toolroll update` manages the install (other installs keep the notice).
+    const auto = method.kind === "managed" ? updatesAutoView(status.journal, checksOff) : undefined;
+    const view = { current, latest: active ? { version: current } : known ?? (checksOff ? { off: true as const } : { pending: true as const }), method, journal: status.journal, running: status.running, whatsNew: status.whatsNew, rollbackTo: status.lastUpdate?.to === current ? status.lastUpdate.from : null, csrf: who.session.csrf, ...(auto === undefined ? {} : { auto }) };
     return sendScreen(response, 200, screen("Updates", settingsSubPage("system", "Updates", html`${(updatesHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`),
       { chrome: chromeFor(project, "settings"), ...(active ? { functional: { script: updatesScript(), fetches: true } } : {}) }));
   }
@@ -2638,6 +2642,7 @@ ${postForm("/settings/chat-approval/save", html`\
     "settings.lead-quick": leadQuick,
     "settings.task-sizing": taskSizingAct,
     "settings.flexible": flexibleSwitchAct,
+    "settings.updates-auto": updatesAutoAct,
     "settings.flexible-sign-in": flexibleSignInAct,
     "settings.flexible-sign-in-check": flexibleSignInCheckAct,
     "settings.flexible-sign-in-clear": flexibleSignInClearAct,
@@ -3406,6 +3411,44 @@ ${postForm("/settings/chat-approval/save", html`\
     } catch (error) {
       return backWith("problem", error instanceof Error ? error.message : "Could not update the skill library.");
     }
+  }
+  // Settings → Updates: "Update automatically", on or off (auto-update.ts). An instance operator's step-up from a full
+  // browser session: a solo or Passwordless session stands in, otherwise the password typed now; never a token, the lead
+  // or the laptop's local owner. Proved and written in one transaction with its ledger row. Kept last in this function:
+  // password-freshness.test.ts pins the ones above by position.
+  async function updatesAutoAct(ctx: HandlerContext): Promise<void> {
+    const { response, now, posted } = ctx;
+    const who = browserCaller(ctx.who);
+    const body = readForm(posted, CONSOLE_FORMS.updatesAuto);
+    const back = sayTo(response, "/settings/updates");
+    if (["password", "enabled"].some(field => body.sent.getAll(field).length > 1)) return back("problem", "That form was sent twice over. Nothing changed.");
+    const wanted = body.get("enabled");
+    if (wanted !== "on" && wanted !== "off") return back("problem", "Choose on or off.");
+    const saved = store.transact((): "ok" | "proof" | "unreadable" => {
+      if (who.authority !== "full" || !store.isInstanceOperator(who.name)) return "proof";
+      const proved = authenticateApprover(who, body.get("password") ?? "");
+      // A person's own proof only: never a machine credential standing in for them.
+      if (!proved.ok || proved.method === "local-owner" || proved.method === "remote-token" || proved.method === "lead-token") return "proof";
+      if (autoUpdatePolicy(store) === null) return "unreadable";
+      setAutoUpdatePolicy(store, wanted === "on", who.name, now);
+      return "ok";
+    });
+    if (saved === "proof") return back("problem", "Enter your Toolroll password to change automatic updates.");
+    if (saved === "unreadable") return back("problem", "The automatic updates setting can't be read. Nothing changed.");
+    if (wanted === "on") return back("said", "Automatic updates are on. Each new release installs by itself once running work finishes.");
+    // Off also stops an automatic update under way while that is still safe; past that point it finishes or restores.
+    const databaseFile = store.databaseFile();
+    const cancelled = databaseFile === null ? null : cancelAutomaticUpdate(store, dirname(databaseFile), now);
+    return back("said", cancelled === null ? "Automatic updates are off." : `Automatic updates are off. ${cancelled}`);
+  }
+  /** Settings → Updates → Update automatically, as saved: the switch, the last attempt in one line, and what holds it. */
+  function updatesAutoView(journal: { id: string; phase: string } | null, checksOff: boolean): NonNullable<UpdatesView["auto"]> {
+    const policy = autoUpdatePolicy(store);
+    const attempt = autoUpdateAttempts(store, 1)?.[0] ?? null;
+    const words = attempt === null ? null : autoUpdateLine(attempt, attempt.outcome === null && journal?.id === attempt.journalId ? journal.phase : null);
+    const held = policy?.on !== true ? null : policy.by !== null && !store.isInstanceOperator(policy.by) ? `Paused: ${policy.by}, who turned this on, can no longer manage this installation. Turn it on again to resume.`
+      : checksOff ? "Update checks are off, so no new release is seen. Turn on Check once a day in Settings → System." : null;
+    return { policy, held, last: words === null ? null : { ...words, whatsNew: attempt!.outcome === "complete" ? whatsNewUrl(attempt!.version) : null } };
   }
   return { registrations, modelsView };
 }

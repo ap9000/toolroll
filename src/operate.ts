@@ -137,7 +137,8 @@ import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
 import { homedir, hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { CHECK_RECOVERY_HELD, readCheckRecoveryHoldsForTaskRef } from "./check-recovery-hold.js";
-import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
+import { currentRuntime, launchRuntimeUpdate, releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
+import { automaticUpdates } from "./auto-update.js";
 import { dur } from "./design/kit.js";
 import {
   requeueEligibility, type ClosedState, checkoutIdle, setCheckoutIdle, leadQuickAnswersOn, setLeadQuickAnswers, openStore, openStoreNoMigrate, initLocalMode, localModeCandidate, consoleServingNow, consoleComponent, consoleRowForPort, openConsoleRows, enrollOwnerPassword, installationCreatedBy, laptopPortOf, recordLaptopPort, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState, type Publication,
@@ -4702,7 +4703,11 @@ export async function startConsole(options: {
     // Codex's app server only for a Codex signed in to its plan: the same cached sign-in check (eight stranger 2).
     startCodexLimits(context.store, () => codexSignedInNow(signIns)),
     // At most one anonymous look a day for a newer Toolroll (Settings → Updates can switch it off).
-    startUpdateChecks(context.store, dirname(context.databaseFile), PACKAGE_VERSION, installMethod(context.installBin).updateCommand, context.releaseIo ?? {}),
+    // …and, when an instance operator turned on "Update automatically" (auto-update.ts), a newer stable release installs
+    // through the same prepared journal and independent updater Settings → Updates launches. Off by default.
+    startUpdateChecks(context.store, dirname(context.databaseFile), PACKAGE_VERSION, installMethod(context.installBin).updateCommand, context.releaseIo ?? {},
+      automaticUpdates(context.store, { stateDir: dirname(context.databaseFile), databaseFile: context.databaseFile, current: currentRuntime(PACKAGE_VERSION), kind: installMethod(context.installBin).kind,
+        now: () => new Date(), launch: args => launchRuntimeUpdate(args) })),
   ];
   server.on("close", () => { for (const stop of besideConsole) stop(); });
   // A bind-everywhere address is not a place a browser can go: the URL

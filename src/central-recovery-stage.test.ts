@@ -74,7 +74,7 @@ test("private copied retirement denies actual API/OAuth/code/refresh/cookie/lead
   const f = fixture(), original = hash(f.source), sourceStat = fs.statSync(f.source), h = copy(f.source);
   expect(fs.statSync(h.copyPath).ino).not.toBe(sourceStat.ino);
   const report = retireCentralRecoveryStage(h); expect(report).toMatchObject({ outcome: "retired-partial", schemaSupported: true, complete: false, recoveryReady: false });
-  expect(report.entries.filter(e => e.status === "retired")).toHaveLength(9);
+  expect(report.entries.filter(e => e.status === "retired")).toHaveLength(10);
   expect(report.entries.filter(e => e.status === "unsupported").length).toBeGreaterThan(0);
   expect(JSON.stringify(report)).not.toContain(f.api.hash); expect(JSON.stringify(report)).not.toContain(f.api.token);
   expect(retireCentralRecoveryStage(h)).toEqual({ ...report, repeated: true });
@@ -435,7 +435,7 @@ test("only exact178/709 is admitted; old177, missing, extra, ordinary and varian
     expect(retireCentralRecoveryStage(h)).toMatchObject({ outcome: "unsupported-schema", schemaSupported: false, complete: false, recoveryReady: false });
     expect(hash(f.source)).toBe(before); expect(hash(h.copyPath)).toBe(copied);
     const after = new DatabaseSync(h.copyPath, { readOnly: true });
-    expect(after.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(change === "old177" ? 177 : 186); after.close();
+    expect(after.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(change === "old177" ? 177 : 187); after.close();
     closeCentralRecoveryStage(h); handles.splice(handles.indexOf(h), 1); fs.rmSync(root!, { recursive: true, force: true }); root = undefined;
   }
 });
@@ -448,4 +448,19 @@ test.each(["catalog", "version", "binding"] as const)("post-open %s of the actua
     return s;
   });
   expect(() => copy(f.source)).toThrow(/Retained stage (schema|database file) changed/); expect(hash(f.source)).toBe(before);
+});
+
+test("a restored backup's automatic updates are off in the stage until a person turns them on again; attempts are kept as found", () => {
+  const f = fixture((store, now) => {
+    store.handle.prepare("INSERT INTO auto_update_policy (id, enabled, revision, updated_by, updated_at) VALUES (1, 1, 3, 'synthetic', ?)").run(now.toISOString());
+    store.handle.prepare("INSERT INTO auto_update_attempt (version, from_version, enabled_by, enabled_generation, policy_revision, reserved_at) VALUES ('9.9.9', '9.9.8', 'synthetic', 1, 3, ?)").run(now.toISOString());
+  });
+  const before = hash(f.source), h = copy(f.source);
+  const report = retireCentralRecoveryStage(h);
+  expect(report.entries.find(e => e.id === "automatic-updates")).toMatchObject({ status: "retired", affected: 1, remaining: 0 });
+  expect(hash(f.source)).toBe(before);
+  const after = new DatabaseSync(h.copyPath, { readOnly: true });
+  expect(after.prepare("SELECT enabled, revision, updated_by FROM auto_update_policy").all().map(row => ({ ...row }))).toEqual([{ enabled: 0, revision: 4, updated_by: "central-recovery-stage" }]);
+  expect(after.prepare("SELECT count(*) AS n FROM auto_update_attempt WHERE version = '9.9.9'").get()?.["n"]).toBe(1);
+  after.close();
 });

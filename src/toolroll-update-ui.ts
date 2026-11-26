@@ -27,7 +27,31 @@ export type UpdatesView = {
   /** The version `toolroll update --rollback` returns to: the last completed update's, while it is what runs. */
   rollbackTo: string | null;
   csrf: string;
+  /** "Update automatically" (auto-update.ts), shown on installs `toolroll update` manages: the saved switch, or null
+   * when it can't be read. Absent elsewhere: other installs update through their package manager or app. */
+  auto?: { policy: { on: boolean; by: string | null } | null;
+    /** The last automatic attempt in one line (auto-update.ts autoUpdateLine), with its release notes once it installed. */
+    last?: { line: string; failed: boolean; whatsNew: string | null } | null;
+    /** Why it can't install anything right now although it is on, in words; null when nothing holds it. */
+    held?: string | null };
 };
+
+/** What turning automatic updates on does, in one line (Settings → Updates). */
+export const AUTO_UPDATE_WORDS = "Installs each new release by itself: checks it came from Toolroll’s publish workflow, lets running work finish, backs up and rehearses the database, and puts the previous version back if anything fails. If an update doesn’t finish, or a version is rolled back, it turns itself off until you turn it on again.";
+
+/** Settings → Updates → Update automatically: the switch, what it does, and (behind the step-up) turning it on or off. */
+function autoHtml(auto: NonNullable<UpdatesView["auto"]>): Html {
+  const policy = auto.policy;
+  if (policy === null) return settingsSection({ id: "update-auto", title: "Update automatically", body: notice("The automatic updates setting can’t be read, so nothing updates by itself.") });
+  const on = policy.on;
+  const last = auto.last ?? null;
+  const lastLine = last === null ? "" : html`<p class="k-note" data-update-auto-last${last.failed ? html` role="status"` : ""}>${last.line}${
+    last.whatsNew === null ? "" : html` <a class="k-link" href="${last.whatsNew}" rel="noreferrer">What’s new</a>`}</p>`;
+  return settingsSection({ id: "update-auto", title: "Update automatically", state: on ? " · on" : " · off",
+    body: html`<div data-update-auto="${on ? "on" : "off"}">${joinHtml([note(AUTO_UPDATE_WORDS), on && auto.held ? notice(auto.held) : "", lastLine,
+      kitSectionForm({ proof: "updates-auto", action: "/settings/updates/auto", id: "updates-auto-form", native: true, hidden: { enabled: on ? "off" : "on" },
+        save: { label: on ? "Turn off" : "Turn on", variant: "outline" }, confirm: on ? "Turn off automatic updates" : "Turn on automatic updates", body: html`` })])}</div>` });
+}
 
 /** A step's state as one of the kit's status words. */
 const STEP_CHIP: Record<"done" | "now" | "failed" | "waiting", Html> = {
@@ -81,8 +105,9 @@ export function updatesHtml(view: UpdatesView, said: { said?: string | null; pro
       note(html`<a class="k-link" href="https://github.com/ap9000/toolroll/releases/tag/v${view.whatsNew.version}" rel="noreferrer">Full release notes</a>`)}</div>` });
   if (active) {
     const cancel = ["scheduled", "draining"].includes(j.phase) ? postForm("/settings/updates/cancel", btn("Cancel update", { sm: true, type: "submit" })) : "";
-    return settingsSection({ id: "update", title: "Update", state: html` ${chip("Running", "live")}`, ...(cancel === "" ? {} : { right: cancel }),
-      body: joinHtml([answer, html`<div id="update-region">${updateStepsHtml(j, view.running)}</div>`, html`<p class="k-note" id="update-region-stamp" aria-live="polite"></p>`]) });
+    return joinHtml([settingsSection({ id: "update", title: "Update", state: html` ${chip("Running", "live")}`, ...(cancel === "" ? {} : { right: cancel }),
+      body: joinHtml([answer, html`<div id="update-region">${updateStepsHtml(j, view.running)}</div>`, html`<p class="k-note" id="update-region-stamp" aria-live="polite"></p>`]) }),
+      view.auto === undefined ? "" : autoHtml(view.auto)]);
   }
   const latest = "version" in view.latest ? view.latest.version : null;
   const newer = latest !== null && newerThan(latest, view.current);
@@ -105,7 +130,7 @@ export function updatesHtml(view: UpdatesView, said: { said?: string | null; pro
   const rollback = view.rollbackTo !== null ? joinHtml([note(`To go back to ${view.rollbackTo}:`), codeLine("toolroll update --rollback")]) : "";
   const version = settingsSection({ id: "update", title: state[0], ...(state[2] === "" ? {} : { right: state[2] }),
     body: html`<div data-update-state="${newer ? "available" : "current"}">${joinHtml([answer, state[1] === "" ? "" : note(state[1]), form, rollback])}</div>` });
-  return joinHtml([whatsNew, j ? outcomeHtml(j) : "", version]);
+  return joinHtml([whatsNew, j ? outcomeHtml(j) : "", version, view.auto === undefined ? "" : autoHtml(view.auto)]);
 }
 
 export function newerThan(a: string, b: string): boolean {

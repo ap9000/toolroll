@@ -171,9 +171,11 @@ export function runnerVersions(dir: string): RunnerVersion[] {
 
 /**
  * The console's background check: at start and then hourly (the daily limit
- * is latestRelease's own), and a security release notifies operators.
+ * is latestRelease's own), and a security release notifies operators. `after`
+ * (auto-update.ts automaticUpdates) is handed the version this pass read; it
+ * decides on its own whether anything installs. latestRelease itself only reads.
  */
-export function startUpdateChecks(store: Store, dir: string, current: string, updateCommand: string, io: ReleaseIo & { everyMs?: number } = {}): () => void {
+export function startUpdateChecks(store: Store, dir: string, current: string, updateCommand: string, io: ReleaseIo & { everyMs?: number } = {}, after?: (latest: string | null) => Promise<void>): () => void {
   let stopped = false;
   const pass = async () => {
     const release = await latestRelease(dir, io);
@@ -184,6 +186,7 @@ export function startUpdateChecks(store: Store, dir: string, current: string, up
         // A closed store at shutdown: nothing to tell.
       }
     }
+    if (!stopped && after !== undefined) await after(release?.version ?? null);
   };
   void pass();
   const timer = setInterval(() => void pass(), io.everyMs ?? 60 * 60_000);
