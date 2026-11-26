@@ -285,9 +285,27 @@ export function sandboxToolsRepair(options: ToolTrust & { folders?: readonly str
     notes.push(`${shownText(candidates.join(", "))} can't be trusted${found.length === 0 ? "" : ` (${shownText(found.map(trustFaultWords).join("; "))})`}: reinstall ${tool.install} from your system package manager (${installLine([tool.install])}), and don't change its permissions by hand.`);
   }
   const system = faults.length === 0 && notes.length === 0 ? null : { faults, commands: [], notes };
-  // Not even through the helper's repair: no command touches a path a system program's check failed on.
+  // Not even through the helper's repair: no command touches any installed copy of a system program (passing or not,
+  // in any folder), its real target, or a folder above either (a recursive one, nothing inside it).
+  const protectedPaths = new Set<string>();
+  for (const tool of SYSTEM_TOOLS) {
+    for (const folder of folders) {
+      const copy = join(folder, tool.command);
+      if (!existsSync(copy)) continue;
+      for (const start of new Set([copy, realOrSelf(copy)])) for (let at = start; ; at = dirname(at)) { protectedPaths.add(at); if (dirname(at) === at) break; }
+    }
+  }
   const helper = seccompHelperRepair(options, packageRoot);
-  const off = new Set(faults.map(one => one.path));
-  const kept = helper === null ? null : { ...helper, commands: helper.commands.filter(command => ![...off].some(path => command.endsWith(` '${path.replace(/'/g, `'\\''`)}'`))) };
+  const kept = helper === null ? null : { ...helper, commands: helper.commands.filter(command => !touchesProtected(command, protectedPaths)) };
   return mergeRepairs(system, kept);
+}
+
+/** Whether a repair command (trust-repair.ts: its target path last, single-quoted) changes a protected path: the target
+ * is one, or (a recursive command) holds one. A target that can't be read back counts as touching. */
+function touchesProtected(command: string, protectedPaths: ReadonlySet<string>): boolean {
+  const quoted = / '((?:[^']|'\\'')*)'$/.exec(command);
+  if (quoted === null) return true;
+  const target = quoted[1]!.replace(/'\\''/g, "'");
+  if (protectedPaths.has(target)) return true;
+  return / -R /.test(command) && [...protectedPaths].some(path => insideOrAt(path, target));
 }

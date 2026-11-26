@@ -215,6 +215,24 @@ describe("the Linux sandbox's own programs: root's own, by exact path, checked a
     expect(theirs.notes.join("\n")).toContain(reinstall("bubblewrap"));
   });
 
+  test("a trusted copy doesn't open the way for a command on a rejected one: no chmod on a folder above any installed system copy", () => {
+    // /usr/bin/bwrap trusted; /usr/local/bin/bwrap rejected (its /usr/local writable); the helper under /usr/local too.
+    const system = folder("usr-bin");
+    const local = join(world, "usr-local");
+    mkdirSync(join(local, "bin"), { recursive: true });
+    mkdirSync(join(local, "lib", "seccomp"), { recursive: true });
+    writeFileSync(join(local, "bin", "bwrap"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(local, "bin", "bwrap"), 0o755);
+    const seccomp = helper(join(local, "lib", "seccomp"));
+    for (const dir of [join(local, "bin"), join(local, "lib"), join(local, "lib", "seccomp")]) chmodSync(dir, 0o755);
+    chmodSync(local, 0o775);
+    const folders = [system, join(realpathSync(local), "bin")];
+    const trust = { ...standIn, folders, seccomp };
+    expect(checkSeccompHelper(seccomp, { all: [] }, trust).ok).toBe(false);
+    const repair = sandboxToolsRepair(trust, null);
+    expect((repair?.commands ?? []).filter(one => one.includes(realpathSync(local)))).toEqual([]);
+  });
+
   test("a missing program refuses with a plain reason, and nothing falls back to a PATH lookup", () => {
     const system = folder("system", ["socat"]);
     process.env["PATH"] = folder("on-path");
