@@ -109,6 +109,16 @@ export function sameProcess(pid: number, recorded: string, io: IdentityIo = {}):
   return now === was ? "same" : "other";
 }
 
+/** The parent of `pid` (field 4 of /proc/<pid>/stat on Linux, else `ps -o ppid=`), or null. Busybox `ps` has neither
+ * `-p` nor `-o ppid`, so /proc is what answers on Alpine. */
+export function processParentId(pid: number, io: IdentityIo = {}): number | null {
+  if (!Number.isSafeInteger(pid) || pid <= 1 || (io.platform ?? process.platform) === "win32") return null;
+  const fields = procFields(pid, io);
+  const raw = fields !== null ? fields[1]! : (io.ps ?? defaultPs)(pid, "ppid")?.trim() ?? "";
+  const parent = Number(raw);
+  return /^\d+$/.test(raw) && Number.isSafeInteger(parent) && parent > 0 ? parent : null;
+}
+
 /** The process group of `pid` (field 5 of /proc/<pid>/stat on Linux, else `ps -o pgid=`), or null. */
 export function processGroupId(pid: number, io: IdentityIo = {}): number | null {
   if (!Number.isSafeInteger(pid) || pid <= 1 || (io.platform ?? process.platform) === "win32") return null;

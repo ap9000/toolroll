@@ -4,7 +4,7 @@
  * "other": a provider or format change can't prove a live process gone.
  */
 import { expect, test } from "vitest";
-import { identityProvider, processGroupId, processGroupRss, processIdentity, processIdentityProblem, procStatFields, sameProcess, type IdentityIo } from "./process-identity.js";
+import { identityProvider, processGroupId, processParentId, processGroupRss, processIdentity, processIdentityProblem, procStatFields, sameProcess, type IdentityIo } from "./process-identity.js";
 import { fakePid } from "../test/fake-pid.js";
 
 const BOOT = "0f6a3c1e-2b4d-4e5f-8a9b-0c1d2e3f4a5b";
@@ -36,6 +36,14 @@ test.each([
   expect(processIdentity(PID, undefined, linux(files))).toBeNull();
   expect(processIdentity(PID, undefined, linux(files, { lstart: "Thu Oct 29 13:11:05 2026\n" }))).toBe("2026-10-29T13:11:05.000Z");
   expect(processIdentity(PID, "proc", linux(files, { lstart: "Thu Oct 29 13:11:05 2026\n" }))).toBeNull();
+});
+
+test("a parent from /proc (a name with parentheses read safely), else ps; neither: unknown", () => {
+  const line = `${PID} (a) b) S ${fakePid(3)} ${PID} ${PID} 0 -1 4194560 100 0 0 0 1 1 0 0 20 0 1 0 77 1000000 200 18446744073709551615\n`;
+  expect(processParentId(PID, linux({ [`/proc/${PID}/stat`]: line }))).toBe(fakePid(3));
+  expect(processParentId(PID, linux({}, { ppid: ` ${fakePid(4)}\n` }))).toBe(fakePid(4));
+  expect(processParentId(PID, linux({}))).toBeNull();
+  expect(processParentId(PID, linux({ [`/proc/${PID}/stat`]: `${PID} (x S` }, { ppid: "garbage" }))).toBeNull();
 });
 
 test("stat fields are read after the last parenthesis, or not at all", () => {
