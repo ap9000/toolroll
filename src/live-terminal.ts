@@ -12,6 +12,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 import { codingEnvironment } from "./coding-provider.js";
+import { materializeProjectSkills, type SkillsSnapshot } from "./project-skills.js";
 import { teardownGit, refusal, recordedCommonDir, TEARDOWN_FLAGS, type Git } from "./teardown-git.js";
 import { run, type ExecResult } from "./exec.js";
 import { ENV, ENV_ALLOWLIST } from "./remote-main.js";
@@ -273,6 +274,8 @@ type Session = TerminalSummary & {
   dropped: boolean;
   /** Ends a sensitive pane nobody attached to within SENSITIVE_ATTACH_MS. */
   attachTimer: NodeJS.Timeout | null;
+  /** Read-only materialized pinned skills folder for this terminal session, cleaned up on removal. */
+  skillsDir: string | null;
 };
 /** What a sensitive pane holds for its one page before that page attaches (it attaches within a moment of the start). */
 export const SENSITIVE_EARLY_BYTES = 256 * 1024;
@@ -328,6 +331,8 @@ export type TerminalHostOptions = {
   copyGit?: (file: string, args: readonly string[], options: Parameters<typeof run>[2]) => Promise<ExecResult>;
   /** Who else works in a worktree (tests stand theirs in); default worktreeResidents. */
   residents?: (table: ProcessTable, worktreeReal: string, terminalStartedMs: number) => Set<number> | null;
+  /** Pinned skills snapshot for a project (global library + project selection), materialized read-only into TOOLROLL_SKILLS_DIR. */
+  skillsForRepo?: (repo: string) => SkillsSnapshot | null;
 };
 
 /** A take-over copy's whole git config: Toolroll's lines and nothing else. */
@@ -511,13 +516,28 @@ export class TerminalHost {
       if (from === null) await git(["worktree", "add", "-b", branch, "--", worktree, base]);
       else await this.copyAt(repo, worktree, branch, base);
       const cols = clamp(size.cols, COLS), rows = clamp(size.rows, ROWS);
+      let skillsDir: string | null = null;
+      const launchEnv: NodeJS.ProcessEnv = { ...env };
+      try {
+        const snapshot = this.options.skillsForRepo?.(repo);
+        if (snapshot && snapshot.packages.length > 0) {
+          const materialized = materializeProjectSkills(snapshot, join(this.options.worktreeRoot, ".skills"), id.slice(0, 16));
+          if (materialized.directory !== null) {
+            skillsDir = materialized.directory;
+            launchEnv["TOOLROLL_SKILLS_DIR"] = skillsDir;
+          }
+        }
+      } catch {
+        // Skills unavailable: terminal still starts cleanly.
+      }
       let pty: Pty;
       try {
         if (this.stopped) throw new TerminalError("The console is stopping.");
         const refused = admit();
         if (refused !== null) throw new TerminalError(refused);
-        pty = this.options.spawn(command.file, command.args, { cwd: worktree, env, cols, rows });
+        pty = this.options.spawn(command.file, command.args, { cwd: worktree, env: launchEnv, cols, rows });
       } catch (error) {
+        if (skillsDir !== null) rmSync(skillsDir, { recursive: true, force: true });
         // Nothing ran in it: take the worktree and branch back (a take-over's copy is Toolroll's own folder).
         if (from !== null) rmSync(worktree, { recursive: true, force: true });
         else {
@@ -529,7 +549,7 @@ export class TerminalHost {
       let resolveExited!: () => void;
       const session: Session = { id, owner, generation, localGeneration, task: from?.task ?? null, run: from?.run ?? null, agent: null, base: from === null ? null : base, repo, program, branch, worktree, startedAt: this.clock().toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null,
         pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(worktree), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, this.options.scrollbackLines), paused: false, flowTimer: null, attaching: 0, viewers: new Set(), controller: null, leaseEpoch: 0, viewerActors: new Map(), viewerGates: new Map(), closing: null,
-        exited: new Promise(resolve => { resolveExited = resolve; }), sensitive: false, attachedOnce: false, early: [], earlyBytes: 0, dropped: false, attachTimer: null };
+        exited: new Promise(resolve => { resolveExited = resolve; }), sensitive: false, attachedOnce: false, early: [], earlyBytes: 0, dropped: false, attachTimer: null, skillsDir };
       this.sessions.set(id, session);
       this.ledger.running(id);
       reserved = false;
@@ -602,7 +622,7 @@ export class TerminalHost {
       let resolveExited!: () => void;
       const session: Session = { id, owner, generation, localGeneration, task: null, run: null, agent: { ...agent }, base: null, repo: "", program: "shell", branch: "", worktree: folder, startedAt: this.clock().toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null,
         pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(folder), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, 0), paused: false, flowTimer: null, attaching: 0, viewers: new Set(), controller: null, leaseEpoch: 0, viewerActors: new Map(), viewerGates: new Map(), closing: null,
-        exited: new Promise(resolve => { resolveExited = resolve; }), sensitive: true, attachedOnce: false, early: [], earlyBytes: 0, dropped: false, attachTimer: null };
+        exited: new Promise(resolve => { resolveExited = resolve; }), sensitive: true, attachedOnce: false, early: [], earlyBytes: 0, dropped: false, attachTimer: null, skillsDir: null };
       this.wire(session, () => { resolveExited(); try { exited(); } catch { /* the caller's own */ } });
       this.sessions.set(id, session);
       this.ledger.running(id);
@@ -1102,6 +1122,10 @@ export class TerminalHost {
     for (const viewer of session.viewers) { try { viewer.control({ t: "exit", code: session.exit?.code ?? null, signal: session.exit?.signal ?? null }); } catch { /* gone */ } }
     session.viewers.clear();
     session.screen.dispose();
+    if (session.skillsDir !== null) {
+      rmSync(session.skillsDir, { recursive: true, force: true });
+      session.skillsDir = null;
+    }
     if (session.base !== null || session.agent !== null) {
       rmSync(session.worktree, { recursive: true, force: true });
       this.options.record?.("remove", this.summary(session));

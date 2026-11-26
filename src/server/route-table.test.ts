@@ -54,7 +54,7 @@ const LIMITED_ACCESS = {
   // Start a builder (S4): where Connect a builder leads; the handler shows only a visible project.
   'start-builder': 'unscoped',
   'code.session': 'self', 'code.ship': 'self', 'code.ship-send': 'self', 'code.start': 'self', 'code.state': 'self', 'code.stop-send': 'self',
-  'settings.skills-revise': 'unscoped', 'settings.skills-import': 'unscoped', 'settings.skills-change': 'unscoped',
+  'settings.skills-revise': 'unscoped', 'settings.skills-import': 'unscoped', 'settings.skills-change': 'unscoped', 'settings.skills-library': 'unscoped',
   'flows.gallery-create': 'resource', 'flows.create': 'resource', 'flows.import': 'resource',
   'flow.archive': 'resource', 'flow.cards': 'resource', 'flow.run': 'resource', 'flow.save': 'resource', 'flow.triggers': 'resource', 'flow.card.assign': 'resource', 'flow.card.cancel': 'resource', 'flow.card.comment': 'resource',
   'flow.card.decide': 'resource', 'flow.card.move': 'resource', 'flow.card.watch': 'resource',

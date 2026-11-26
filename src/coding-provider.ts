@@ -410,11 +410,11 @@ export function createCodexCodingProvider(options: { cwd?: string; command?: str
  * sessions have never had one). The worktree is bound to its project by the plane's own records first; anything that
  * doesn't prove refuses the session.
  */
-export function codingSessionPermissions(store: Pick<Store, "databaseFile" | "listWorktrees" | "projectSandbox">, worktreeRoot: string): (input: { repo: string; worktree: string; skills?: SkillsManifest | null }) => Promise<CodingPermissions> {
-  return input => sessionPermissions(store, { ...input, worktreeRoot });
+export function codingSessionPermissions(store: Pick<Store, "databaseFile" | "listWorktrees" | "projectSandbox">, worktreeRoot: string, evidenceRoot: string | null = null): (input: { repo: string; worktree: string; skills?: SkillsManifest | null }) => Promise<CodingPermissions> {
+  return input => sessionPermissions(store, { ...input, worktreeRoot, evidenceRoot });
 }
 
-async function sessionPermissions(store: Pick<Store, "databaseFile" | "listWorktrees" | "projectSandbox">, input: { repo: string; worktree: string; worktreeRoot: string; skills?: SkillsManifest | null }): Promise<CodingPermissions> {
+async function sessionPermissions(store: Pick<Store, "databaseFile" | "listWorktrees" | "projectSandbox">, input: { repo: string; worktree: string; worktreeRoot: string; evidenceRoot?: string | null; skills?: SkillsManifest | null }): Promise<CodingPermissions> {
   const databaseFile = store.databaseFile();
   if (databaseFile === null || databaseFile === "" || databaseFile === ":memory:") return { problem: "The coding session has no state folder to fence, so it was not started." };
   try {
@@ -429,7 +429,7 @@ async function sessionPermissions(store: Pick<Store, "databaseFile" | "listWorkt
     // session's skills folder denied, and exactly this session's files read back, or no session.
     const skills = skillsGrant({ root: join(dirname(databaseFile), "coding-context"), manifest: input.skills ?? null });
     if (skills.problem !== null) return { problem: `${skills.problem}, so the session was not started.` };
-    const launch = fenceFor("build", { databaseFile, worktree: input.worktree, boundary, binding, runFolders: runFolders(null), poolRoots, readDeny, extra: skills.deny, policy: FENCE_POLICY_CURRENT, storage, exactFiles: skills.files });
+    const launch = fenceFor("build", { databaseFile, worktree: input.worktree, boundary, binding, runFolders: runFolders(null), poolRoots, readDeny, evidenceRoot: input.evidenceRoot ?? null, extra: skills.deny, policy: FENCE_POLICY_CURRENT, storage, exactFiles: skills.files, exactDigests: skills.digests, exactFolders: skills.folders });
     return { config: codexFenceConfig(launch.fence, false, launch.fenceGrants) };
   } catch (error) {
     // The storage check's own words survive: what didn't finish, and which program macOS may need to allow.

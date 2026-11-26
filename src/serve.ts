@@ -192,6 +192,7 @@ import { createDirectChatHandlers } from './server/direct-chat.js';
 import { declareSoloOnUpgrade, sessionStandsIn } from './install-mode.js';
 import { keepTypedFields, openProjectFor, settingsCrumbs } from './settings-kit.js';
 import { createSweepHandlers } from './server/sweeps.js';
+import { sweepSkillBundleUpdates } from './skill-library.js';
 import { createFlowsHandlers } from './server/flows.js';
 import type { HandlerContext } from './server/handler-context.js';
 import { createPagesHandlers } from './server/pages.js';
@@ -293,7 +294,7 @@ function buildDecisionServer(options: ServeOptions, leaveRehearsal: (() => void)
   if (coding === null && options.localRunner !== undefined && !store.isDemo()) {
     const database = store.handle.prepare('PRAGMA database_list').all().find(row => row['name'] === 'main')?.['file'];
     if (typeof database === 'string' && database !== '') {
-      try { coding = new CodingWorkspace({ database: `${database}.coding.sqlite`, worktreeRoot: join(dirname(database), 'coding-worktrees'), permissions: codingSessionPermissions(store, join(dirname(database), 'coding-worktrees')), admissionPaused: () => updateAdmissionPaused(store.raw()), authorize: (actor, repo) => codingActorAllowed(actor) && codingProjectAllowed(repo), context: input => prepareCodingContext(store, { ...input, root: join(dirname(database), 'coding-context') }) }); }
+      try { coding = new CodingWorkspace({ database: `${database}.coding.sqlite`, worktreeRoot: join(dirname(database), 'coding-worktrees'), permissions: codingSessionPermissions(store, join(dirname(database), 'coding-worktrees'), evidenceRoot ?? null), admissionPaused: () => updateAdmissionPaused(store.raw()), authorize: (actor, repo) => codingActorAllowed(actor) && codingProjectAllowed(repo), context: input => prepareCodingContext(store, { ...input, root: join(dirname(database), 'coding-context') }) }); }
       catch (error) { codingProblem = error instanceof Error ? error.message : 'The coding workspace could not open.'; }
     }
   }
@@ -2224,6 +2225,12 @@ function buildDecisionServer(options: ServeOptions, leaveRehearsal: (() => void)
         if (databaseFile !== null && !updateChecksOff(process.env, options.configDir ?? dirname(databaseFile)).off) {
           const last = lastChecks.known<{ version: string } | { problem: string }>("release");
           if (lastChecks.due("release", last !== null && "problem" in last.value ? 60_000 : 15 * 60_000)) waits.push(checkRelease());
+          if (!store.isDemo() && store.schemaCurrent() && lastChecks.due("skill-bundles", 24 * 60 * 60_000)) {
+            waits.push(lastChecks.run("skill-bundles", async () => {
+              await sweepSkillBundleUpdates(store, { actor: "toolroll", now: clock() });
+              return true;
+            }));
+          }
         }
         // Chat's first tasks (issues and TODOs) while the first run is open and nothing is filed yet.
         if (firstRunStepsNow(clock()) !== null && !store.hasAnyWork()) {

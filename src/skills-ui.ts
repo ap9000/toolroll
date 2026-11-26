@@ -9,6 +9,8 @@ import type {
   SkillsView,
   skillTestResult,
 } from "./project-skills.js";
+import type { SkillLibraryView } from "./skill-library.js";
+import type { DetectedLocalTool } from "./skill-local-sync.js";
 // Hidden fields as they always were: a missing value is an empty field.
 const fields = (data: Record<string, unknown>): Record<string, string> =>
   Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v ?? "")]));
@@ -130,7 +132,7 @@ export function skillsSnapshotHtml(snapshot: SkillsSnapshot | null): Html | "" {
   return html`<details class="skills"><summary>Skills supplied (${snapshot.packages.length})</summary><p class="meta">Exact versions supplied to this run. This does not confirm the agent read or applied them.</p>${snapshot.packages.map((s) => html`<details><summary>${s.name} · ${s.sha.slice(0, 10)}</summary>${source(s)}</details>`)}</details>`;
 }
 export function skillsScript() {
-  return `(()=>{const search=document.querySelector('[data-skill-search]');if(search)search.addEventListener('input',()=>{let found=0;document.querySelectorAll('[data-skill-group]').forEach(el=>{el.hidden=!el.dataset.skillQuery.toLowerCase().includes(search.value.trim().toLowerCase());if(!el.hidden)found++;});document.querySelector('[data-skill-no-matches]').hidden=found>0;});const form=document.querySelector('[data-skill-import]');if(!form)return;const method=form.querySelector('[data-skill-method]'),error=form.querySelector('[data-skill-error]');function sync(){form.querySelectorAll('[data-skill-input]').forEach(el=>{el.hidden=el.dataset.skillInput!==method.value;el.querySelectorAll('input,textarea').forEach(i=>i.disabled=el.hidden);});}method.addEventListener('change',sync);sync();form.addEventListener('submit',async event=>{if(method.value!=='folder')return;if(form.dataset.prepared==='yes'){delete form.dataset.prepared;return;}event.preventDefault();error.hidden=true;error.textContent='';const button=form.querySelector('button');button.disabled=true;try{const files=Array.from(form.querySelector('[data-skill-folder]').files);if(!files.length||files.length>64||files.reduce((n,f)=>n+f.size,0)>1048576||files.some(f=>f.size>262144))throw Error('Choose one skill folder with up to 64 files and 1 MB total.');const packed=[];for(const file of files){const parts=file.webkitRelativePath.split('/');parts.shift();const data=new Uint8Array(await file.arrayBuffer());let binary='';for(const byte of data)binary+=String.fromCharCode(byte);packed.push({path:parts.join('/'),base64:btoa(binary)});}form.querySelector('[name=files]').value=JSON.stringify(packed);form.dataset.prepared='yes';button.disabled=false;form.requestSubmit();}catch(e){error.textContent=e.message||'The folder could not be read. Select it again.';error.hidden=false;button.disabled=false;}});})();`;
+  return `(()=>{const gsearch=document.querySelector('[data-global-skill-search]');if(gsearch)gsearch.addEventListener('input',()=>{let found=0;document.querySelectorAll('[data-global-skill-group]').forEach(el=>{el.hidden=!el.dataset.globalSkillQuery.toLowerCase().includes(gsearch.value.trim().toLowerCase());if(!el.hidden)found++;});const nm=document.querySelector('[data-global-skill-no-matches]');if(nm)nm.hidden=found>0;});const search=document.querySelector('[data-skill-search]');if(search)search.addEventListener('input',()=>{let found=0;document.querySelectorAll('[data-skill-group]').forEach(el=>{el.hidden=!el.dataset.skillQuery.toLowerCase().includes(search.value.trim().toLowerCase());if(!el.hidden)found++;});document.querySelector('[data-skill-no-matches]').hidden=found>0;});const form=document.querySelector('[data-skill-import]');if(!form)return;const method=form.querySelector('[data-skill-method]'),error=form.querySelector('[data-skill-error]');function sync(){form.querySelectorAll('[data-skill-input]').forEach(el=>{el.hidden=el.dataset.skillInput!==method.value;el.querySelectorAll('input,textarea').forEach(i=>i.disabled=el.hidden);});}method.addEventListener('change',sync);sync();form.addEventListener('submit',async event=>{if(method.value!=='folder')return;if(form.dataset.prepared==='yes'){delete form.dataset.prepared;return;}event.preventDefault();error.hidden=true;error.textContent='';const button=form.querySelector('button');button.disabled=true;try{const files=Array.from(form.querySelector('[data-skill-folder]').files);if(!files.length||files.length>64||files.reduce((n,f)=>n+f.size,0)>1048576||files.some(f=>f.size>262144))throw Error('Choose one skill folder with up to 64 files and 1 MB total.');const packed=[];for(const file of files){const parts=file.webkitRelativePath.split('/');parts.shift();const data=new Uint8Array(await file.arrayBuffer());let binary='';for(const byte of data)binary+=String.fromCharCode(byte);packed.push({path:parts.join('/'),base64:btoa(binary)});}form.querySelector('[name=files]').value=JSON.stringify(packed);form.dataset.prepared='yes';button.disabled=false;form.requestSubmit();}catch(e){error.textContent=e.message||'The folder could not be read. Select it again.';error.hidden=false;button.disabled=false;}});})();`;
 }
 
 export function skillTestFeedbackHtml(
@@ -141,4 +143,150 @@ export function skillTestFeedbackHtml(
   draft = "",
 ): Html {
   return html`<section class="skills" id="skill-test-feedback"><h2>Improve this test</h2>${test.sourceRun ? html`<p>Revises test run #${test.sourceRun}.</p>` : ""}${test.feedback ? html`<details><summary>Feedback for this test</summary><p>${test.feedback}</p></details>` : ""}${test.revisions.length ? html`<p>${joinHtml(test.revisions.map((id, i) => html`<a href="/t/${encodeURIComponent(id)}">Test revision ${i + 1}</a>`), " · ")}</p>` : ""}${error ? html`<p role="alert">${error}</p>` : ""}${canManage && csrf ? postForm("/settings/skills/revise", html`<label>What should change?<textarea name="feedback" required maxlength="500" rows="3" placeholder="Try a clearer action label and explain why it fits the user’s goal.">${draft}</textarea></label><p class="meta">Creates another report task with this skill version and your feedback. Review its scope before it runs.</p><button>Create revision</button>`, { hidden: fields({ repo: test.repo, run: test.run, nonce: randomUUID() }) }) : ""}</section>`;
+}
+
+/** Global skill library (shared across all projects unless opted out), GitHub bundles, and local computer tool sync. */
+export function skillLibrarySectionHtml(
+  library: SkillLibraryView,
+  localTools: readonly DetectedLocalTool[],
+  csrf: string,
+  canManage: boolean,
+  options: {
+    repo?: string;
+    said?: string | null;
+    error?: string | null;
+  } = {},
+): Html {
+  const manage = canManage && !!csrf;
+  const repo = options.repo ?? "";
+  const libForm = (action: string, contents: Html, extra: Record<string, unknown> = {}) =>
+    postForm("/settings/skills/library", contents, { hidden: fields({ action, repo, revision: library.revision, ...extra }) });
+
+  const enabledCount = Object.values(library.selection).filter((c) => c.enabled).length;
+  const projectOptedOutAll = library.projectOptOut?.all === true;
+  const projectOptOutNames = new Set(library.projectOptOut?.names ?? []);
+  const importBundleForm = manage
+    ? disclose("Import a GitHub skill bundle", libForm("import-bundle", joinHtml([
+        formRow("GitHub repository URL", "Imports every SKILL.md found in the repository, pinned to its exact commit SHA.",
+          input({ id: "bundle-url", name: "url", type: "url", attrs: { required: true, placeholder: "https://github.com/owner/repo", "aria-label": "GitHub repository URL" } }), "wide"),
+        html`<label class="k-note"><input type="checkbox" name="autoUpdate" value="1" checked> Check daily and apply clean updates automatically (suspicious changes are held for review)</label>`,
+        acts(btn("Import bundle", { variant: "primary", type: "submit" })),
+      ])), library.bundles.length === 0 && library.skills.length === 0)
+    : "";
+
+  const addGlobalSkillForm = manage
+    ? disclose("Add a single skill to all projects", libForm("import-skill", joinHtml([
+        formRow("SKILL.md", "Added to the global library and enabled across all projects unless opted out.",
+          textarea({ id: "global-skill-content", name: "content", rows: 6, attrs: { required: true, maxlength: 24576, placeholder: "---\nname: code-review\ndescription: Review changes for clarity and bugs.\n---\nWrite your instructions here.", "aria-label": "Global SKILL.md" } }), "top"),
+        acts(btn("Add to global library", { sm: true, type: "submit" })),
+      ]), { method: "paste" }))
+    : "";
+
+  const bundleCards = library.bundles.map((bundle) => {
+    const heldBlock = bundle.heldCommit
+      ? joinHtml([
+          notice(`Update held for review (${bundle.heldCommit.slice(0, 12)}): ${bundle.heldReason ?? "Suspicious change detected."}`),
+          manage ? html`<div class="skill-controls">${libForm("apply-held", btn("Apply held update anyway", { sm: true, type: "submit" }), { bundle: bundle.id })}${libForm("dismiss-held", btn("Dismiss held update", { sm: true, type: "submit" }), { bundle: bundle.id })}</div>` : "",
+        ])
+      : "";
+    const controls = manage
+      ? html`<div class="skill-controls">
+          ${libForm("sweep-bundle", btn("Check for updates", { sm: true, type: "submit" }), { bundle: bundle.id })}
+          ${libForm("bundle-auto-update", btn(bundle.autoUpdate ? "Pause daily updates" : "Enable daily updates", { sm: true, type: "submit" }), { bundle: bundle.id, autoUpdate: bundle.autoUpdate ? "0" : "1" })}
+          ${bundle.previousCommit ? libForm("rollback-bundle", btn(`Roll back to ${bundle.previousCommit.slice(0, 10)}`, { sm: true, type: "submit" }), { bundle: bundle.id }) : ""}
+        </div>`
+      : "";
+    return settingsRecord({
+      title: html`<span>${bundle.owner}/${bundle.repoName}</span>${chip(`${plural(bundle.skillNames.length, "skill", "skills")}`, "done")}${bundle.heldCommit ? chip("Update held", "") : ""}`,
+      sub: html`Pinned at <span class="k-mono">${bundle.pinnedCommit.slice(0, 12)}</span> · ${bundle.autoUpdate ? "Daily auto-update on" : "Manual updates"}`,
+      when: bundle.lastCheckedAt ? html`Checked ${whenUtc(bundle.lastCheckedAt)}` : undefined,
+      more: joinHtml([heldBlock, controls]),
+    });
+  });
+
+  const projectOptOutToggle = manage && repo
+    ? libForm("project-opt-out", acts(btn(projectOptedOutAll ? "Re-enable global library for this project" : "Opt this project out of the global library", { sm: true, type: "submit" })), {
+        skill: "*",
+        optedOut: projectOptedOutAll ? "0" : "1",
+      })
+    : "";
+
+  const globalSkillCards = library.skills.map((skill) => {
+    const enabled = library.selection[skill.name]?.sha === skill.sha && library.selection[skill.name]?.enabled === true;
+    const optedOutThis = projectOptOutNames.has(skill.name);
+    const optOut = optedOutThis || projectOptedOutAll;
+    const statusChip = !enabled
+      ? chip("Disabled", "")
+      : optOut
+        ? chip("Opted out here", "")
+        : chip("Active", "done");
+    const controls = manage
+      ? html`<div class="skill-controls">
+          ${libForm(enabled ? "disable-skill" : "enable-skill", btn(enabled ? "Disable globally" : "Enable globally", { sm: true, type: "submit" }), { sha: skill.sha })}
+          ${repo && !projectOptedOutAll ? libForm("project-opt-out", btn(optedOutThis ? "Include in this project" : "Opt out here", { sm: true, type: "submit" }), { skill: skill.name, optedOut: optedOutThis ? "0" : "1" }) : ""}
+        </div>`
+      : "";
+    return html`<div data-global-skill-group data-global-skill-query="${skill.name + " " + skill.description}">${settingsRecord({
+      title: html`<span>${skill.name}</span>${statusChip}`,
+      sub: skill.description,
+      more: joinHtml([
+        disclose("Review skill", joinHtml([sourceKit(skill), controls])),
+      ]),
+    })}</div>`;
+  });
+
+  const globalSearch = library.skills.length > 5
+    ? html`${formRow("Search global library", null, input({ id: "global-skill-search", name: "global-skill-search", type: "search", attrs: { "data-global-skill-search": true, placeholder: "Filter global skills by name or description", "aria-label": "Search global library" } }), "wide")}<p class="k-note" data-global-skill-no-matches hidden>No matching global skills.</p>`
+    : "";
+
+  const globalSection = settingsSection({
+    id: "global-library",
+    title: "Global Skill Library",
+    lead: `${enabledCount ? `${plural(enabledCount, "skill", "skills")} active across all projects by default.` : "No global skills installed yet."} Every agent (tasks, Direct Chat, threads, terminals, and the lead) receives this pinned set unless a project opts out.`,
+    body: joinHtml([
+      importBundleForm,
+      addGlobalSkillForm,
+      bundleCards.length ? html`<h3>Tracked GitHub bundles</h3>${joinHtml(bundleCards)}` : "",
+      projectOptOutToggle,
+      globalSearch,
+      globalSkillCards.length ? joinHtml(globalSkillCards) : note("Import a GitHub skill repository or add a skill above to share it across every project."),
+    ]),
+  });
+
+  const localToolCards = localTools.map((tool) => {
+    const statusChip = !tool.detected
+      ? chip("Not detected", "")
+      : tool.enabled
+        ? chip(`Synced (${tool.installedCount})`, "done")
+        : chip("Detected · off", "");
+    const sub = tool.detected
+      ? html`Writes only Toolroll-managed skills to <span class="k-mono">${tool.skillsDir ?? tool.toolHome}</span>. Your own hand-written skills are never overwritten.`
+      : "Folder not found on this computer — Toolroll only writes where a tool is already installed.";
+    const actions = manage && tool.detected
+      ? html`<div class="skill-controls">
+          ${libForm("local-sync", btn(tool.enabled ? "Turn off sync" : "Also install here", { sm: true, type: "submit" }), { tool: tool.tool, enabled: tool.enabled ? "0" : "1" })}
+          ${tool.enabled ? libForm("local-sync-now", btn("Sync now", { sm: true, type: "submit" }), { tool: tool.tool }) : ""}
+        </div>`
+      : "";
+    return settingsRecord({
+      title: html`<span>${tool.label}</span>${statusChip}`,
+      sub,
+      when: tool.syncedAt ? html`Last synced ${whenUtc(tool.syncedAt)}` : undefined,
+      more: actions,
+    });
+  });
+
+  const localSection = settingsSection({
+    id: "local-sync",
+    title: "Also install on this computer",
+    lead: "Mirror your enabled global skills into your local Claude Code, Codex, and Gemini CLI folders. Toolroll only writes into tools detected on this computer and never touches your own skills.",
+    body: joinHtml(localToolCards),
+  });
+
+  return joinHtml([
+    options.said ? notice(options.said) : "",
+    options.error ? notice(options.error) : "",
+    globalSection,
+    localSection,
+  ]);
 }

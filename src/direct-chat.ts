@@ -34,6 +34,9 @@ import {
 } from "./direct-chat-git.js";
 import { applyMainDirtyPatch, cloneSafeNodeModulesAsync, type ApplyMainDirtyPatchResult } from "./direct-chat-workspace.js";
 import { defaultContextWindowFor, normalizeDirectChatEffort, resolveAgyModelForEffort, type DirectChatEffort } from "./direct-chat-catalog.js";
+import { effectiveSkillsForRepo, materializeProjectSkills } from "./project-skills.js";
+import { formatSkillsBrief } from "./skill-library.js";
+import type { SkillsManifest } from "./skills-manifest.js";
 import type { Store } from "./store.js";
 
 export type DirectChatProvider = "claude" | "codex" | "gemini";
@@ -685,12 +688,16 @@ export function buildTurnPrompt(input: {
   branch: string;
   isFirstTurnForProvider: boolean;
   priorTurns: readonly Pick<DirectChatTurnRow, "userPrompt" | "assistantText">[];
+  skillsPrompt?: string;
 }): string {
   const parts: string[] = [];
   if (input.isFirstTurnForProvider) {
     parts.push(
       `[Workspace boundary: you are working in an isolated local clone on branch ${input.branch} with no remote. Work only inside this directory; never push, force-reset, or delete files outside this workspace. Leave your changes in the working tree — do not run git commit or git push, because Toolroll commits and ships snapshots for you.]`
     );
+    if (input.skillsPrompt && input.skillsPrompt.trim() !== "") {
+      parts.push(input.skillsPrompt.trim());
+    }
     if (input.priorTurns.length > 0) {
       const slice = input.priorTurns.slice(-HANDOFF_MAX_TURNS);
       let handoff = "[Context handed off from earlier turns in this chat:]\n";
@@ -723,6 +730,8 @@ export type DirectChatHostSeams = {
     /** The outer fence Claude's turn runs in (direct-chat-fence.ts); absent for the other agents. */
     fence?: DirectChatTurnFence;
   }) => { pid: number; pgid: number; startIdentity: string | null };
+  /** Custom evidence folder denied to every Direct Chat turn. */
+  evidenceRoot?: string | null;
   /** How a Claude turn's fence is made (default: direct-chat-fence.ts directChatFence). A test that injects spawnTurn
    * and no fenceTurn makes none (no proxy or storage walk starts); production never injects spawnTurn. */
   fenceTurn?: DirectChatFenceFn;
@@ -887,6 +896,8 @@ export class DirectChatHost {
   private readonly fenceTurnFn: DirectChatFenceFn | null;
   /** Each running Claude turn's fence closer (its proxy and temp folder), closed when the turn settles. */
   private readonly turnFences = new Map<string, () => Promise<void>>();
+  /** Read-only materialized skills folder for each running turn, removed when the turn settles. */
+  private readonly turnSkillDirs = new Map<string, string>();
   private readonly prepareCloneFn: NonNullable<DirectChatHostSeams["prepareClone"]>;
   private readonly readDiffFn: NonNullable<DirectChatHostSeams["readDiff"]>;
   private readonly hasCustomReadDiff: boolean;
@@ -911,7 +922,7 @@ export class DirectChatHost {
     this.stopGraceMs = seams.stopGraceMs ?? DEFAULT_STOP_GRACE_MS;
     this.locateBinary = seams.locateBinary ?? (provider => locateDirectChatBinary(provider));
     this.spawnTurnFn = seams.spawnTurn ?? (input => defaultSpawnTurn(this.custody, input));
-    this.fenceTurnFn = seams.fenceTurn ?? (seams.spawnTurn === undefined ? directChatFence(store) : null);
+    this.fenceTurnFn = seams.fenceTurn ?? (seams.spawnTurn === undefined ? directChatFence(store, seams.evidenceRoot ?? null) : null);
     this.prepareCloneFn = seams.prepareClone ?? defaultPrepareCloneAsync;
     this.hasCustomReadDiff = seams.readDiff !== undefined;
     this.readDiffFn = seams.readDiff ?? defaultReadDiff;
@@ -941,6 +952,10 @@ export class DirectChatHost {
       this.pollTimer = null;
     }
     for (const turnId of [...this.turnFences.keys()]) this.closeTurnFence(turnId);
+    for (const [turnId, dir] of [...this.turnSkillDirs.entries()]) {
+      this.turnSkillDirs.delete(turnId);
+      try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
   }
 
   private closeTurnFence(turnId: string): void {
@@ -1425,6 +1440,21 @@ export class DirectChatHost {
     return { ok: true, thread, turn: started.turn, created: true };
   }
 
+  private prepareTurnSkills(repo: string, label: string): { dir: string | null; prompt: string; manifest: SkillsManifest | null } {
+    try {
+      const snapshot = effectiveSkillsForRepo(this.store, repo);
+      if (snapshot.packages.length === 0) return { dir: null, prompt: "", manifest: null };
+      const materialized = materializeProjectSkills(snapshot, join(this.stateRoot, "direct-chat", "skills"), label);
+      return {
+        dir: materialized.directory,
+        prompt: formatSkillsBrief(materialized.catalog, "Skills supplied for this Direct Chat. "),
+        manifest: materialized.manifest,
+      };
+    } catch {
+      return { dir: null, prompt: "", manifest: null };
+    }
+  }
+
   /**
    * Starts a turn. A Claude turn runs inside its outer fence (direct-chat-fence.ts), made first (it waits on the
    * storage check and the proxy); everything after it, the checks and the spawn, runs in one synchronous step as before,
@@ -1437,17 +1467,28 @@ export class DirectChatHost {
     prompt: string;
   }): Promise<{ ok: true; turn: DirectChatTurnRow; created: boolean } | { ok: false; status: number; error: string }> {
     const thread = HEX32.test(input.threadId) ? this.getThreadRecord(input.owner, input.threadId) : null;
-    if (thread === null || thread.provider !== "claude" || thread.isLegacy || this.fenceTurnFn === null) return this.sendMessageNow(input, null);
+    if (thread === null || thread.provider !== "claude" || thread.isLegacy || this.fenceTurnFn === null) return this.sendMessageNow(input, null, null);
     if (thread.gitDir === null) return { ok: false, status: 409, error: "This chat has no isolated Git folder, so its agent can't be fenced. Start a new chat instead." };
     const known = this.store.handle.prepare(`SELECT 1 FROM direct_chat_turn WHERE thread_id = ? AND request_id = ?`).get(thread.id, input.requestId);
-    if (known !== undefined) return this.sendMessageNow(input, null);
-    const made = await this.fenceTurnFn({ stateRoot: this.stateRoot, repo: thread.repo, clone: thread.clonePath, gitDir: thread.gitDir });
-    if ("problem" in made) return { ok: false, status: 409, error: made.problem };
+    if (known !== undefined) return this.sendMessageNow(input, null, null);
+    const preparedSkills = this.prepareTurnSkills(thread.repo, `dc-${randomBytes(6).toString("hex")}`);
+    const made = await this.fenceTurnFn({ stateRoot: this.stateRoot, repo: thread.repo, clone: thread.clonePath, gitDir: thread.gitDir, skills: preparedSkills.manifest });
+    if ("problem" in made) {
+      if (preparedSkills.dir !== null) { try { rmSync(preparedSkills.dir, { recursive: true, force: true }); } catch { /* ignore */ } }
+      return { ok: false, status: 409, error: made.problem };
+    }
     const fence = "unfenced" in made ? null : made;
     let started: Awaited<ReturnType<DirectChatHost["sendMessage"]>>;
-    try { started = this.sendMessageNow(input, fence); }
-    catch (error) { if (fence !== null) await fence.close(); throw error; }
-    if (fence !== null && (!started.ok || !started.created)) await fence.close();
+    try { started = this.sendMessageNow(input, fence, preparedSkills); }
+    catch (error) {
+      if (fence !== null) await fence.close();
+      if (preparedSkills.dir !== null) { try { rmSync(preparedSkills.dir, { recursive: true, force: true }); } catch { /* ignore */ } }
+      throw error;
+    }
+    if (!started.ok || !started.created) {
+      if (fence !== null) await fence.close();
+      if (preparedSkills.dir !== null) { try { rmSync(preparedSkills.dir, { recursive: true, force: true }); } catch { /* ignore */ } }
+    }
     return started;
   }
 
@@ -1456,7 +1497,7 @@ export class DirectChatHost {
     threadId: string;
     requestId: string;
     prompt: string;
-  }, fence: DirectChatTurnFence | null): { ok: true; turn: DirectChatTurnRow; created: boolean } | { ok: false; status: number; error: string } {
+  }, fence: DirectChatTurnFence | null, prebuiltSkills: { dir: string | null; prompt: string; manifest: SkillsManifest | null } | null): { ok: true; turn: DirectChatTurnRow; created: boolean } | { ok: false; status: number; error: string } {
     if (!HEX32.test(input.threadId) || !HEX32.test(input.requestId)) {
       return { ok: false, status: 400, error: "Invalid thread or request id." };
     }
@@ -1496,11 +1537,13 @@ export class DirectChatHost {
     const logPath = join(this.stateRoot, "direct-chat", "turns", thread.id, `${turnId}.jsonl`);
     const stderrPath = join(this.stateRoot, "direct-chat", "turns", thread.id, `${turnId}.stderr`);
     const isFirstForProvider = thread.providerSessionId === null || thread.providerSessionId === "";
+    const turnSkills = prebuiltSkills ?? this.prepareTurnSkills(thread.repo, `dc-${turnId.slice(0, 12)}`);
     const effectivePrompt = buildTurnPrompt({
       userPrompt: trimmed,
       branch: thread.branch,
       isFirstTurnForProvider: isFirstForProvider,
       priorTurns: priorTurns.filter(t => t.assistantText !== "" || t.userPrompt !== ""),
+      ...(turnSkills.prompt !== "" ? { skillsPrompt: turnSkills.prompt } : {}),
     });
     const args = buildProviderCommand({
       provider: thread.provider,
@@ -1537,16 +1580,21 @@ export class DirectChatHost {
 
     let launched: { pid: number; pgid: number; startIdentity: string | null };
     try {
+      const childEnv = buildSanitizedChildEnv(thread.provider);
+      if (turnSkills.dir !== null) childEnv["TOOLROLL_SKILLS_DIR"] = turnSkills.dir;
       launched = this.spawnTurnFn({
         binary,
         args,
         cwd: managed.realClone,
-        env: buildSanitizedChildEnv(thread.provider),
+        env: childEnv,
         logPath,
         stderrPath,
         ...(fence === null ? {} : { fence }),
       });
     } catch (error) {
+      if (prebuiltSkills === null && turnSkills.dir !== null) {
+        try { rmSync(turnSkills.dir, { recursive: true, force: true }); } catch { /* ignore */ }
+      }
       const msg = `Could not launch ${thread.provider}: ${error instanceof Error ? error.message : String(error)}`;
       this.store.handle.prepare(`
         UPDATE direct_chat_turn SET status = 'failed', error_text = ?, finished_at = ? WHERE id = ?
@@ -1560,6 +1608,7 @@ export class DirectChatHost {
       this.preTurnTreeSha.set(turnId, beforeTree);
     }
     if (fence !== null) this.turnFences.set(turnId, fence.close);
+    if (turnSkills.dir !== null) this.turnSkillDirs.set(turnId, turnSkills.dir);
 
     this.store.handle.prepare(`
       UPDATE direct_chat_turn SET pid = ?, start_identity = ?, pgid = ? WHERE id = ?
@@ -2138,6 +2187,11 @@ export class DirectChatHost {
 
   private cleanupTurnState(turnId: string): void {
     this.closeTurnFence(turnId);
+    const skillDir = this.turnSkillDirs.get(turnId);
+    if (skillDir !== undefined) {
+      this.turnSkillDirs.delete(turnId);
+      try { rmSync(skillDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
     this.sawTerminalByTurn.delete(turnId);
     this.resetOnNextTextDelta.delete(turnId);
     this.preTurnImages.delete(turnId);

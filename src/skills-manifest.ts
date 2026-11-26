@@ -54,11 +54,13 @@ export type LaunchSkills = { root: string; manifest: SkillsManifest | null };
  * (and the one this launch's were) denied whole, wherever it is and whatever it is called, and exactly the manifest's
  * files read back. A file or folder that changed grants none of them, with the reason in plain words.
  */
-export function skillsGrant(skills: LaunchSkills | null): { deny: string[]; files: string[]; problem: string | null } {
-  if (skills === null) return { deny: [], files: [], problem: null };
+export function skillsGrant(skills: LaunchSkills | null): { deny: string[]; files: string[]; digests: Record<string, string>; folders: string[]; problem: string | null } {
+  if (skills === null) return { deny: [], files: [], digests: {}, folders: [], problem: null };
   const canonical = (path: string) => { try { return realpathSync(path); } catch { return path; } };
   const deny = [...new Set([skills.root, ...(skills.manifest === null ? [] : [dirname(skills.manifest.directory)])].flatMap(path => [path, canonical(path)]))].sort();
-  if (skills.manifest === null) return { deny, files: [], problem: null };
+  if (skills.manifest === null) return { deny, files: [], digests: {}, folders: [], problem: null };
   const checked = checkSkillsManifest(skills.manifest);
-  return checked.ok ? { deny, files: checked.files, problem: null } : { deny, files: [], problem: checked.problem };
+  if (!checked.ok) return { deny, files: [], digests: {}, folders: [], problem: checked.problem };
+  const digests = Object.fromEntries(skills.manifest.files.map(file => [file.path, file.sha256]));
+  return { deny, files: checked.files, digests, folders: [...skills.manifest.folders], problem: null };
 }

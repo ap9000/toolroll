@@ -25,6 +25,14 @@ import {
   type SkillSelection,
   type SkillsSnapshot,
 } from "./contracts/project-skills.js";
+import {
+  LIBRARY_LIMITS,
+  currentLibrary,
+  enabledLibrarySkills,
+  listSkillBundles,
+  mergeProjectAndLibrarySkills,
+  projectSkillOptOuts,
+} from "./skill-library.js";
 
 export { SKILL_LIMITS };
 export { checkSkillsManifest, type SkillsManifest } from "./skills-manifest.js";
@@ -271,13 +279,42 @@ export function skillsView(store: Store, repo: string, actor: string) {
   return { repo, identity, ...value, library, history };
 }
 export type SkillsView = ReturnType<typeof skillsView>;
-/** Current enabled versions, admitted and hash-verified, without any worker-run writes. */
+/** Current enabled versions, admitted and hash-verified, without any worker-run writes. Includes the global skill library unless opted out for this project. */
 export function selectProjectSkills(store: Store, repo: string, actor: string): SkillsSnapshot {
   const { identity, accepted } = admit(store, repo, actor);
   const value = current(store, repo, accepted);
-  const packages = Object.values(value.selection).filter(choice => choice.enabled).map(choice => packageOf(store, choice.sha));
-  if (packages.length > SKILL_LIMITS.enabled || Buffer.byteLength(JSON.stringify(packages)) > SKILL_LIMITS.selectionBytes) throw Error('Enable up to 8 skills, totaling at most 2 MB.');
-  return { version: 1, revision: value.revision, identity, inheritedFrom: null, test: false, packages };
+  const projectPackages = Object.values(value.selection).filter(choice => choice.enabled).map(choice => packageOf(store, choice.sha));
+  if (projectPackages.length > SKILL_LIMITS.enabled || Buffer.byteLength(JSON.stringify(projectPackages)) > SKILL_LIMITS.selectionBytes) throw Error('Enable up to 8 skills, totaling at most 2 MB.');
+  const { libraryRevision, packages } = mergeProjectAndLibrarySkills(store, repo, value.selection);
+  if (packages.length > LIBRARY_LIMITS.maxSkills || Buffer.byteLength(JSON.stringify(packages)) > LIBRARY_LIMITS.maxBundleBytes) throw Error('Too many enabled skills.');
+  return { version: 1, revision: Math.max(value.revision, libraryRevision), identity, inheritedFrom: null, test: false, packages };
+}
+/** Pinned effective skills for a project (per-project selection + global library minus project opt-outs), safe for Direct Chat, Flexible threads, and live terminals. */
+export function effectiveSkillsForRepo(store: Store, repo: string): SkillsSnapshot {
+  if (!store.schemaCurrent()) {
+    return { version: 1, revision: 0, identity: "unconfigured", inheritedFrom: null, test: false, packages: [] };
+  }
+  let projectSelection: Selection = {};
+  let revision = 0;
+  let identity = "unconfigured";
+  try {
+    const saved = store.handle
+      .prepare("SELECT identity FROM project_skill_change WHERE repo=? ORDER BY revision DESC LIMIT 1")
+      .get(repo);
+    if (saved) {
+      const accepted = acceptedIdentities(store, repo);
+      if (accepted.has(String(saved["identity"]))) {
+        const value = current(store, repo, accepted);
+        revision = value.revision;
+        identity = learningIdentity(repo);
+        projectSelection = value.selection;
+      }
+    }
+  } catch {
+    // Project identity changed or unreadable: still supply global library skills unless opted out.
+  }
+  const { libraryRevision, packages } = mergeProjectAndLibrarySkills(store, repo, projectSelection);
+  return { version: 1, revision: Math.max(revision, libraryRevision), identity, inheritedFrom: null, test: false, packages };
 }
 /** The same verified selection used by Restore, including disabled versions. */
 export function skillsVersion(store: Store, repo: string, actor: string, revision: number): Selection {
@@ -395,21 +432,62 @@ export function conversationSkills(
   sha?: string,
 ) {
   const v = skillsView(store, repo, actor);
-  const skills = v.library.filter((p) => !sha || p.sha === sha);
-  if (sha && !skills.length) throw Error("Choose a skill from the library.");
+  const globalLib = currentLibrary(store);
+  const optOuts = projectSkillOptOuts(store, repo);
+  const globalEnabled = new Map(enabledLibrarySkills(store, repo).packages.map((p) => [p.sha, p]));
+  const combinedBySha = new Map<string, { pkg: SavedSkill; scope: "project" | "global"; enabled: boolean; optedOut: boolean }>();
+  for (const p of v.library) {
+    const enabled =
+      v.selection[p.name]?.sha === p.sha &&
+      v.selection[p.name]?.enabled === true;
+    combinedBySha.set(p.sha, { pkg: p, scope: "project", enabled, optedOut: false });
+  }
+  for (const [name, choice] of Object.entries(globalLib.selection)) {
+    const existing = combinedBySha.get(choice.sha);
+    const isOptedOut = optOuts.all || optOuts.names.has(name);
+    const activeHere = globalEnabled.has(choice.sha);
+    if (existing) {
+      if (!v.selection[name] || v.selection[name]?.sha !== choice.sha) {
+        existing.scope = "global";
+        existing.optedOut = isOptedOut;
+      }
+      if (activeHere) existing.enabled = true;
+    } else {
+      try {
+        const pkg = packageOf(store, choice.sha);
+        combinedBySha.set(choice.sha, { pkg, scope: "global", enabled: activeHere, optedOut: isOptedOut });
+      } catch {
+        // Ignore missing package
+      }
+    }
+  }
+  const entries = [...combinedBySha.values()]
+    .sort((a, b) => a.pkg.name.localeCompare(b.pkg.name))
+    .filter((entry) => !sha || entry.pkg.sha === sha);
+  if (sha && !entries.length) throw Error("Choose a skill from the library.");
+  const bundles = listSkillBundles(store).map((b) => ({
+    id: b.id,
+    repo: `${b.owner}/${b.repoName}`,
+    commit: b.pinnedCommit.slice(0, 12),
+    skillCount: b.skillNames.length,
+    autoUpdate: b.autoUpdate,
+    heldUpdate: b.heldCommit ? { commit: b.heldCommit.slice(0, 12), reason: b.heldReason } : null,
+  }));
   return {
-    revision: v.revision,
+    revision: Math.max(v.revision, globalLib.revision),
+    libraryOptedOut: optOuts.all,
+    bundles,
     history: v.history.map(({revision,enabled}) => ({revision,enabled})),
-    skills: skills.map((p) => ({
+    skills: entries.map(({ pkg: p, scope, enabled, optedOut }) => ({
       name: p.name,
       description: p.description,
       sha: p.sha,
       source: p.source,
       requirements: p.requirements,
       warnings: p.warnings,
-      enabled:
-        v.selection[p.name]?.sha === p.sha &&
-        v.selection[p.name]?.enabled === true,
+      scope,
+      optedOut,
+      enabled,
       ...(sha
         ? {
             instructions: Buffer.from(
@@ -421,7 +499,7 @@ export function conversationSkills(
         : {}),
     })),
     notice:
-      "Managed skills for future worker runs. Usage is not implied by enablement. Use shared action proposals to import, enable, disable, restore and test. Skills cannot grant tools or change approvals.",
+      "Managed skills for future worker runs, Direct Chat, threads, and terminals. Usage is not implied by enablement. Use shared action proposals or Settings → Skills to manage. Skills cannot grant tools or change approvals.",
   };
 }
 export function readSkillsSnapshot(
@@ -513,16 +591,26 @@ export function freezeSkills(store: Store, runId: number): SkillsSnapshot {
           inheritedFrom: null,
           packages: [packageOf(store, String(test["package"]))],
         };
-      // Skills saved under another identity wait for an approver; the run proceeds without them.
-      else if (saved && accepted.has(String(saved["identity"]))) {
-        const value = current(store, ref.repo, accepted);
+      // Skills saved under another identity wait for an approver; the run proceeds with global library skills (unless opted out).
+      else {
+        let projectSelection: Selection = {};
+        let revision = 0;
+        let identity = "unconfigured";
+        if (saved && accepted.has(String(saved["identity"]))) {
+          const value = current(store, ref.repo, accepted);
+          revision = value.revision;
+          identity = learningIdentity(ref.repo);
+          projectSelection = value.selection;
+        }
+        const { libraryRevision, packages: merged } = mergeProjectAndLibrarySkills(store, ref.repo, projectSelection);
+        if (merged.length > 0 && identity === "unconfigured") {
+          try { identity = learningIdentity(ref.repo); } catch { identity = "global-library"; }
+        }
         snapshot = {
           ...snapshot,
-          revision: value.revision,
-          identity: learningIdentity(ref.repo),
-          packages: Object.values(value.selection)
-            .filter((c) => c.enabled)
-            .map((c) => packageOf(store, c.sha)),
+          revision: Math.max(revision, libraryRevision),
+          identity,
+          packages: merged,
         };
       }
     }
