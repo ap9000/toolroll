@@ -8,7 +8,9 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { chmodSync, lstatSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { protectTree, trustFaults, trustRepair } from "./trust-repair.js";
+import { protectTree, trustFaults, trustRepair, trustRepairLines } from "./trust-repair.js";
+import { agentTrustWords } from "./agent-detect.js";
+import { hasUnsafeText, shownText } from "./shown-text.js";
 import { checkSeccompHelper, seccompHelperRepair } from "./sandbox-tools.js";
 import { rootOwnedBinary, trustedBinary } from "./trusted-path.js";
 import { outsideTempDir } from "../test/short-temp.js";
@@ -98,7 +100,7 @@ describe("trust repair: exact canonical paths, by kind, with commands that make 
     const odd = tree(["bad\nname"], 0o775);
     const unsafe = trustRepair(odd.file, { owners: [me, 0], acl: noAcl, euid: me })!;
     expect(unsafe.commands.some(one => one.includes("bad"))).toBe(false);
-    expect(unsafe.notes.join(" ")).toContain("control character");
+    expect(unsafe.notes.join(" ")).toContain("control or invisible character");
   });
 
   test("the seccomp helper in a group-writable install: the refusal stands, the repair names it, and after it the unchanged check passes", () => {
@@ -111,6 +113,33 @@ describe("trust repair: exact canonical paths, by kind, with commands that make 
     run(repair.commands);
     expect(checkSeccompHelper(file, { all: [] }, trust).ok).toBe(true);
     expect(seccompHelperRepair(trust, dirs[0]!)).toBeNull();
+  });
+});
+
+describe("a name can't forge a line of what is shown", () => {
+  test.each([
+    ["a newline", "\n", "\\n"],
+    ["a carriage return", "\r", "\\r"],
+    ["an escape sequence", "\u001b[2K", "\\x1b[2K"],
+    ["a right-to-left override", "\u202e", "\\u202e"],
+    ["a line separator", "\u2028", "\\u2028"],
+    ["a zero-width space", "\u200b", "\\u200b"],
+    ["a C1 control", "\u009b", "\\x9b"],
+  ])("%s is shown escaped, and gets no command", (_, char, escaped) => {
+    expect(shownText(`a${char}b`)).toBe(`a${escaped}b`);
+    const forged = `x${char}Fix it with:${char}  rm -rf ~`;
+    const { file } = tree([forged], 0o775);
+    const lines = trustRepairLines(trustRepair(file, { owners: [me + 1], acl: noAcl, euid: me })!);
+    for (const line of lines) expect(hasUnsafeText(line), JSON.stringify(line)).toBe(false);
+    expect(lines.filter(line => line === "Fix it with:")).toEqual([]);
+    expect(lines.some(line => /^\s*rm -rf/.test(line))).toBe(false);
+    const writable = trustRepairLines(trustRepair(file, { owners: [me, 0], acl: noAcl, euid: me })!);
+    expect(writable.join("\n")).not.toContain(forged);
+    expect(writable.some(line => line.includes("chmod") && line.includes("rm -rf"))).toBe(false);
+    for (const line of writable) expect(hasUnsafeText(line)).toBe(false);
+    const words = agentTrustWords({ why: `others can change /opt/${forged}`, repair: null })!;
+    expect(words.split("\n")).toHaveLength(1);
+    expect(hasUnsafeText(words)).toBe(false);
   });
 });
 

@@ -7,7 +7,8 @@
  * - Toolroll's own installed package (its folder, its dependencies inside it) gets one recursive command; chmod -R
  *   never follows a symlink it meets inside. Nothing else ever does: a shared prefix, a home folder or another
  *   program's install (an agent's) gets one command per failing path.
- * - Paths are single-quoted; a path with a control character gets no command (reinstall instead).
+ * - Paths are single-quoted; a path with a control, separator or invisible format character gets no command (reinstall
+ *   instead), and every path shown is escaped (shown-text.ts): a name can't forge a line of the repair.
  * - Removing write access doesn't prove nothing was changed while others could write: the repair says to reinstall
  *   when anyone else uses the computer, and how to keep new installs protected (umask 022). Each caller says how to
  *   check again (`toolroll doctor`, `toolroll agents`, or the start itself).
@@ -19,6 +20,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hasUnsafeText, shownText } from "./shown-text.js";
 import { aclVerdictOf } from "./trusted-path.js";
 
 export type TrustFaultKind = "owner" | "group-write" | "world-write" | "acl";
@@ -103,9 +105,9 @@ export function trustRepair(paths: string | readonly string[], options: TrustRep
   const notes: string[] = [];
   const ownerOf = (path: string): number | null => { try { return lstatSync(path).uid; } catch { return null; } };
   const sudo = (path: string): string => ownerOf(path) === 0 && euid !== 0 ? "sudo " : "";
-  const unsafe = faults.filter(one => /[\u0000-\u001f\u007f]/.test(one.path));
+  const unsafe = faults.filter(one => hasUnsafeText(one.path));
   if (unsafe.length > 0) {
-    notes.push("A path has a control character in its name, so no command is printed for it: reinstall that program into a plain folder you own.");
+    notes.push("A path has a control or invisible character in its name, so no command is printed for it: reinstall that program into a plain folder you own.");
   }
   const fixable = faults.filter(one => !unsafe.includes(one));
   // Each command with the path it is for, so all run outermost first. Paths are absolute, so none reads as an option.
@@ -121,7 +123,7 @@ export function trustRepair(paths: string | readonly string[], options: TrustRep
     if (kinds.has("owner")) {
       const owner = rest.find(one => one.path === at && one.kind === "owner")?.owner;
       if (euid === 0 && options.owners.includes(0)) planned.push({ at, command: `chown 0 ${quote(at)}` });
-      else notes.push(`${at} belongs to another user (uid ${owner ?? "unknown"}), so only that user or an administrator can fix it; or reinstall into a folder you own.`);
+      else notes.push(`${shownText(at)} belongs to another user (uid ${owner ?? "unknown"}), so only that user or an administrator can fix it; or reinstall into a folder you own.`);
     }
     if (kinds.has("acl")) planned.push({ at, command: platform === "darwin" ? `${sudo(at)}chmod -N ${quote(at)}` : `${sudo(at)}setfacl -b ${quote(at)}` });
     if (kinds.has("group-write") || kinds.has("world-write") || (kinds.has("acl") && platform !== "darwin")) planned.push({ at, command: `${sudo(at)}chmod go-w ${quote(at)}` });
@@ -144,10 +146,11 @@ function currentUmask(): number | null {
 
 /** The fault, in words. */
 export function trustFaultWords(fault: TrustFault): string {
-  return fault.kind === "owner" ? `${fault.path} belongs to another user`
-    : fault.kind === "world-write" ? `everyone can change ${fault.path}`
-    : fault.kind === "group-write" ? `its group can change ${fault.path}`
-    : `${fault.path} has an extended ACL`;
+  const path = shownText(fault.path);
+  return fault.kind === "owner" ? `${path} belongs to another user`
+    : fault.kind === "world-write" ? `everyone can change ${path}`
+    : fault.kind === "group-write" ? `its group can change ${path}`
+    : `${path} has an extended ACL`;
 }
 
 /** The repair as lines: the commands (each names its path, so the faults aren't listed again), else what fails (a few),
@@ -157,7 +160,7 @@ export function trustRepairLines(repair: TrustRepair): string[] {
   return [
     ...(repair.commands.length > 0 ? ["Fix it with:", ...repair.commands.map(one => `  ${one}`)] : listed.map(fault => `  ${trustFaultWords(fault)}`)),
     ...repair.notes,
-  ];
+  ].map(shownText);
 }
 
 /** Toolroll's own installed package folder (the nearest real folder above this module holding a package.json, when that

@@ -29,6 +29,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SrtTerms } from "./sandbox-runtime.js";
 import { installLine } from "./linux-packages.js";
+import { shownText } from "./shown-text.js";
 import { toolrollPackageRoot, trustRepair, type TrustRepair } from "./trust-repair.js";
 import { platformAcl, rootOwnedBinary, rootOwnedFolders, type AclReader } from "./trusted-path.js";
 
@@ -164,13 +165,13 @@ export function resolveLinuxSandboxTools(options: ToolTrust & { folders?: readon
       break;
     }
     if (found[tool.key] === undefined) {
-      return { ok: false, why: `${tool.words} has no copy owned by root in ${folders.join(", ")}${passedOver.length === 0 ? "" : ` (${passedOver.join("; ")})`}: ${installWords(tool.install)}` };
+      return { ok: false, why: shownText(`${tool.words} has no copy owned by root in ${folders.join(", ")}${passedOver.length === 0 ? "" : ` (${passedOver.join("; ")})`}: ${installWords(tool.install)}`) };
     }
   }
   const helper = "seccomp" in options ? options.seccomp ?? null : seccompHelperPath();
   if (helper === null) return { ok: false, why: `the sandbox runtime's seccomp helper isn't available for this processor (${process.arch})` };
   const checked = checkSeccompHelper(helper, exclusions, options);
-  if (!checked.ok) return { ok: false, why: `the sandbox runtime's seccomp helper (${helper}) can't be trusted: ${checked.why}` };
+  if (!checked.ok) return { ok: false, why: shownText(`the sandbox runtime's seccomp helper (${helper}) can't be trusted: ${checked.why}`) };
   found.seccomp = checked.tool;
   return { ok: true, tools: { ...(found as Record<SystemKey | "seccomp", SandboxTool>), whichFolder: whichFolder! } };
 }
@@ -221,7 +222,7 @@ export function linuxSandboxTools(exclusions: ToolExclusions = NO_EXCLUSIONS): L
   }
   const tools = discovered;
   const why = verifyLinuxSandboxTools(tools, { exclusions });
-  if (why !== null) { discovered = null; return { ok: false, why: `a sandbox program failed its check right before the launch: ${why}` }; }
+  if (why !== null) { discovered = null; return { ok: false, why: shownText(`a sandbox program failed its check right before the launch: ${why}`) }; }
   return { ok: true, tools };
 }
 

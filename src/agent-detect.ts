@@ -36,6 +36,7 @@ import { resolveExecutable } from "./attest.js";
 import type { ProviderId } from "./contracts/provider.js";
 import { excludedFolders, statusBinaryDiagnosis, statusProbe, STATUS_TIMEOUT_MS, type StatusProbeOptions } from "./status-probe.js";
 import { platformAcl } from "./trusted-path.js";
+import { shownText } from "./shown-text.js";
 import { keyStatus, OWN_KEY_ENV, readAuthMode } from "./keys.js";
 import { createConnectionChecker, type ConnectionChecker, type ProviderConnection } from "./provider-connection.js";
 
@@ -393,5 +394,5 @@ export function agentTrustWords(diagnosis: { why: string; repair: import("./trus
   const commands = diagnosis.repair?.commands ?? [];
   const fix = commands.length > 0 ? ` Fix it: run ${commands.map(one => `\`${one}\``).join(", then ")}, then \`toolroll agents\` to check again.`
     : " Reinstall it into a folder only you can change.";
-  return `Toolroll won't run its sign-in check: ${diagnosis.why}.${fix}`;
+  return shownText(`Toolroll won't run its sign-in check: ${diagnosis.why}.${fix}`);
 }

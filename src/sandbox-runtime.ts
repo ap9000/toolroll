@@ -23,6 +23,7 @@ import { checkLinuxDependencies, getLinuxDependencyStatus } from "@anthropic-ai/
 import type { FsReadRestrictionConfig, FsWriteRestrictionConfig } from "@anthropic-ai/sandbox-runtime";
 import { linuxSandboxTools, sandboxToolExclusions, seccompHelperRepair, type LinuxSandboxTools, type LinuxSandboxToolsVerdict, type ToolExclusions } from "./sandbox-tools.js";
 import { trustRepairLines } from "./trust-repair.js";
+import { shownText } from "./shown-text.js";
 import { installLine, packageSystem, type PackageSystem } from "./linux-packages.js";
 
 const require = createRequire(import.meta.url);
@@ -78,7 +79,7 @@ export type SandboxIo = { read?: (file: string) => string; exists?: (file: strin
 
 const DETAIL_MAX = 300;
 /** A probe's output, kept short and on one line (it may carry anything: never more than this). */
-const bounded = (text: string): string => text.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, DETAIL_MAX);
+const bounded = (text: string): string => shownText(text.trim()).slice(0, DETAIL_MAX);
 
 /** Why the runtime can't sandbox here, or null when it can (checked before every launch; nothing runs bare). */
 export function sandboxRuntimeProblem(platform: NodeJS.Platform = process.platform): string | null {
@@ -86,8 +87,14 @@ export function sandboxRuntimeProblem(platform: NodeJS.Platform = process.platfo
   return diagnosis.ok ? null : diagnosis.why;
 }
 
-/** sandboxRuntimeProblem, as a kind with its evidence (see SandboxDiagnosis). */
+/** sandboxRuntimeProblem, as a kind with its evidence (see SandboxDiagnosis). Its reason names paths someone else may
+ * have chosen: shown escaped (shown-text.ts), so a name can't forge a line. */
 export function sandboxRuntimeDiagnosis(platform: NodeJS.Platform = process.platform, io: SandboxIo = {}): SandboxDiagnosis {
+  const found = diagnose(platform, io);
+  return found.ok ? found : { ...found, why: shownText(found.why) };
+}
+
+function diagnose(platform: NodeJS.Platform, io: SandboxIo): SandboxDiagnosis {
   if (platform === "darwin") {
     if (!existsSync(SANDBOX_EXEC)) return { ok: false, kind: "missing-tool", why: "this Mac has no sandbox-exec" };
     const probe = spawnSync(SANDBOX_EXEC, ["-p", SEATBELT_PROBE, "/usr/bin/true"], { timeout: 5_000, stdio: ["ignore", "ignore", "pipe"], encoding: "utf8" });
@@ -178,7 +185,8 @@ export const UNCONFINED_OPT_IN = "Or an instance operator can let agents run wit
 export function sandboxAdviceLines(diagnosis: SandboxDiagnosis, io: SandboxIo = {}): string[] {
   if (diagnosis.ok || diagnosis.kind === "missing-tool") return [];
   if (diagnosis.kind === "trust") return sandboxRuntimeRepair();
-  return [...diagnosis.detail === undefined || diagnosis.detail === "" ? [] : [`(${diagnosis.kind === "sandbox-denied" || diagnosis.kind === "timeout" ? "bubblewrap" : "it"} said: ${diagnosis.detail})`], ...sandboxRemedyLines(diagnosis, io)];
+  const said = diagnosis.detail === undefined || diagnosis.detail === "" ? [] : [`(${diagnosis.kind === "sandbox-denied" || diagnosis.kind === "timeout" ? "bubblewrap" : "it"} said: ${diagnosis.detail})`];
+  return [...said, ...sandboxRemedyLines(diagnosis, io)].map(shownText);
 }
 
 /**
@@ -188,7 +196,7 @@ export function sandboxAdviceLines(diagnosis: SandboxDiagnosis, io: SandboxIo = 
 export function noConfinementWords(what: string, done: string, diagnosis: SandboxDiagnosis = sandboxRuntimeDiagnosis()): string {
   const why = diagnosis.ok ? "its sandbox isn't available to this run" : diagnosis.why;
   const fix = diagnosis.ok || diagnosis.kind === "missing-tool" ? "" : diagnosis.kind === "trust" ? " `toolroll doctor` prints the exact fix." : diagnosis.kind === "sandbox-denied" && diagnosis.cause != null ? ` ${diagnosis.cause.fix}` : "";
-  return `This machine can't confine ${what}, so ${done}: ${why}.${fix} ${UNCONFINED_OPT_IN}`;
+  return shownText(`This machine can't confine ${what}, so ${done}: ${why}.${fix} ${UNCONFINED_OPT_IN}`);
 }
 
 /** Linux: when the sandbox's own seccomp helper fails its trust check, what fails and the exact repair, as lines
