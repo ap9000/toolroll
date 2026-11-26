@@ -226,16 +226,22 @@ export function skillLibrarySectionHtml(
     const enabled = library.selection[skill.name]?.sha === skill.sha && library.selection[skill.name]?.enabled === true;
     const optedOutThis = projectOptOutNames.has(skill.name);
     const optOut = optedOutThis || projectOptedOutAll;
+    // The one status new tasks here get, from the merged selection (skill-library.ts mergeProjectAndLibrarySkills):
+    // the project's own choice first (it wins over the global library and its opt-outs), then the global library's.
     const own = repo ? options.projectSelection?.[skill.name] : undefined;
-    const statusChip = !enabled
-      ? chip("Disabled", "")
-      : optOut
-        ? chip("Opted out here", "")
-        : own?.enabled === false
-          ? chip("Off in this project", "")
-          : own !== undefined && own.sha !== skill.sha
-            ? chip("This project uses another version", "")
-            : chip("Active", "done");
+    const statusChip = own?.enabled === false
+      ? chip("Off in this project", "")
+      : own !== undefined && own.sha !== skill.sha
+        ? chip("This project uses another version", "")
+        : own !== undefined
+          ? chip("Active: this project enables it", "done")
+          : !enabled
+            ? chip("Disabled", "")
+            : optOut
+              ? chip("Opted out here", "")
+              : chip("Active", "done");
+    // What the global library itself says, apart, when the project's own choice is what decides here.
+    const globalWords = own === undefined ? "" : note(`Global library: ${enabled ? "enabled" : "disabled"}${optOut ? ", and this project opted out of it" : ""}. This project’s own choice decides here.`);
     const controls = manage
       ? html`<div class="skill-controls">
           ${libForm(enabled ? "disable-skill" : "enable-skill", btn(enabled ? "Disable globally" : "Enable globally", { sm: true, type: "submit" }), { sha: skill.sha })}
@@ -246,6 +252,7 @@ export function skillLibrarySectionHtml(
       title: html`<span>${skill.name}</span>${statusChip}`,
       sub: skill.description,
       more: joinHtml([
+        globalWords,
         disclose("Review skill", joinHtml([sourceKit(skill), controls])),
       ]),
     })}</div>`;

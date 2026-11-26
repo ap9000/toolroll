@@ -35,6 +35,7 @@ import {
   importGithubSkillBundle,
   importLibrarySkill,
   listSkillBundles,
+  mergeProjectAndLibrarySkills,
   parseGithubBundleUrl,
   rollbackSkillBundle,
   setBundleAutoUpdate,
@@ -42,6 +43,8 @@ import {
   skillLibraryView,
   sweepSkillBundleUpdates,
 } from "./skill-library.js";
+import { skillLibrarySectionHtml } from "./skills-ui.js";
+import { htmlString } from "./html.js";
 import {
   detectLocalSkillDirs,
   localSyncStatus,
@@ -178,6 +181,16 @@ describe("Skill Library (schema v186)", () => {
     setProjectSkillOptOut(store, { repo: repoA, skillName: "write-tests", optOut: true, actor: "owner" }, now);
     expect(selectProjectSkills(store, repoA, "owner").packages.map((p) => p.name)).toEqual(["review-code"]);
     expect(selectProjectSkills(store, repoB, "owner").packages.map((p) => p.name)).toEqual(["review-code", "write-tests"]);
+
+    // The project's own choice wins over its opt-out: the global card says what reaches new tasks, as the merge does.
+    const writeTests = skillLibraryView(store, { repo: repoA }).skills.find((s) => s.name === "write-tests")!;
+    const own = { "write-tests": { sha: writeTests.sha, enabled: true } };
+    expect(mergeProjectAndLibrarySkills(store, repoA, own).packages.map((p) => p.name)).toEqual(["review-code", "write-tests"]);
+    const card = htmlString(skillLibrarySectionHtml(skillLibraryView(store, { repo: repoA }), [], "", false, { repo: repoA, projectSelection: own }));
+    const writeCard = card.slice(card.indexOf("<span>write-tests</span>"));
+    expect(writeCard.slice(0, 400)).toContain("Active: this project enables it");
+    expect(writeCard.slice(0, 400)).not.toContain("Opted out here");
+    expect(card).toContain("this project opted out of it. This project’s own choice decides here.");
 
     // Opt repoB out of the entire global library (`*`).
     setProjectSkillOptOut(store, { repo: repoB, skillName: "*", optOut: true, actor: "owner" }, now);
