@@ -131,9 +131,9 @@ import { deleteProject,holdingsWords,PROJECT_RECOVERY_DELETE_MESSAGE } from "../
 import { applySavedKnowledge,changeKnowledge,knowledgeVersion,knowledgeView,type KnowledgeDraft } from "../project-knowledge.js";
 import { changeLearning } from "../project-learning.js";
 import { listDecisions,recordDecision,retireDecision,searchMemory } from "../project-memory.js";
-import { changeSkills,githubSkill,importSkill,reviseSkillTest,skillsView,testSkill,type SkillFile } from "../project-skills.js";
+import { changeSkills,effectiveSkillsForRepo,githubSkill,importSkill,reviseSkillTest,skillsView,testSkill,type SkillFile } from "../project-skills.js";
 import { changeLibrarySkill, currentLibrary, dismissHeldBundleUpdate, enabledLibrarySkills, importGithubSkillBundle, importLibrarySkill, rollbackSkillBundle, setBundleAutoUpdate, setProjectSkillOptOut, skillLibraryView, sweepSkillBundleUpdates } from "../skill-library.js";
-import { LOCAL_SKILL_TOOLS, setLocalSkillSync, syncEnabledLocalTools, type LocalSkillTool } from "../skill-local-sync.js";
+import { LOCAL_SKILL_TOOLS, LOCAL_TOOL_LABELS, setLocalSkillSync, syncEnabledLocalTools, type LocalSkillTool } from "../skill-local-sync.js";
 import { skillLibrarySectionHtml } from "../skills-ui.js";
 import { signedIn } from "../oauth-run-token.js";
 import { addToolTo,catalogTool,localAppOf,removeToolFrom,setToolSecret,splitCommandLine,testToolOf,toolSecretStorage,type ToolSpec } from "../project-tools.js";
@@ -348,26 +348,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const projects = consoleProjects();
     const chosen = url.searchParams.get("repo") ?? project ?? projects[0] ?? "";
     if (chosen && !projects.includes(chosen)) return refuse(response,who,403,"That project is outside your access.","/projects");
-    const selector = projectPicker("/settings/skills", projects.map(repo => ({ repo, name: projectName(repo) })), chosen);
-    const canManage = who.role === "approver";
-    const csrf = who.via === "cookie" ? who.session.csrf : "";
-    let globalContent: Html = html``;
-    try {
-      const libView = skillLibraryView(store, { repo: chosen || null });
-      globalContent = skillLibrarySectionHtml(libView, libView.localSync, csrf, canManage, {
-        repo: chosen,
-        said: url.searchParams.get("said"),
-        error: url.searchParams.get("problem"),
-      });
-    } catch (error) {
-      globalContent = html`<p class="problem" role="alert">${error instanceof Error ? error.message : "Global skill library is unavailable."}</p>`;
-    }
-    let content: Html = html`<p>Add a project to manage project-specific skills.</p>`;
-    if (chosen) {
-      try { const agent=resolvePhaseAgent(store,'build',chosen,{});content = (skillsHtml(skillsView(store,chosen,who.name),csrf,canManage,{focus:url.searchParams.get('skill')??'',agent:agent.ok?`Report agent: ${agent.spec.provider} · ${agent.spec.model??'default'}. Change it on the test task before approval`:'Choose a report agent on the test task before approval'})); }
-      catch(error) { content = html`<p class="problem" role="alert">${error instanceof Error?error.message:'Skills are unavailable. Reload to retry.'}</p>`; }
-    }
-    return sendScreen(response,200,screen('Skills',settingsSubPage("agents", "Skills", html`${url.searchParams.get('saved')==='1'?html`<p role="status">Saved.</p>`:''}${globalContent}${selector}${content}`),{chrome:chromeFor(chosen||project,'settings'),functional:{script:skillsScript()}}));
+    return skillsScreen(ctx, chosen, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }, 200);
   }
   async function toolsPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, project } = ctx;
@@ -3393,8 +3374,8 @@ ${postForm("/settings/chat-approval/save", html`\
         const lib = enabledLibrarySkills(store);
         const res = setLocalSkillSync(store, { tool: tool as LocalSkillTool, enabled, actor: who.name, skills: lib.packages, libraryRevision: lib.revision }, now);
         said = enabled && res
-          ? `Synced ${res.written.length} skill${res.written.length === 1 ? "" : "s"} to ${tool}${res.skippedForeign.length ? ` (left ${res.skippedForeign.length} of your own skills untouched)` : ""}.`
-          : `Turned off local sync for ${tool} and removed Toolroll-managed skills.`;
+          ? `Synced ${res.written.length} skill${res.written.length === 1 ? "" : "s"} to ${LOCAL_TOOL_LABELS[tool as LocalSkillTool]}${res.skippedForeign.length ? ` (left ${res.skippedForeign.length} of your own skills untouched)` : ""}.`
+          : `Turned off local sync for ${LOCAL_TOOL_LABELS[tool as LocalSkillTool]} and removed Toolroll-managed skills.`;
       } else if (action === "local-sync-now") {
         const lib = enabledLibrarySkills(store);
         const synced = syncEnabledLocalTools(store, { actor: who.name, skills: lib.packages, libraryRevision: lib.revision }, now);
@@ -3404,8 +3385,46 @@ ${postForm("/settings/chat-approval/save", html`\
       }
       return backWith("said", said);
     } catch (error) {
-      return backWith("problem", error instanceof Error ? error.message : "Could not update the skill library.");
+      const why = error instanceof Error ? error.message : "Could not update the skill library.";
+      // A bundle that couldn't be imported: the page again, its address still typed, and what happened.
+      if (action === "import-bundle") return skillsScreen(ctx, repo, { problem: `${why.replace(/\.?$/, ".")} Nothing was imported.`, bundleUrl: (body.get("url") ?? "").slice(0, 2000) }, 409);
+      return backWith("problem", why);
     }
+  }
+  // Kept last in createSettingsHandlers: password-freshness.test.ts pins the functions above by position.
+  /** The Skills page for one project, named (its picker first, even with one project, since the global library's
+   * per-project controls below act on it), each skill with the one status new tasks there get. A failed bundle import
+   * draws it again with the typed address kept in its field (never put in a redirect's address). */
+  function skillsScreen(ctx: HandlerContext, chosen: string, extra: { said?: string | null; problem?: string | null; bundleUrl?: string }, status: number): void {
+    const { url, who, response, project } = ctx;
+    const projects = consoleProjects();
+    const selector = projectPicker("/settings/skills", projects.map(repo => ({ repo, name: projectName(repo) })), chosen, { evenOne: true });
+    const canManage = who.role === "approver";
+    const csrf = who.via === "cookie" ? who.session.csrf : "";
+    // This project's own choices, read once: the lower list and the global cards say the same status from them.
+    let view: ReturnType<typeof skillsView> | null = null, viewProblem: string | null = null;
+    if (chosen) { try { view = skillsView(store, chosen, who.name); } catch (error) { viewProblem = error instanceof Error ? error.message : "Skills are unavailable. Reload to retry."; } }
+    let globalContent: Html = html``;
+    try {
+      const libView = skillLibraryView(store, { repo: chosen || null });
+      globalContent = skillLibrarySectionHtml(libView, libView.localSync, csrf, canManage, {
+        repo: chosen,
+        said: extra.said ?? null,
+        error: extra.problem ?? null,
+        ...(view === null ? {} : { projectSelection: view.selection }),
+        ...(extra.bundleUrl === undefined ? {} : { bundleUrl: extra.bundleUrl }),
+      });
+    } catch (error) {
+      globalContent = html`<p class="problem" role="alert">${error instanceof Error ? error.message : "Global skill library is unavailable."}</p>`;
+    }
+    let content: Html = html`<p>Add a project to manage project-specific skills.</p>`;
+    if (viewProblem !== null) content = html`<p class="problem" role="alert">${viewProblem}</p>`;
+    else if (view !== null) {
+      try { const agent=resolvePhaseAgent(store,'build',chosen,{});content = (skillsHtml(view,csrf,canManage,{focus:url.searchParams.get('skill')??'',effective:effectiveSkillsForRepo(store,chosen).packages,agent:agent.ok?`Report agent: ${agent.spec.provider} · ${agent.spec.model??'default'}. Change it on the test task before approval`:'Choose a report agent on the test task before approval'})); }
+      catch(error) { content = html`<p class="problem" role="alert">${error instanceof Error?error.message:'Skills are unavailable. Reload to retry.'}</p>`; }
+    }
+    const title = chosen ? `Skills for ${projectName(chosen)}` : "Skills";
+    return sendScreen(response,status,screen('Skills',settingsSubPage("agents", title, html`${url.searchParams.get('saved')==='1'?html`<p role="status">Saved.</p>`:''}${selector}${globalContent}${content}`),{chrome:chromeFor(chosen||project,'settings'),functional:{script:skillsScript()}}));
   }
   return { registrations, modelsView };
 }

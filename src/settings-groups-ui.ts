@@ -225,7 +225,7 @@ export function agentsGroup(facts: SettingsFacts, flags: Record<string, boolean>
     settingsLink({ href: "/settings/lead", title: "Chat", status: "The assistant you chat with" }),
     ...(advancedOn(facts) ? [settingsLink({ href: "/settings/lead/subagents", title: "Subagents", status: "Helpers the lead looks after" })] : []),
     settingsLink({ href: "/settings/tools", title: "Tools", status: "What builds can use, per project" }),
-    ...(advancedOn(facts) ? [settingsLink({ href: "/settings/skills", title: "Skills", status: "Reusable instructions for agents" })] : []),
+    settingsLink({ href: "/settings/skills", title: "Skills", status: "Reusable instructions for agents" }),
     settingsLink({ href: "/settings/knowledge", title: "Knowledge", status: "What agents know about each project" }),
     ...(advancedOn(facts) ? [settingsLink({ href: "/settings/learning", title: "Learning", status: "Lessons kept from finished work" })] : []),
   ]);
@@ -706,8 +706,8 @@ export function passwordlessHtml(view: { on: boolean; since: string | null; trad
 }
 
 /** Which project a per-project settings page shows: a GET form (an address, not a save). */
-export function projectPicker(action: string, projects: readonly { repo: string; name: string }[], chosen: string): Html {
-  if (projects.length < 2) return html``;
+export function projectPicker(action: string, projects: readonly { repo: string; name: string }[], chosen: string, options: { evenOne?: true } = {}): Html {
+  if (projects.length < (options.evenOne === true ? 1 : 2)) return html``;
   return html`<form method="get" action="${action}" class="k-acts k-picker">${select({ name: "repo", label: "Project", current: chosen, items: projects.map(one => [one.repo, one.name] as const) })}${btn("Show", { sm: true, type: "submit" })}</form>`;
 }
 

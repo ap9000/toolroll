@@ -36,6 +36,9 @@ export function skillsHtml(
     error?: string;
     draft?: Record<string, string>;
     agent?: string;
+    /** What new tasks in this project receive (project-skills.ts effectiveSkillsForRepo): the global library less this
+     * project's opt-outs, with its own choices over it. The one status each skill shows. */
+    effective?: readonly { name: string; sha: string }[];
   } = {},
 ): Html {
   const manage = canManage && !!csrf,
@@ -49,7 +52,8 @@ export function skillsHtml(
     contents: Html,
     extra: Record<string, unknown> = {},
   ) => postForm("/settings/skills/change", contents, { hidden: fields({ ...base, action, ...extra }) });
-  const active = Object.values(view.selection).filter((c) => c.enabled).length;
+  const active = options.effective?.length ?? Object.values(view.selection).filter((c) => c.enabled).length;
+  const reaches = new Set((options.effective ?? []).map((one) => one.sha));
   const renderSkill = (skill: SavedSkill): Html => {
     const enabled =
       view.selection[skill.name]?.sha === skill.sha &&
@@ -62,14 +66,16 @@ export function skillsHtml(
       acts(btn(enabled ? "Disable skill" : "Enable skill", { sm: true, type: "submit" })),
     ]), { sha: skill.sha }) : "";
     const testing = manage ? disclose("Test skill", form("test", joinHtml([
-      note(`${options.agent ?? "Uses this project’s configured report agent"}. Runs a read-only sample through the normal task and approval flow.`),
+      note(`${options.agent ?? "Uses this project’s configured report agent"}. Runs the sample as a report task through the normal approval: it reads the project, and a report that changes a file fails with nothing kept.`),
       formRow("Sample request", "The report shows what worked and what needs tools or permission. Enabled status alone does not prove use.",
         textarea({ id: `skill-sample-${skill.sha.slice(0, 12)}`, name: "sample", rows: 3, value: options.draft?.["sha"] === skill.sha ? (options.draft?.["sample"] ?? "") : "",
           attrs: { required: true, maxlength: 800, placeholder: "Review this project’s home page and suggest three clearer button labels.", "aria-label": "Sample request" } }), "top"),
       acts(btn("Create test", { sm: true, type: "submit" })),
     ]), { sha: skill.sha, nonce: randomUUID() }), options.draft?.["sha"] === skill.sha) : "";
     return settingsRecord({
-      title: html`<span>${skill.name}</span>${chip(enabled ? "Enabled" : "In library", enabled ? "done" : "")}`,
+      title: html`<span>${skill.name}</span>${enabled ? chip("Enabled here", "done")
+        : view.selection[skill.name]?.enabled === false ? chip("Off in this project", "")
+        : reaches.has(skill.sha) ? chip("Active from the global library", "done") : chip("In library", "")}`,
       sub: skill.description,
       attrs: { id: `skill-${skill.sha}` },
       more: joinHtml([
@@ -122,7 +128,7 @@ export function skillsHtml(
     : "";
   const library = settingsSection({
     id: "library", title: "Library",
-    lead: `${active ? `${active} skill${active === 1 ? "" : "s"} enabled for new tasks.` : "No skills enabled for this project."} Active tasks keep their saved versions.`,
+    lead: `${active ? `${active} skill${active === 1 ? "" : "s"} reach${active === 1 ? "es" : ""} new tasks in this project.` : "No skills reach new tasks in this project."} Active tasks keep their saved versions.`,
     body: joinHtml([add, search, cards.length ? joinHtml(cards) : note("Your library is empty. Add a skill to review and enable it here."), history]),
   });
   return joinHtml([options.error ? notice(options.error) : "", library]);
@@ -155,10 +161,15 @@ export function skillLibrarySectionHtml(
     repo?: string;
     said?: string | null;
     error?: string | null;
+    /** This project's own choices (project-skills.ts skillsView selection), which win over the global library here. */
+    projectSelection?: Readonly<Record<string, { sha: string; enabled: boolean }>>;
+    /** The bundle address a failed import was given, kept in its field. */
+    bundleUrl?: string;
   } = {},
 ): Html {
   const manage = canManage && !!csrf;
   const repo = options.repo ?? "";
+  const bundleUrl = options.bundleUrl ?? "";
   const libForm = (action: string, contents: Html, extra: Record<string, unknown> = {}) =>
     postForm("/settings/skills/library", contents, { hidden: fields({ action, repo, revision: library.revision, ...extra }) });
 
@@ -168,10 +179,10 @@ export function skillLibrarySectionHtml(
   const importBundleForm = manage
     ? disclose("Import a GitHub skill bundle", libForm("import-bundle", joinHtml([
         formRow("GitHub repository URL", "Imports every SKILL.md found in the repository, pinned to its exact commit SHA.",
-          input({ id: "bundle-url", name: "url", type: "url", attrs: { required: true, placeholder: "https://github.com/owner/repo", "aria-label": "GitHub repository URL" } }), "wide"),
+          input({ id: "bundle-url", name: "url", type: "url", value: bundleUrl, attrs: { required: true, placeholder: "https://github.com/owner/repo", "aria-label": "GitHub repository URL" } }), "wide"),
         html`<label class="k-note"><input type="checkbox" name="autoUpdate" value="1" checked> Check daily and apply clean updates automatically (suspicious changes are held for review)</label>`,
         acts(btn("Import bundle", { variant: "primary", type: "submit" })),
-      ])), library.bundles.length === 0 && library.skills.length === 0)
+      ])), bundleUrl !== "" || (library.bundles.length === 0 && library.skills.length === 0))
     : "";
 
   const addGlobalSkillForm = manage
@@ -215,11 +226,16 @@ export function skillLibrarySectionHtml(
     const enabled = library.selection[skill.name]?.sha === skill.sha && library.selection[skill.name]?.enabled === true;
     const optedOutThis = projectOptOutNames.has(skill.name);
     const optOut = optedOutThis || projectOptedOutAll;
+    const own = repo ? options.projectSelection?.[skill.name] : undefined;
     const statusChip = !enabled
       ? chip("Disabled", "")
       : optOut
         ? chip("Opted out here", "")
-        : chip("Active", "done");
+        : own?.enabled === false
+          ? chip("Off in this project", "")
+          : own !== undefined && own.sha !== skill.sha
+            ? chip("This project uses another version", "")
+            : chip("Active", "done");
     const controls = manage
       ? html`<div class="skill-controls">
           ${libForm(enabled ? "disable-skill" : "enable-skill", btn(enabled ? "Disable globally" : "Enable globally", { sm: true, type: "submit" }), { sha: skill.sha })}

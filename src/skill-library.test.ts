@@ -7,7 +7,7 @@
  * - Unified pinned skill set across Tasks, Coding sessions, Direct Chat (Claude/Codex/Gemini), Live Terminals, and the Lead
  * - Solo-owner passwordless management via POST /settings/skills/library
  */
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -254,6 +254,10 @@ describe("Skill Library (schema v186)", () => {
       commits: { [commit1]: { truncated: true, files: { "skills/one/SKILL.md": skillMd("one", "One") } } },
     });
     await expect(fetchGithubSkillBundle("https://github.com/acme/pstack", truncatedFetcher)).rejects.toThrow(/truncated/i);
+
+    // GitHub out of reach (offline, blocked): said in words, never a bare "fetch failed".
+    const offline = (async () => { throw new TypeError("fetch failed", { cause: { code: "ENOTFOUND" } }); }) as unknown as typeof fetch;
+    await expect(fetchGithubSkillBundle("https://github.com/acme/pstack", offline)).rejects.toThrow("Couldn't reach GitHub: its address couldn't be looked up (this computer may be offline).");
   });
 
   test("daily update sweep applies clean updates, holds suspicious updates, and rolls back in one step", async () => {
@@ -588,5 +592,26 @@ describe("Skill Library (schema v186)", () => {
     });
     expect(optOutPost.status).toBe(303);
     expect(enabledLibrarySkills(store, repo).packages).toEqual([]);
+
+    // A bundle import that can't reach GitHub: the page again, the typed address kept in its field (never in a redirect).
+    const real = globalThis.fetch;
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (String(input instanceof Request ? input.url : input).startsWith("https://api.github.com/")) throw new TypeError("fetch failed");
+      return real(input, init);
+    });
+    try {
+      const typed = "https://github.com/acme/pstack";
+      const failed = await fetch(`${url}/settings/skills/library`, {
+        method: "POST",
+        headers: { cookie, "content-type": "application/x-www-form-urlencoded", origin: url },
+        body: new URLSearchParams({ csrf, action: "import-bundle", repo, url: typed }).toString(),
+        redirect: "manual",
+      });
+      expect(failed.status).toBe(409);
+      const page = await failed.text();
+      expect(page).toContain("Couldn&#39;t reach GitHub: the connection failed");
+      expect(page).toContain("Nothing was imported.");
+      expect(page).toContain(`value="${typed}"`);
+    } finally { spy.mockRestore(); }
   });
 });
