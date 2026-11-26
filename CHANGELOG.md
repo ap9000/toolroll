@@ -4,6 +4,34 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.127 — 2026-11-26
+
+Two tasks built from the same main can both land; a thread's leftover edits are saved; accepted work reads accepted.
+
+### Changed
+
+- **Send back brings work behind main up to date**: Toolroll merges the current main into the new attempt before
+  the agent starts, so it can land. If main conflicts, the task page and `task land` say to merge it by hand.
+- **The workbench offers Send back (r)** on accepted work that is behind main.
+- **Accepted work reads accepted**: "Can I merge?" agrees with Land, "No check is set" is a note rather than a
+  blocker, and Looks right / Not right go away once you've accepted it.
+- **Landed work shows "Landed on main (sha)"** in the workbench list and detail, `task list`, and first in `task
+  show`. Pressing B on it says it's already landed.
+- **Attempts count the same everywhere**: the third build of a task is "attempt 3" in the workbench and on the web.
+- **Checks read "out of date"** when the check command changed after a failed run.
+
+### Fixed
+
+- **Saving a thread after it ends keeps edits its agent left uncommitted**, and ending a thread says when it left
+  some. "Already saved" now appears only when nothing new is left.
+- **An ended thread's transcript** shows the replies and work steps you saw live.
+- **A new thread's Diff tab** no longer shows the previously selected task's diff.
+- **The approval card for a send back** shows the note you typed.
+- **`toolroll verify set`** with no password says to run `toolroll password set` first, without prompting.
+- **`toolroll update` offline** says it couldn't reach the release server and that nothing changed.
+- **`toolroll open --web`** with no working browser says what to do next.
+- **The workbench** leaves the screen on a fresh line, and a refusal too long for the status line opens in full.
+
 ## 0.9.126 — 2026-11-26
 
 Toolroll starts on more machines and says exactly what to fix when it can't; finished work reads finished everywhere.
