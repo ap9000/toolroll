@@ -4,6 +4,30 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.123 — 2026-11-26
+
+Accepted work stays accepted, every command Toolroll gives you can be copied whole, and Toolroll stays quiet while
+nothing runs.
+
+### Changed
+
+- **Accepted work stays accepted** when its checks run again, in the task list, the browser and the workbench; a
+  failed re-check shows next to it and blocks Land with the reason.
+- **Commands you need to run open in a sheet** in the workbench (Land, Save as branch, a Ship that can't open a pull
+  request): the whole command on its own line, and `c` copies it exactly.
+- **Plan-limit checks run only while an agent is working** (or for ten minutes after you open Spend), never while
+  tasks just wait.
+- **`toolroll task new` with a password set** asks for it, shows the terms, then builds; a wrong password files
+  nothing.
+- **Landing from a shell on an install without a password** says to land from the workbench (B) or the task page.
+
+### Fixed
+
+- **After you revert landed work yourself**, the task says "Landed on main (abc1234) · a later commit reverted it"
+  instead of "On main".
+- **The page after Land** shows the task's current version; **ending a thread** offers Save as branch where Ship
+  can't work.
+
 ## 0.9.122 — 2026-11-26
 
 Share one pinned skill library across every project and agent, approve releases on one clear screen, and enjoy a cleaner Mac titlebar.
