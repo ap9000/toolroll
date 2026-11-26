@@ -383,32 +383,46 @@ describe("an attempt that doesn't complete turns automatic updates off", () => {
 });
 
 describe("the update job is this user's, shared by every database", () => {
-  test("a second database's update can't take the job while the first one's updater is at work; a finished owner's job is replaced", async () => {
+  /** A scripted launchctl: the job is running after a bootstrap until `finish()`; nothing else is real. */
+  function launchd() {
+    const state = { loaded: false, running: false, calls: [] as string[][] };
+    const run = (async (_file: string, args: readonly string[]) => {
+      state.calls.push([...args]);
+      const ok = { code: 0, stdout: "", stderr: "", timedOut: false };
+      if (args[0] === "print") return !state.loaded ? { ...ok, code: 113 } : { ...ok, stdout: state.running ? "com.toolroll.update = {\n\tstate = running\n\tpid = 4242\n}" : "com.toolroll.update = {\n\tstate = not running\n}" };
+      if (args[0] === "bootstrap") { state.loaded = true; state.running = true; }
+      if (args[0] === "bootout") { state.loaded = false; state.running = false; }
+      return ok;
+    }) as never;
+    return { state, run, finish: () => { state.running = false; }, bootouts: () => state.calls.filter(one => one[0] === "bootout").length };
+  }
+
+  test("a running job is never replaced or booted out, whatever its files say; a finished one is", async () => {
     const a = world(), b = world();
     const home = join(a.dir, "home");
-    const calls: string[][] = [];
-    const seams = { home, platform: "darwin" as const, npmBin: async () => null, run: (async (_file: string, args: readonly string[]) => { calls.push([...args]); return { code: args[0] === "print" ? 113 : 0, stdout: "", stderr: "", timedOut: false }; }) as never };
+    const job = launchd();
+    const seams = { home, platform: "darwin" as const, npmBin: async () => null, run: job.run };
     const unit = join(home, "Library", "LaunchAgents", "com.toolroll.update.plist");
     const first = journal(a, "0.9.121");
     await launchRuntimeUpdate({ databaseFile: a.databaseFile, id: first.id, dist: join(a.dir, "dist") }, seams);
     expect(readFileSync(unit, "utf8")).toContain(first.id);
     // b's automatic update: refused at launch, its journal refused, its attempt settled; a's job untouched.
-    const booted = calls.filter(one => one[0] === "bootout").length;
     const pass = await autoUpdatePass(b.store, { stateDir: b.dir, databaseFile: b.databaseFile, current: { version: "0.9.120", dist: join(b.dir, "dist") }, kind: "managed", latest: "0.9.121", now: () => T0,
       launch: args => launchRuntimeUpdate({ ...args, dist: join(b.dir, "dist") }, seams) });
-    expect(pass).toMatchObject({ failed: expect.stringContaining(`Another Toolroll on this computer (${a.dir}) is updating right now`) });
+    expect(pass).toMatchObject({ failed: `The update could not start: Another Toolroll update is running (from ${a.dir}). Try again when it finishes.` });
     expect(readRuntimeUpdate(b.dir)).toMatchObject({ phase: "refused" });
     expect(readFileSync(unit, "utf8")).toContain(first.id);
-    expect(calls.filter(one => one[0] === "bootout").length).toBe(booted);
-    // a's update finished: its job is stale, and b's next update takes it.
+    // Forged or missing files change nothing: a's journal marked finished, then the definition removed.
     save({ ...readRuntimeUpdate(a.dir)!, phase: "complete" });
     const second = journal(b, "0.9.122");
+    await expect(launchRuntimeUpdate({ databaseFile: b.databaseFile, id: second.id, dist: join(b.dir, "dist") }, seams)).rejects.toThrow("Another Toolroll update is running");
+    rmSync(unit);
+    await expect(launchRuntimeUpdate({ databaseFile: b.databaseFile, id: second.id, dist: join(b.dir, "dist") }, seams)).rejects.toThrow("Another Toolroll update is running. Try again when it finishes.");
+    expect(job.bootouts()).toBe(0);
+    // Its process ended: the finished job is replaced.
+    job.finish();
     await launchRuntimeUpdate({ databaseFile: b.databaseFile, id: second.id, dist: join(b.dir, "dist") }, seams);
     expect(readFileSync(unit, "utf8")).toContain(second.id);
-    // A job Toolroll can't attribute is never replaced.
-    writeFileSync(unit, "<plist>not ours</plist>");
-    const third = journal(a, "0.9.123");
-    await expect(launchRuntimeUpdate({ databaseFile: a.databaseFile, id: third.id, dist: join(a.dir, "dist") }, seams)).rejects.toThrow(/can't tell whose it is/);
   });
 });
 
