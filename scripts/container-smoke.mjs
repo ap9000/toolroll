@@ -110,6 +110,8 @@ function start(project) {
     child.stderr.on("data", chunk => { out += chunk; });
     const finish = (code) => { if (settled) return; settled = true; clearInterval(look); clearTimeout(ceiling); resolve({ code, out: plain(out), opened }); };
     child.once("exit", code => finish(code));
+    // A missing `script` (the pseudo-terminal this harness needs) is the harness's own failure, said plainly.
+    child.once("error", error => { out += `\nthe smoke harness couldn't start \`script\` (${error.code ?? error.message}): install util-linux's script in this lane\n`; finish(127); });
     // Facts, not time: the screen drew, local mode is on, the console recorded its address and the worker its `up`;
     // then it is stopped the way a person stops it, and everything the worker recorded must exit.
     const look = setInterval(() => {
