@@ -118,6 +118,18 @@ describe("a thread's own repository", () => {
     expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_thread WHERE state IN ('preparing', 'ready')").get()!["n"]).toBe(0);
   });
 
+  test("a config that can't be read: refused with what git said, on one line with no control or bidi characters", async () => {
+    const unreadable = async (file: string, args: readonly string[], options?: Parameters<typeof run>[2]): Promise<ExecResult> =>
+      args.includes("--show-scope") ? { code: 128, stdout: "", stderr: "fatal: bad config line 1 \u001b[31mred\u202e\nsecond line\n", timedOut: false, notFound: false } : run(file, args, options);
+    const refused = await prepareFlexibleThread(world.store, { repo: world.project, base: "HEAD", by: "alex", now: NOW, runner: unreadable });
+    expect(refused).toMatchObject({ ok: false, reason: "repository-unusable" });
+    if (refused.ok) return;
+    expect(refused.message).toContain("its git config couldn't be read: ");
+    expect(refused.message).toContain("fatal: bad config line 1 [31mred)");
+    expect(refused.message).not.toMatch(/[\u0000-\u001f\u202e]|second line/);
+    expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_thread").get()!["n"]).toBe(0);
+  });
+
   test("a setup that fails part way leaves nothing: no folder, no keep-ref, the record failed", async () => {
     const failing = async (file: string, args: readonly string[], options?: Parameters<typeof run>[2]): Promise<ExecResult> =>
       args.includes("reset") ? { code: 1, stdout: "", stderr: "simulated", timedOut: false, notFound: false } : run(file, args, options);
