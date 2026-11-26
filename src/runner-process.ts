@@ -15,12 +15,13 @@
  */
 import { sameMachineHost } from "./machine-identity.js";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { identityProvider, lstartToIso, processIdentity, type IdentityProvider } from "./process-identity.js";
 import { closeSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, renameSync, rmSync, writeFileSync, fsyncSync, constants } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { Runner } from "./runner.js";
 
 export type RunnerProcessRole = "up" | "console" | "worker";
+/** `started`: the process's identity (process-identity.ts), `proc:<boot id>:<ticks>` or an ISO second from ps. */
 export type RunnerProcess = { pid: number; role: RunnerProcessRole; started: string };
 export type RunnerProcessRecord = {
   v: 1;
@@ -65,32 +66,17 @@ export function credentialDigest(credentialHash: string): string {
   return createHash("sha256").update(`runner-process:${credentialHash}`, "utf8").digest("hex").slice(0, 32);
 }
 
-const LSTART = /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d{1,2}) (\d{2}:\d{2}:\d{2}) (\d{4})$/;
-
 /** `ps -o lstart=` (LC_ALL=C, TZ=UTC) as an ISO second, or null when it isn't exactly that shape. */
-export function parseProcessStart(raw: string): string | null {
-  const match = LSTART.exec(raw.trim().replace(/ +/g, " "));
-  if (match === null) return null;
-  const utc = `${match[1]}, ${match[3]!.padStart(2, "0")} ${match[2]} ${match[5]} ${match[4]} GMT`;
-  const at = Date.parse(utc);
-  if (!Number.isFinite(at) || new Date(at).toUTCString() !== utc) return null;
-  return new Date(at).toISOString();
-}
+export const parseProcessStart = lstartToIso;
 
-/** When a process started (whole seconds), or null when there is no such process or it can't be read. */
-export function processStart(pid: number): string | null {
-  if (!Number.isSafeInteger(pid) || pid <= 1 || process.platform === "win32") return null;
-  try {
-    const raw = execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
-      encoding: "utf8", env: { PATH: "/usr/bin:/bin", LC_ALL: "C", TZ: "UTC" }, stdio: ["ignore", "pipe", "ignore"],
-      maxBuffer: 1024, timeout: 2_000, killSignal: "SIGKILL",
-    });
-    return parseProcessStart(raw);
-  } catch { return null; }
+/** The identity of the process holding `pid` (process-identity.ts: `proc:<boot id>:<start ticks>` on Linux, else ps's
+ * start as an ISO second), by `provider` when given; null when there is no such process or it can't be read. */
+export function processStart(pid: number, provider?: IdentityProvider): string | null {
+  return processIdentity(pid, provider);
 }
 
 /** The probes a proof uses; real by default, supplied by tests. */
-export type ProcessProbe = { exists: (pid: number) => "absent" | "present" | "unknown"; start: (pid: number) => string | null };
+export type ProcessProbe = { exists: (pid: number) => "absent" | "present" | "unknown"; start: (pid: number, provider?: IdentityProvider) => string | null };
 export const realProcessProbe: ProcessProbe = {
   exists: pid => {
     try { process.kill(pid, 0); return "present"; }
@@ -102,12 +88,18 @@ export const realProcessProbe: ProcessProbe = {
   start: processStart,
 };
 
-/** Proved gone: no process has this id, or the one that has it started at another time (the id was reused). */
+/**
+ * Proved gone: no process has this id, or the one that has it started at another time (the id was reused), read by the
+ * recorded identity's own provider. A record whose format isn't known, or whose provider can't read the process now
+ * (a legacy ps record where ps no longer works), proves nothing while a process holds the id.
+ */
 export function processGone(entry: RunnerProcess, probe: ProcessProbe = realProcessProbe): boolean {
   const exists = probe.exists(entry.pid);
   if (exists === "absent") return true;
   if (exists === "unknown") return false;
-  const started = probe.start(entry.pid);
+  const provider = identityProvider(entry.started);
+  if (provider === null) return false;
+  const started = probe.start(entry.pid, provider);
   if (started === null) return probe.exists(entry.pid) === "absent";
   return started !== entry.started;
 }
@@ -145,7 +137,8 @@ function parseRecord(value: unknown): RunnerProcessRecord | null {
   for (const one of list) {
     if (typeof one !== "object" || one === null) return null;
     const p = one as Record<string, unknown>;
-    if (!Number.isSafeInteger(p["pid"]) || (p["pid"] as number) <= 1 || !ROLES.has(p["role"] as RunnerProcessRole) || !text(p["started"], 32) || !ISO.test(p["started"])) return null;
+    // A start identity in either provider's format (process-identity.ts); records from before the tag hold ISO.
+    if (!Number.isSafeInteger(p["pid"]) || (p["pid"] as number) <= 1 || !ROLES.has(p["role"] as RunnerProcessRole) || !text(p["started"], 80) || identityProvider(p["started"]) === null || !(ISO.test(p["started"]) || p["started"].startsWith("proc:"))) return null;
     processes.push({ pid: p["pid"] as number, role: p["role"] as RunnerProcessRole, started: p["started"] });
   }
   return { v: 1, runner: v["runner"], host: v["host"], registeredAt: v["registeredAt"], credential: v["credential"], processes,

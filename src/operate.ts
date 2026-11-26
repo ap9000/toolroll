@@ -315,6 +315,7 @@ import {
   hashToken as hashRunnerToken,
   type Runner as RunnerRow,
 } from "./runner.js";
+import { processIdentityProblem } from "./process-identity.js";
 import { credentialDigest, recordedHolderProvedGone, processGone, processStart, readRunnerProcessRecord, runnerProcessFile, sealRunnerProcessRecord, writeRunnerProcessRecord, type RunnerProcessRecord, type RunnerProcessRole } from "./runner-process.js";
 import { stopProcessTree } from "./process-tree.js";
 import { mintCoordinator, revokeCoordinator, listCoordinators } from "./coordinator.js";
@@ -8244,7 +8245,8 @@ async function upCommand(
         // role child as it is spawned. A later start proves them gone by this record.
         if (!recordRunnerProcess(context.databaseFile, { runner: answer.runner, credentialHash: hashRunnerToken(answer.token) }, "up", process.pid)) {
           retireRunnerIfCurrent(store, runnerName, runnerToken, clock());
-          return fail(write, json, "up", "runner-alive", "The worker process record could not be saved; nothing started", EXIT.refused);
+          const identity = processIdentityProblem();
+          return fail(write, json, "up", "runner-alive", `The worker process record could not be saved${identity === null ? "" : ` (${identity})`}; nothing started`, EXIT.refused);
         }
         // What a person asked for, and what ran: an automatic restart acts on exactly this (builder-restart.ts).
         recordBuilderWish(store, "running", "up", packageVersion(), clock());

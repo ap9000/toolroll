@@ -24,6 +24,7 @@ import { envelopeJson } from "./envelope.js";
 import { GIT_FLOOR_WORDS, installedGitFloorProblem } from "./git-floor.js";
 import { run as runCommand } from "./exec.js";
 import { OWN_KEY_ENV } from "./keys.js";
+import { processIdentityProblem } from "./process-identity.js";
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
 import { SANDBOX_RUNTIME, sandboxRuntimeProblem, sandboxRuntimeRepair, sandboxRuntimeWords } from "./sandbox-runtime.js";
 
@@ -38,7 +39,10 @@ export type DoctorReport = { ok: boolean; checked: string[]; findings: DoctorFin
   /** Agent installs Toolroll won't run for their sign-in check (a trust failure), each with its repair in words. */
   agents?: { name: string; problem: string }[];
   /** The installed git against Toolroll's floor (git-floor.ts): null when it is new enough (or unreadable). */
-  git?: { floor: string; problem: string | null } };
+  git?: { floor: string; problem: string | null };
+  /** Whether this system can tell a process from a later one with its id (process-identity.ts): `up` won't start
+   * without it. Null when it can. */
+  processIdentity?: { problem: string | null } };
 
 export type DoctorDeps = {
   platform?: NodeJS.Platform;
@@ -55,6 +59,8 @@ export type DoctorDeps = {
   /** Agent installs that fail their trust check (a test's stand-in; by default status-probe.ts statusBinaryDiagnosis
    * over this doctor's PATH). */
   agentProblems?: () => Promise<{ name: string; problem: string }[]>;
+  /** A test's stand-in for process-identity.ts processIdentityProblem. */
+  processIdentityProblem?: string | null;
 };
 
 /** Claude Code's and Codex's installs on `env`'s PATH that Toolroll won't run for their sign-in check, with the repair. */
@@ -401,6 +407,7 @@ export async function auditServiceEnvironment(deps: DoctorDeps = {}): Promise<Do
 export function doctorLines(report: DoctorReport): string[] {
   const lines: string[] = [];
   if (report.git?.problem != null) lines.push(`Git: ${report.git.problem}`, "");
+  if (report.processIdentity?.problem != null) lines.push(`Processes: ${report.processIdentity.problem}. Toolroll's worker won't start until it can.`, "");
   if (report.findings.length === 0 && report.unreadable.length === 0) lines.push("No secrets found in Toolroll's service. A build can't read a key from it.");
   else if (report.findings.length > 0) lines.push(`Toolroll's service holds ${report.findings.length === 1 ? "a secret" : "secrets"} a build could read. Nothing was changed; follow these steps.`);
   else lines.push("Toolroll couldn't check everything, so it can't say the service is clean. Nothing was changed.");
@@ -437,6 +444,8 @@ export async function runDoctorCommand(argv: readonly string[], write: (line: st
   // A git older than the floor: named here too, and the console and worker won't start on it.
   report.git = { floor: GIT_FLOOR_WORDS, problem: deps.gitFloorProblem === undefined ? installedGitFloorProblem() : deps.gitFloorProblem };
   if (report.git.problem !== null) report.ok = false;
+  report.processIdentity = { problem: deps.processIdentityProblem === undefined ? processIdentityProblem() : deps.processIdentityProblem };
+  if (report.processIdentity.problem !== null) report.ok = false;
   if (json) write(envelopeJson({ command: "doctor", ...report }));
   else for (const line of doctorLines(report)) write(line);
   return report.ok ? 0 : 1;
