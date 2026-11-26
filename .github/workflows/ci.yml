@@ -46,7 +46,8 @@ jobs:
   # job ran it in 14–21 minutes). `--shard=i/K` takes the files test/timings.json's plan gives shard i, slowest first
   # (test/shard-sequencer.ts), so the shards end together. Each shard records the files it ran on the tested commit.
   test-shard:
-    name: node ${{ matrix.node }} · shard ${{ matrix.shard }}/6
+    name: node ${{ matrix.node }} · shard ${{ matrix.shard }}/8
+    needs: scope
     # Pinned: ubuntu-latest moved to 26.04 (2026-10-21), where bubblewrap runs
     # unprivileged, so the agent-fence and ACP tests take the Linux fence road
     # they were never written for.
@@ -58,9 +59,10 @@ jobs:
       fail-fast: false
       matrix:
         node: ["24"]
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v5
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         with:
           ref: ${{ env.TESTED_SHA }}
           # Migration tests build old releases from git history (git archive <old commit>).
@@ -68,17 +70,20 @@ jobs:
           # The candidate's copy of this checkout must hold no token.
           persist-credentials: false
       - name: Tested commit
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         shell: bash
         run: |
           test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
       # The harness comes from the base revision: nothing the candidate wrote decides how it is run.
       - uses: actions/checkout@v5
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         with:
           ref: ${{ github.event.pull_request.base.sha || (github.event_name == 'workflow_dispatch' && 'main') || github.sha }}
           path: .trusted-base
           persist-credentials: false
       - uses: actions/setup-node@v5
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         with:
           node-version: ${{ matrix.node }}
           # The newest patch release: a cached older one hid SQLite 3.54.1 from the suite (0.9.105).
@@ -91,6 +96,7 @@ jobs:
       # refresh-and-install attempts, each under `timeout`. The tools are checked here, so a missing one fails setup, not a test. Kept inline (no
       # composite action): it runs as root, and a local action would come from the change's own checkout.
       - name: Linux tools, pinned packages first, then Ubuntu's mirrors with bounded retries
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         timeout-minutes: 10
         run: |
           pkgs="bubblewrap socat ripgrep"
@@ -126,10 +132,12 @@ jobs:
           done
           have || { echo "::error::Linux tools could not be installed: Ubuntu's package servers did not answer"; exit 1; }
           bwrap --version && socat -V | head -2 | tail -1 && rg --version | head -1
-      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # docs/plans/trusted-release-reports.md, H1: every phase that loads the candidate's code (install, typecheck, the
       # build's Tailwind plugins, the tests) runs as a user of its own, with no sudo, in a copy of the checkout.
       - name: The candidate's user and its copy of the checkout
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         shell: bash
         run: |
           harness=.trusted-base/scripts
@@ -137,36 +145,49 @@ jobs:
           mkdir -p "$RUNNER_TEMP/harness"
           cp "$harness/ci-candidate.mjs" "$harness/ci-candidate-probe.cjs" "$RUNNER_TEMP/harness/"
           sudo -n "$(command -v node)" "$RUNNER_TEMP/harness/ci-candidate.mjs" prepare --workspace "$GITHUB_WORKSPACE" --temp "$RUNNER_TEMP" --npm-cache "$(npm config get cache)" --tool-cache "$RUNNER_TOOL_CACHE"
-      - run: '"$RUNNER_TEMP/candidate" run -- npm ci --ignore-scripts'
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: '"$RUNNER_TEMP/candidate" run -- npm ci --ignore-scripts'
       # Inside this job, not beside it: what it proves is this job's own isolation.
-      - run: '"$RUNNER_TEMP/candidate" canary'
-      - run: '"$RUNNER_TEMP/candidate" run -- npm run typecheck'
-      - run: '"$RUNNER_TEMP/candidate" run -- npm run build'
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: '"$RUNNER_TEMP/candidate" canary'
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: '"$RUNNER_TEMP/candidate" run -- npm run typecheck'
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: '"$RUNNER_TEMP/candidate" run -- npm run build'
       # Vitest's own JSON report, back on fd 3 and converted on the trusted side: no candidate script summarizes it.
       # TOOLROLL_REQUIRE_NATIVE: a native attack that can't run here fails instead of skipping (a skip is not evidence);
       # the join's verifier runs with the same --native policy.
-      - run: '"$RUNNER_TEMP/candidate" run --env CI=true --env TOOLROLL_REQUIRE_NATIVE=linux --report "$RUNNER_TEMP/shard-report.json" -- npm run test:all -- --shard=${{ matrix.shard }}/6'
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: '"$RUNNER_TEMP/candidate" run --env CI=true --env TOOLROLL_REQUIRE_NATIVE=linux --report "$RUNNER_TEMP/shard-report.json" -- npm run test:all -- --shard=${{ matrix.shard }}/8'
       - uses: actions/upload-artifact@v4
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         with:
           name: shard-${{ matrix.node }}-${{ matrix.shard }}-a${{ github.run_attempt }}
           path: ${{ runner.temp }}/shard-report.json
           if-no-files-found: error
           retention-days: 7
+      - name: Reused from proven base commit
+        if: ${{ needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true' }}
+        shell: bash
+        run: echo "Reused from proven base commit; the required join job independently proves this check."
 
   # The required Linux check, under the name `toolroll release` and main's protection wait for. It
   # always runs (a job skipped because a shard failed would read as passing to a required check) and fails unless
   # every shard passed and, together, the shards ran every test file the include policy finds in the tested commit,
-  # each once, with consistent counts, tests executed and only the skips the base allows. It runs none of the
-  # candidate's code: no install, and the verifier (with its inventory and skip policy) is the trusted base revision's
-  # copy — the pull request's base, or main itself when called (Codex review round 1, finding 1). Until the base has a
-  # verifier (the change that introduces it) the candidate's own is used and said; that change touches scripts/, which
-  # an automatic release never approves.
+  # each once, with consistent counts, tests executed and only the skips the base allows. On a narrow docs-only or
+  # version-only pull request where scope proved main's base passed every check, this job independently verifies the
+  # hash-verified diff and per-check base proof via `.trusted-base/scripts/ci-reuse.mjs`. It runs none of the
+  # candidate's code: no install, and every verifier is the trusted base revision's copy.
   test:
     name: node ${{ matrix.node }} · ubuntu-latest
-    needs: test-shard
+    needs: [test-shard, scope]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     strategy:
@@ -177,12 +198,15 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.TESTED_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
       - name: Tested commit
         shell: bash
         run: |
           test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Every shard passed
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         shell: bash
         env:
           SHARDS: ${{ needs.test-shard.result }}
@@ -195,31 +219,45 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
+      - name: Reuse proven check from base
+        if: ${{ needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true' }}
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CHECK: node ${{ matrix.node }} · ubuntu-latest
+        run: node .trusted-base/scripts/ci-reuse.mjs verify --event "$EVENT" --base-ref "$BASE_REF" --base "$BASE_SHA" --head "$TESTED_SHA" --repo "$GITHUB_REPOSITORY" --root "$GITHUB_WORKSPACE" --check "$CHECK" --workflow .github/workflows/ci.yml
       - uses: actions/download-artifact@v4
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         with:
           pattern: shard-${{ matrix.node }}-*
           path: ${{ runner.temp }}/downloads
       # Attempt-named artifacts (a rerun can't overwrite one): each shard's newest attempt, under the verifier's names.
       - name: The shards' newest reports
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         shell: bash
         run: |
           harness=.trusted-base/scripts/ci-candidate.mjs
           if [ ! -f "$harness" ]; then echo "::warning::the base revision has no candidate harness yet; using this change's own (a person approves it)"; harness=scripts/ci-candidate.mjs; fi
           node "$harness" join --from "$RUNNER_TEMP/downloads" --to "$RUNNER_TEMP/shards"
       - name: Every shard ran the whole suite
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         shell: bash
         run: |
           verifier=.trusted-base/scripts/ci-shards.mjs
           if [ ! -f "$verifier" ]; then echo "::warning::the base revision has no shard verifier yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
-          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 6 --native linux
+          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 8 --native linux
 
   # The unit suite on macOS (docs/plans/pipeline-speed.md, item 3a): it runs on the candidate itself, before anything
   # merges, sharded like the Linux suite, beside it; the release tag no longer runs it again (test-matrix.md). On a pull
   # request it runs the macOS lane (docs/plans/ci-speed.md, item 3: what can behave differently on a Mac, and a smoke
-  # set; Linux runs every file), in three timing-balanced shards; the nightly runs every file here too. Each shard
+  # set; Linux runs every file), in four timing-balanced shards; the nightly runs every file here too. Each shard
   # records the files it ran on the tested commit.
   macos-shard:
-    name: node ${{ matrix.node }} · macos shard ${{ matrix.shard }}/3
+    name: node ${{ matrix.node }} · macos shard ${{ matrix.shard }}/4
+    needs: scope
     runs-on: macos-latest
     timeout-minutes: 40
     env:
@@ -228,9 +266,10 @@ jobs:
       fail-fast: false
       matrix:
         node: ["24"]
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v5
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         with:
           ref: ${{ env.TESTED_SHA }}
           # Migration tests build old releases from git history (git archive <old commit>).
@@ -238,17 +277,20 @@ jobs:
           # The candidate's copy of this checkout must hold no token.
           persist-credentials: false
       - name: Tested commit
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         shell: bash
         run: |
           test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
       # The harness comes from the base revision: nothing the candidate wrote decides how it is run.
       - uses: actions/checkout@v5
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         with:
           ref: ${{ github.event.pull_request.base.sha || (github.event_name == 'workflow_dispatch' && 'main') || github.sha }}
           path: .trusted-base
           persist-credentials: false
       - uses: actions/setup-node@v5
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         with:
           node-version: ${{ matrix.node }}
           # The newest patch release: a cached older one hid SQLite 3.54.1 from the suite (0.9.105).
@@ -257,6 +299,7 @@ jobs:
       # docs/plans/trusted-release-reports.md, H1: every phase that loads the candidate's code (install, typecheck, the
       # build's Tailwind plugins, the tests) runs as a user of its own, with no sudo, in a copy of the checkout.
       - name: The candidate's user and its copy of the checkout
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         shell: bash
         run: |
           harness=.trusted-base/scripts
@@ -264,35 +307,49 @@ jobs:
           mkdir -p "$RUNNER_TEMP/harness"
           cp "$harness/ci-candidate.mjs" "$harness/ci-candidate-probe.cjs" "$RUNNER_TEMP/harness/"
           sudo -n "$(command -v node)" "$RUNNER_TEMP/harness/ci-candidate.mjs" prepare --workspace "$GITHUB_WORKSPACE" --temp "$RUNNER_TEMP" --npm-cache "$(npm config get cache)" --tool-cache "$RUNNER_TOOL_CACHE"
-      - run: '"$RUNNER_TEMP/candidate" run -- npm ci --ignore-scripts'
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: '"$RUNNER_TEMP/candidate" run -- npm ci --ignore-scripts'
       # Inside this job, not beside it: what it proves is this job's own isolation.
-      - run: '"$RUNNER_TEMP/candidate" canary'
-      - run: '"$RUNNER_TEMP/candidate" run -- npm run typecheck'
-      - run: '"$RUNNER_TEMP/candidate" run -- npm run build'
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: '"$RUNNER_TEMP/candidate" canary'
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: '"$RUNNER_TEMP/candidate" run -- npm run typecheck'
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: '"$RUNNER_TEMP/candidate" run -- npm run build'
       # Vitest's own JSON report, back on fd 3 and converted on the trusted side: no candidate script summarizes it.
       # TOOLROLL_REQUIRE_NATIVE: a native attack that can't run here fails instead of skipping (a skip is not evidence);
       # the join's verifier runs with the same --native policy.
-      - run: '"$RUNNER_TEMP/candidate" run --env CI=true --env TOOLROLL_REQUIRE_NATIVE=darwin --env TOOLROLL_TEST_LANE="$LANE" --report "$RUNNER_TEMP/shard-report.json" -- npm run test:all -- --shard=${{ matrix.shard }}/3'
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: '"$RUNNER_TEMP/candidate" run --env CI=true --env TOOLROLL_REQUIRE_NATIVE=darwin --env TOOLROLL_TEST_LANE="$LANE" --report "$RUNNER_TEMP/shard-report.json" -- npm run test:all -- --shard=${{ matrix.shard }}/4'
         env:
           LANE: ${{ inputs.macos_lane || 'macos' }}
       - uses: actions/upload-artifact@v4
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         with:
           name: macos-shard-${{ matrix.node }}-${{ matrix.shard }}-a${{ github.run_attempt }}
           path: ${{ runner.temp }}/shard-report.json
           if-no-files-found: error
           retention-days: 7
+      - name: Reused from proven base commit
+        if: ${{ needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true' }}
+        shell: bash
+        run: echo "Reused from proven base commit; the required join job independently proves this check."
 
   # The required macOS check, joined exactly as the Linux one: it always runs, and fails unless every
   # macOS shard passed and together they ran every test file of the tested commit once, judged by the trusted base
-  # revision's verifier. `toolroll release` waits for it (REQUIRED_PR_CHECKS) and refuses to merge while main's
-  # protection doesn't require it.
+  # revision's verifier (or, on a reusable docs/version PR, independently verified by `.trusted-base/scripts/ci-reuse.mjs`).
+  # `toolroll release` waits for it (REQUIRED_PR_CHECKS) and refuses to merge while main's protection doesn't require it.
   macos:
     name: node ${{ matrix.node }} · macos-latest
     # The Linux shards too: what they skipped must be among the files the macOS lane ran (ci-shards.mjs linuxSkipsProblem).
-    needs: [macos-shard, test-shard]
+    needs: [macos-shard, test-shard, scope]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     strategy:
@@ -303,12 +360,15 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.TESTED_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
       - name: Tested commit
         shell: bash
         run: |
           test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Every shard passed
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         shell: bash
         env:
           SHARDS: ${{ needs.macos-shard.result }}
@@ -321,17 +381,30 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
+      - name: Reuse proven check from base
+        if: ${{ needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true' }}
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CHECK: node ${{ matrix.node }} · macos-latest
+        run: node .trusted-base/scripts/ci-reuse.mjs verify --event "$EVENT" --base-ref "$BASE_REF" --base "$BASE_SHA" --head "$TESTED_SHA" --repo "$GITHUB_REPOSITORY" --root "$GITHUB_WORKSPACE" --check "$CHECK" --workflow .github/workflows/ci.yml
       - uses: actions/download-artifact@v4
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         with:
           pattern: macos-shard-${{ matrix.node }}-*
           path: ${{ runner.temp }}/macos-downloads
       - uses: actions/download-artifact@v4
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         with:
           pattern: shard-${{ matrix.node }}-*
           path: ${{ runner.temp }}/linux-downloads
       # The verifier reads shard-<node>-<i> folders; macOS artifacts carry a prefix so their names differ from Linux's, and
       # both carry their attempt, so a rerun never overwrites one: each shard's newest attempt stands.
       - name: The macOS shards' reports, under the verifier's names
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         shell: bash
         run: |
           harness=.trusted-base/scripts/ci-candidate.mjs
@@ -345,6 +418,7 @@ jobs:
           find "$RUNNER_TEMP/shards" -type f -name '*.json' -print0 | xargs -0 sed -i "s#\"${mac_root}#\"${GITHUB_WORKSPACE}/#g"
       # The lane's files are the trusted verifier's own policy over this checkout (LANES): a candidate can't shrink them.
       - name: Every shard ran the whole lane
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         shell: bash
         env:
           LANE: ${{ inputs.macos_lane || 'macos' }}
@@ -352,7 +426,7 @@ jobs:
           verifier=.trusted-base/scripts/ci-shards.mjs
           if [ ! -f "$verifier" ]; then echo "::warning::the base revision has no shard verifier yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
           if ! grep -q "export function linuxSkipsProblem" "$verifier"; then echo "::warning::the base revision's shard verifier has no macOS lane yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
-          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 3 --native darwin --lane "$LANE" --linux-reports "$RUNNER_TEMP/linux-shards" --linux-shards 6
+          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 4 --native darwin --lane "$LANE" --linux-reports "$RUNNER_TEMP/linux-shards" --linux-shards 8
 
   # The newest Node (docs/plans/test-matrix.md): what a person installs today, whose bundled SQLite can refuse what the
   # suite's Node 24 takes (0.9.105: SQLite 3.54.1, bundled from Node 22.23, 24.22 and 26.13 on, refused the Tasks list).
@@ -360,14 +434,20 @@ jobs:
   # but an ordinary one: a release waits for it and a failure fails the release.
   node-latest:
     name: node 26 · SQLite
+    needs: scope
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.TESTED_SHA }}
+          fetch-depth: 0
           # The candidate's copy of this checkout must hold no token.
           persist-credentials: false
       - name: Tested commit
@@ -386,7 +466,18 @@ jobs:
           node-version: "26"
           check-latest: true
           cache: npm
+      - name: Reuse proven check from base
+        if: ${{ needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true' }}
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CHECK: node 26 · SQLite
+        run: node .trusted-base/scripts/ci-reuse.mjs verify --event "$EVENT" --base-ref "$BASE_REF" --base "$BASE_SHA" --head "$TESTED_SHA" --repo "$GITHUB_REPOSITORY" --root "$GITHUB_WORKSPACE" --check "$CHECK" --workflow .github/workflows/ci.yml
       - name: The candidate's user and its copy of the checkout
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         shell: bash
         run: |
           harness=.trusted-base/scripts
@@ -394,22 +485,29 @@ jobs:
           mkdir -p "$RUNNER_TEMP/harness"
           cp "$harness/ci-candidate.mjs" "$harness/ci-candidate-probe.cjs" "$RUNNER_TEMP/harness/"
           sudo -n "$(command -v node)" "$RUNNER_TEMP/harness/ci-candidate.mjs" prepare --workspace "$GITHUB_WORKSPACE" --temp "$RUNNER_TEMP" --npm-cache "$(npm config get cache)" --tool-cache "$RUNNER_TOOL_CACHE"
-      - run: '"$RUNNER_TEMP/candidate" run -- npm ci --ignore-scripts'
-      - run: '"$RUNNER_TEMP/candidate" canary'
-      - run: '"$RUNNER_TEMP/candidate" run --env CI=true -- npx vitest run src/sqlite-compat.test.ts src/store.test.ts src/sqlite-telemetry.test.ts'
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: '"$RUNNER_TEMP/candidate" run -- npm ci --ignore-scripts'
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: '"$RUNNER_TEMP/candidate" canary'
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: '"$RUNNER_TEMP/candidate" run --env CI=true -- npx vitest run src/sqlite-compat.test.ts src/store.test.ts src/sqlite-telemetry.test.ts'
 
-  # Whether the area lanes below apply (docs/plans/test-matrix.md): every pull request runs them except a narrow
-  # documentation-only change (scripts/ci-scope.mjs says exactly which), and every release-* branch and every run that
-  # isn't a pull request runs them. The decision is the trusted base revision's classifier over the pull request's diff
-  # from its merge base, never the candidate's test output. A base without the classifier runs every lane.
+  # Whether the area lanes below apply (docs/plans/test-matrix.md) and whether this pull request qualifies to reuse
+  # main's proven CI checks (docs/plans/release-from-main.md, part B). Every decision runs from `.trusted-base/scripts/`,
+  # never from the candidate. A base without the reuse prover always answers `reuse=false` (fail closed).
   scope:
     name: area lanes · scope
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     outputs:
       areas: ${{ steps.decide.outputs.areas }}
+      reuse: ${{ steps.reuse.outputs.reuse }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -445,30 +543,57 @@ jobs:
             exit 0
           fi
           node "$classifier" decide --event "$EVENT" --head-ref "$HEAD_REF" --base "$BASE_SHA" --head "$TESTED_SHA" --root "$GITHUB_WORKSPACE" | tee -a "$GITHUB_OUTPUT"
+      - name: Reusable docs or version-only change
+        id: reuse
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          REUSE_CHECKS: >-
+            {"node 24 · ubuntu-latest": ".github/workflows/ci.yml",
+            "node 24 · macos-latest": ".github/workflows/ci.yml",
+            "node 26 · SQLite": ".github/workflows/ci.yml",
+            "linux native containment · delegated cgroup v2": ".github/workflows/ci.yml",
+            "linux fence · sandbox-runtime": ".github/workflows/ci.yml",
+            "Windows Job Object containment": ".github/workflows/ci.yml",
+            "git 2.41 · debian trixie": ".github/workflows/ci.yml",
+            "git 2.47 · debian trixie": ".github/workflows/ci.yml"}
+        run: |
+          reuser=.trusted-base/scripts/ci-reuse.mjs
+          if [ ! -f "$reuser" ]; then
+            echo "::notice::the base revision has no reuse prover yet; running full CI"
+            echo "reuse=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          node "$reuser" decide --event "$EVENT" --base-ref "$BASE_REF" --base "$BASE_SHA" --head "$TESTED_SHA" --repo "$GITHUB_REPOSITORY" --root "$GITHUB_WORKSPACE" --checks "$REUSE_CHECKS" | tee -a "$GITHUB_OUTPUT"
 
   # The root lanes (docs/plans/trusted-release-reports.md, H1): Linux cgroup containment, the Linux fence and Windows Job
   # Object containment need root, so a candidate's code has root there. They run in native-lanes.yml, a workflow run of
   # their own: one that shares no token and no artifact store with the jobs above. These three jobs keep the required
   # names in this file, because `toolroll release` (the deployed one, which judges each release), main's protection and
   # the release proof bind each name to ci.yml; each runs nothing of the candidate's and passes only when its lane's job
-  # passed there (scripts/ci-native-wait.mjs). A call from main-push.yml or nightly.yml has those start the lanes first.
+  # passed there (scripts/ci-native-wait.mjs) or when `.trusted-base/scripts/ci-reuse.mjs` independently proves reuse.
   linux-native-containment:
     name: linux native containment · delegated cgroup v2
     needs: scope
-    # Skipped only on a documentation-only pull request, by a scope job that succeeded; otherwise it runs.
-    if: ${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only') }}
+    # Skipped only on an unproven documentation-only pull request, by a scope job that succeeded; otherwise it runs.
+    if: ${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only' && needs.scope.outputs.reuse != 'true') }}
     runs-on: ubuntu-24.04
     # Past its lane's own limit, so a verdict arrives first.
     timeout-minutes: 50
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.TESTED_SHA }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Tested commit
         shell: bash
@@ -483,7 +608,18 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "24"
+      - name: Reuse proven check from base
+        if: ${{ needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true' }}
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CHECK: linux native containment · delegated cgroup v2
+        run: node .trusted-base/scripts/ci-reuse.mjs verify --event "$EVENT" --base-ref "$BASE_REF" --base "$BASE_SHA" --head "$TESTED_SHA" --repo "$GITHUB_REPOSITORY" --root "$GITHUB_WORKSPACE" --check "$CHECK" --workflow .github/workflows/ci.yml
       - name: Its lane passed in its own workflow run
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         shell: bash
         env:
           EVENT: ${{ github.event_name }}
@@ -497,20 +633,22 @@ jobs:
   linux-fence:
     name: linux fence · sandbox-runtime
     needs: scope
-    # Skipped only on a documentation-only pull request, by a scope job that succeeded; otherwise it runs.
-    if: ${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only') }}
+    # Skipped only on an unproven documentation-only pull request, by a scope job that succeeded; otherwise it runs.
+    if: ${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only' && needs.scope.outputs.reuse != 'true') }}
     runs-on: ubuntu-24.04
     # Past its lane's own limit, so a verdict arrives first.
     timeout-minutes: 50
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.TESTED_SHA }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Tested commit
         shell: bash
@@ -525,7 +663,18 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "24"
+      - name: Reuse proven check from base
+        if: ${{ needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true' }}
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CHECK: linux fence · sandbox-runtime
+        run: node .trusted-base/scripts/ci-reuse.mjs verify --event "$EVENT" --base-ref "$BASE_REF" --base "$BASE_SHA" --head "$TESTED_SHA" --repo "$GITHUB_REPOSITORY" --root "$GITHUB_WORKSPACE" --check "$CHECK" --workflow .github/workflows/ci.yml
       - name: Its lane passed in its own workflow run
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         shell: bash
         env:
           EVENT: ${{ github.event_name }}
@@ -539,20 +688,22 @@ jobs:
   native-windows:
     name: Windows Job Object containment
     needs: scope
-    # Skipped only on a documentation-only pull request, by a scope job that succeeded; otherwise it runs.
-    if: ${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only') }}
+    # Skipped only on an unproven documentation-only pull request, by a scope job that succeeded; otherwise it runs.
+    if: ${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only' && needs.scope.outputs.reuse != 'true') }}
     runs-on: ubuntu-24.04
     # Past its lane's own limit, so a verdict arrives first.
     timeout-minutes: 50
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.TESTED_SHA }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Tested commit
         shell: bash
@@ -567,7 +718,18 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "24"
+      - name: Reuse proven check from base
+        if: ${{ needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true' }}
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CHECK: Windows Job Object containment
+        run: node .trusted-base/scripts/ci-reuse.mjs verify --event "$EVENT" --base-ref "$BASE_REF" --base "$BASE_SHA" --head "$TESTED_SHA" --repo "$GITHUB_REPOSITORY" --root "$GITHUB_WORKSPACE" --check "$CHECK" --workflow .github/workflows/ci.yml
       - name: Its lane passed in its own workflow run
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         shell: bash
         env:
           EVENT: ${{ github.event_name }}
@@ -592,10 +754,14 @@ jobs:
   git-floor:
     name: git 2.41 · debian trixie
     needs: scope
-    # Skipped only on a documentation-only pull request, by a scope job that succeeded; otherwise it runs.
-    if: ${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only') }}
+    # Skipped only on an unproven documentation-only pull request, by a scope job that succeeded; otherwise it runs.
+    if: ${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only' && needs.scope.outputs.reuse != 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     # --init: an init process reaps orphaned children, as a real machine's PID 1 does (the pool's orphaned-group test).
     container:
       image: node:22-trixie
@@ -606,6 +772,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.TESTED_SHA }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Tested commit
         run: |
@@ -617,33 +784,54 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha || (github.event_name == 'workflow_dispatch' && 'main') || github.sha }}
           path: .trusted-base
           persist-credentials: false
-      - run: .trusted-base/scripts/ci-git.sh 2.41
+      - name: Reuse proven check from base
+        if: ${{ needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true' }}
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CHECK: git 2.41 · debian trixie
+        run: node .trusted-base/scripts/ci-reuse.mjs verify --event "$EVENT" --base-ref "$BASE_REF" --base "$BASE_SHA" --head "$TESTED_SHA" --repo "$GITHUB_REPOSITORY" --root "$GITHUB_WORKSPACE" --check "$CHECK" --workflow .github/workflows/ci.yml
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: .trusted-base/scripts/ci-git.sh 2.41
       - name: The tests' git is git 2.41
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         run: runuser -u node -- git --version | tee /dev/stderr | grep -qF "git version 2.41."
       # H1: the image's unprivileged user gets a copy of the checkout it owns (docs/plans/trusted-release-reports.md).
       # That copy is the one ownership exception; the workspace itself, and the base revision's scripts, stay root's.
       - name: The candidate's copy of the checkout
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         run: |
           harness=.trusted-base/scripts
           if [ ! -f "$harness/ci-candidate.mjs" ]; then echo "::warning::the base revision has no candidate harness yet; using this change's own (a person approves it)"; harness=scripts; fi
           mkdir -p "$RUNNER_TEMP/harness"
           cp "$harness/ci-candidate.mjs" "$harness/ci-candidate-probe.cjs" "$harness/ci-no-skips.mjs" "$RUNNER_TEMP/harness/"
           node "$RUNNER_TEMP/harness/ci-candidate.mjs" prepare --workspace "$GITHUB_WORKSPACE" --temp "$RUNNER_TEMP" --user node
-      - run: '"$RUNNER_TEMP/candidate" run -- npm ci --ignore-scripts'
-      - run: '"$RUNNER_TEMP/candidate" canary'
-      - run: '"$RUNNER_TEMP/candidate" run --env CI=true --report "$RUNNER_TEMP/git-lane.json" -- npm run test:git --'
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: '"$RUNNER_TEMP/candidate" run -- npm ci --ignore-scripts'
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: '"$RUNNER_TEMP/candidate" canary'
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: '"$RUNNER_TEMP/candidate" run --env CI=true --report "$RUNNER_TEMP/git-lane.json" -- npm run test:git --'
       - name: Every git test ran
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         run: node "$RUNNER_TEMP/harness/ci-no-skips.mjs" "$RUNNER_TEMP/git-lane.json"
       - name: Partial clones are refused on the floor's git
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         run: '"$RUNNER_TEMP/candidate" run --env CI=true --report "$RUNNER_TEMP/partial-clone.json" -- npx vitest run test/attacks/checkout-git-partial-clone.test.ts && node "$RUNNER_TEMP/harness/ci-no-skips.mjs" "$RUNNER_TEMP/partial-clone.json"'
 
   git-247:
     name: git 2.47 · debian trixie
     needs: scope
-    # Skipped only on a documentation-only pull request, by a scope job that succeeded; otherwise it runs.
-    if: ${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only') }}
+    # Skipped only on an unproven documentation-only pull request, by a scope job that succeeded; otherwise it runs.
+    if: ${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only' && needs.scope.outputs.reuse != 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     # --init: an init process reaps orphaned children, as a real machine's PID 1 does (the pool's orphaned-group test).
     container:
       image: node:22-trixie
@@ -654,6 +842,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.TESTED_SHA }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Tested commit
         run: |
@@ -665,20 +854,36 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha || (github.event_name == 'workflow_dispatch' && 'main') || github.sha }}
           path: .trusted-base
           persist-credentials: false
-      - run: .trusted-base/scripts/ci-git.sh 2.47
+      - name: Reuse proven check from base
+        if: ${{ needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true' }}
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CHECK: git 2.47 · debian trixie
+        run: node .trusted-base/scripts/ci-reuse.mjs verify --event "$EVENT" --base-ref "$BASE_REF" --base "$BASE_SHA" --head "$TESTED_SHA" --repo "$GITHUB_REPOSITORY" --root "$GITHUB_WORKSPACE" --check "$CHECK" --workflow .github/workflows/ci.yml
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: .trusted-base/scripts/ci-git.sh 2.47
       - name: The tests' git is git 2.47
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         run: runuser -u node -- git --version | tee /dev/stderr | grep -qF "git version 2.47."
       # H1: the image's unprivileged user gets a copy of the checkout it owns (docs/plans/trusted-release-reports.md).
       # That copy is the one ownership exception; the workspace itself, and the base revision's scripts, stay root's.
       - name: The candidate's copy of the checkout
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         run: |
           harness=.trusted-base/scripts
           if [ ! -f "$harness/ci-candidate.mjs" ]; then echo "::warning::the base revision has no candidate harness yet; using this change's own (a person approves it)"; harness=scripts; fi
           mkdir -p "$RUNNER_TEMP/harness"
           cp "$harness/ci-candidate.mjs" "$harness/ci-candidate-probe.cjs" "$harness/ci-no-skips.mjs" "$RUNNER_TEMP/harness/"
           node "$RUNNER_TEMP/harness/ci-candidate.mjs" prepare --workspace "$GITHUB_WORKSPACE" --temp "$RUNNER_TEMP" --user node
-      - run: '"$RUNNER_TEMP/candidate" run -- npm ci --ignore-scripts'
-      - run: '"$RUNNER_TEMP/candidate" canary'
-      - run: '"$RUNNER_TEMP/candidate" run --env CI=true --report "$RUNNER_TEMP/git-lane.json" -- npm run test:git --'
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: '"$RUNNER_TEMP/candidate" run -- npm ci --ignore-scripts'
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: '"$RUNNER_TEMP/candidate" canary'
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: '"$RUNNER_TEMP/candidate" run --env CI=true --report "$RUNNER_TEMP/git-lane.json" -- npm run test:git --'
       - name: Every git test ran
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         run: node "$RUNNER_TEMP/harness/ci-no-skips.mjs" "$RUNNER_TEMP/git-lane.json"

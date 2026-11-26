@@ -2,15 +2,15 @@
 
 Toolroll ships a native SwiftUI macOS app (`Toolroll.app`) distributed as a Universal (`arm64` + `x86_64`) signed, notarized `.dmg` on GitHub Releases and via the Homebrew Cask `ap9000/toolroll/toolroll`.
 
-## Install (end users)
+## Install (once signed releases are published)
+
+Once Apple Developer ID signing and notarization secrets are configured on this repository, signed `Toolroll-<version>-macos.dmg` builds publish automatically to [GitHub Releases](https://github.com/ap9000/toolroll/releases/latest) and open a Homebrew Cask PR in `ap9000/homebrew-toolroll`:
 
 ```sh
 brew install --cask ap9000/toolroll/toolroll
 ```
 
-Installing the cask also installs the `ap9000/toolroll/toolroll` formula, so launching **Toolroll.app** automatically starts and connects to your local Toolroll engine with zero manual terminal commands.
-
-You can also download `Toolroll-<version>-macos.dmg` directly from [GitHub Releases](https://github.com/ap9000/toolroll/releases/latest) and drag **Toolroll.app** into `/Applications`.
+Installing the cask also installs the `ap9000/toolroll/toolroll` formula, so launching **Toolroll.app** automatically starts and connects to your local Toolroll engine with zero manual terminal commands. Until signed releases are enabled, build **Toolroll.app** locally from source below.
 
 ## Local packaging
 
@@ -52,4 +52,4 @@ Configure these repository secrets once in GitHub (`Settings → Secrets and var
 | `APPLE_NOTARY_ISSUER_ID` | Notarization | Issuer UUID from App Store Connect |
 | `HOMEBREW_TAP_TOKEN` | Homebrew Cask PR | Optional fine-grained PAT with `contents: write` + `pull_requests: write` on `ap9000/homebrew-toolroll` |
 
-When triggered by `release: published`, the workflow refuses to publish an unsigned `.dmg` if the signing or notarization secrets are missing. Manual `workflow_dispatch` runs default to dry-run (`publish_release: false`, `allow_unsigned: true`) so you can verify packaging and download the artifact before configuring certificates.
+When triggered by `release: published`, the workflow skips building and uploading with a notice if the signing or notarization secrets are not configured yet (it never uploads an unsigned `.dmg`). Manual `workflow_dispatch` runs default to dry-run (`publish_release: false`, `allow_unsigned: true`) so you can verify packaging and download the artifact before configuring certificates.

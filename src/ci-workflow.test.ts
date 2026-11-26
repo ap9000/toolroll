@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { parse } from "yaml";
 import { areaLanes, diffEntries, docsPath, parseNameStatus } from "../scripts/ci-scope.mjs";
+import { CI_REUSE_CHECKS } from "../scripts/ci-reuse.mjs";
 import { pullRequestChanges, upgradeScope } from "../scripts/ci-upgrade-scope.mjs";
 import { laneVerdict, NATIVE_JOBS, NATIVE_WORKFLOW, standingRun } from "../scripts/ci-native-wait.mjs";
 import { parseRequired, PROOF_EVENTS, proofProblem } from "../scripts/release-proof.mjs";
@@ -54,6 +55,9 @@ function triggered(one: Workflow, event: Event): boolean {
  */
 const RELEASE_BRANCH = "github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-')";
 const LANE = "${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only') }}";
+const LANE_CI = "${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only' && needs.scope.outputs.reuse != 'true') }}";
+const REUSE_STEP = "${{ needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true' }}";
+const NOT_REUSE_STEP = "${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}";
 const UPGRADE = "${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.upgrade == 'skip') }}";
 const UNPROVEN = "${{ always() && !(needs.proof.result == 'success' && needs.proof.outputs.proven == 'true') }}";
 const CONDITIONS: Record<string, (event: Event) => boolean> = {
@@ -62,6 +66,8 @@ const CONDITIONS: Record<string, (event: Event) => boolean> = {
   [`\${{ always() && (${RELEASE_BRANCH}) }}`]: event => event.kind !== "pull_request" || event.branch.startsWith("release-"),
   // ci-scope.mjs's own decision over the event's paths (as modifications); the lane runs unless it said docs-only.
   [LANE]: event => event.kind !== "pull_request" || areaLanes({ event: "pull_request", headRef: event.branch, entries: event.paths.map(path => ({ status: "M", paths: [path] })) }).run,
+  // ci.yml area lanes (static tests treat base proof as unproven, as UNPROVEN does for main-push.yml).
+  [LANE_CI]: event => event.kind !== "pull_request" || areaLanes({ event: "pull_request", headRef: event.branch, entries: event.paths.map(path => ({ status: "M", paths: [path] })) }).run,
   // upgrade-path.yml: the release check's own rule over the event's paths; it runs unless the rule said skip.
   [UPGRADE]: event => event.kind !== "pull_request" || upgradeScope(event.paths).run,
   // main-push.yml: the full CI whenever the merge commit isn't proven tested (these tests take it unproven).
@@ -91,9 +97,9 @@ function checks(job: Job, id: string, event: Event, file: string): Check[] {
   return combos.map(combo => ({ name: fill(job.name ?? id, combo) + suffix(combo), runner: fill(job["runs-on"] ?? "", combo), runs, workflow: `.github/workflows/${file}` }));
 }
 
-/** Shards per suite (docs/plans/ci-speed.md, item 1): Linux runs every file in six, macOS its lane in three. Shard names
+/** Shards per suite (docs/plans/ci-speed.md, item 1): Linux runs every file in eight, macOS its lane in four. Shard names
  * are never required checks; only their joins are. */
-const SHARDS = { linux: 6, darwin: 3 } as const;
+const SHARDS = { linux: 8, darwin: 4 } as const;
 const shardNames = (node: string) => [
   ...Array.from({ length: SHARDS.linux }, (_, at) => `node ${node} · shard ${at + 1}/${SHARDS.linux}`),
   ...Array.from({ length: SHARDS.darwin }, (_, at) => `node ${node} · macos shard ${at + 1}/${SHARDS.darwin}`),
@@ -227,7 +233,7 @@ describe("the CI workflows", () => {
     const change = pr(["src/release.ts"]);
     // Skipped, Node 22's shards report once each, unexpanded (GitHub skips a matrix job before expanding it); the
     // required names are written out, so they report exactly.
-    const skippedShards = ["node 22 · shard ${{ matrix.shard }}/6", "node 22 · macos shard ${{ matrix.shard }}/3"];
+    const skippedShards = ["node 22 · shard ${{ matrix.shard }}/8", "node 22 · macos shard ${{ matrix.shard }}/4"];
     expect(names(change)).toEqual([...all.filter(name => !shardNames("22").includes(name)), ...skippedShards].sort());
     // An ordinary pull request: Node 22 reports skipped (main's protection reads that as passing a merge; a release never).
     expect(executed(change)).toEqual([...REQUIRED_PR_CHECKS.filter(name => !name.startsWith("node 22")), ...shardNames("24"), LATEST, SCOPE, NATIVE_SCOPE, ...NATIVE, ...ADVISORY].sort());
@@ -319,11 +325,12 @@ describe("the CI workflows", () => {
     for (const event of [pr(["docs/a.md", "src/x.ts"]), pr(["docs/a.md"], "release-0.9.80"), pr(["docs/a.json"]), pr(["test/attacks/a.test.ts"])]) {
       expect(executed(event).filter(name => AREA.includes(name)).sort(), JSON.stringify(event)).toEqual([...AREA].sort());
     }
-    // The lanes' condition is the fail-closed one: they run unless the scope job succeeded and said docs-only.
+    // The lanes' condition is the fail-closed one: they run unless the scope job succeeded and said docs-only (and
+    // ci.yml runs them when reuse == 'true' so each required check verifies reuse and concludes success).
     const ci = workflow("ci.yml");
     for (const id of ["linux-native-containment", "linux-fence", "native-windows", "git-floor", "git-247"]) {
       expect(ci.jobs[id]?.needs, id).toBe("scope");
-      expect(ci.jobs[id]?.if, id).toBe(LANE);
+      expect(ci.jobs[id]?.if, id).toBe(LANE_CI);
     }
     // The root lanes skip by the same decision in their own run, so a skipped waiter never hides a lane that ran.
     for (const id of ["linux-native-containment", "linux-fence", "native-windows"]) {
@@ -333,7 +340,7 @@ describe("the CI workflows", () => {
     // The decision is the trusted base revision's classifier over the pull request's own diff, its untrusted inputs
     // passed through the environment (never into the script's text).
     const scope = ci.jobs["scope"]!;
-    expect(scope.outputs).toEqual({ areas: "${{ steps.decide.outputs.areas }}" });
+    expect(scope.outputs).toEqual({ areas: "${{ steps.decide.outputs.areas }}", reuse: "${{ steps.reuse.outputs.reuse }}" });
     expect(scope.steps?.find(step => step.uses?.startsWith("actions/checkout@") && step.with?.["ref"] === "${{ env.TESTED_SHA }}")?.with?.["fetch-depth"]).toBe(0);
     const decide = scope.steps?.find(step => step.id === "decide");
     expect(decide?.env).toEqual({ EVENT: "${{ github.event_name }}", HEAD_REF: "${{ github.head_ref }}", BASE_SHA: "${{ github.event.pull_request.base.sha }}" });
@@ -346,12 +353,21 @@ describe("the CI workflows", () => {
     try {
       mkdirSync(join(scratch, "scripts"));
       writeFileSync(join(scratch, "scripts/ci-scope.mjs"), "console.log('areas=docs-only');\n");
+      writeFileSync(join(scratch, "scripts/ci-reuse.mjs"), "console.log('reuse=true');\n");
       const output = join(scratch, "output");
       const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", String(decide?.run)], {
         cwd: scratch, encoding: "utf8", env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: scratch, XDG_CONFIG_HOME: scratch, GITHUB_OUTPUT: output, EVENT: "pull_request", HEAD_REF: "release-1", BASE_SHA: "a".repeat(40), TESTED_SHA: "b".repeat(40), GITHUB_WORKSPACE: scratch },
       });
       expect(result.status, result.stderr).toBe(0);
       expect(readFileSync(output, "utf8").trim()).toBe("areas=run");
+      // Same fail-closed bootstrap check for the reuse step: a missing base prover never executes the candidate's copy.
+      const reuse = scope.steps?.find(step => step.id === "reuse");
+      const reuseOut = join(scratch, "reuse-output");
+      const reuseResult = spawnSync("bash", ["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", String(reuse?.run)], {
+        cwd: scratch, encoding: "utf8", env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: scratch, XDG_CONFIG_HOME: scratch, GITHUB_OUTPUT: reuseOut, EVENT: "pull_request", BASE_REF: "main", BASE_SHA: "a".repeat(40), TESTED_SHA: "b".repeat(40), GITHUB_REPOSITORY: "ap9000/toolroll", GITHUB_WORKSPACE: scratch, REUSE_CHECKS: "{}" },
+      });
+      expect(reuseResult.status, reuseResult.stderr).toBe(0);
+      expect(readFileSync(reuseOut, "utf8").trim()).toBe("reuse=false");
     } finally { rmSync(scratch, { recursive: true, force: true }); }
   });
 
@@ -360,8 +376,8 @@ describe("the CI workflows", () => {
     // accepts a skipped check. The shards' joins always run; the area lanes and Node 22 skip only as described above.
     const conditional = workflows.flatMap(one => Object.entries(one.jobs).filter(([, job]) => job.if !== undefined).map(([id, job]) => `${one.file}: ${id} ${String(job.if)}`)).sort();
     expect(conditional).toEqual([
-      `ci.yml: git-247 ${LANE}`, `ci.yml: git-floor ${LANE}`, `ci.yml: linux-fence ${LANE}`, `ci.yml: linux-native-containment ${LANE}`,
-      "ci.yml: macos ${{ always() }}", `ci.yml: native-windows ${LANE}`, "ci.yml: test ${{ always() }}",
+      `ci.yml: git-247 ${LANE_CI}`, `ci.yml: git-floor ${LANE_CI}`, `ci.yml: linux-fence ${LANE_CI}`, `ci.yml: linux-native-containment ${LANE_CI}`,
+      "ci.yml: macos ${{ always() }}", `ci.yml: native-windows ${LANE_CI}`, "ci.yml: test ${{ always() }}",
       `main-push.yml: full ${UNPROVEN}`, `main-push.yml: native-lanes ${UNPROVEN}`,
       `native-lanes.yml: linux-fence ${LANE}`, `native-lanes.yml: linux-native-containment ${LANE}`, `native-lanes.yml: native-windows ${LANE}`,
       `release-candidate.yml: macos \${{ always() && (${RELEASE_BRANCH}) }}`, `release-candidate.yml: macos-shard \${{ ${RELEASE_BRANCH} }}`,
@@ -597,7 +613,7 @@ describe("the CI workflows", () => {
     expect(runs.find(run => run.includes(" prepare "))).toContain("--user node");
     // The floor's git has no --no-lazy-fetch: its lane proves, by name, that a partial clone is refused there.
     const floor = (job.steps ?? []).find(step => (step.run ?? "").includes("checkout-git-partial-clone.test.ts"));
-    expect(floor?.if).toBeUndefined();
+    expect(floor?.if).toBe(NOT_REUSE_STEP);
     expect(floor?.run).toMatch(/^"\$RUNNER_TEMP\/candidate" run /);
   });
 
@@ -615,11 +631,16 @@ describe("the CI workflows", () => {
         expect((shard.strategy as { "fail-fast"?: unknown })["fail-fast"]).toBe(false);
         expect(join.strategy?.matrix).toEqual(file === "ci.yml" ? { node: [node] } : undefined);
         // The macOS join reads the Linux shards' reports too: what Linux skipped must be in the macOS lane.
-        expect(join.needs).toEqual(os === "macos" ? ["macos-shard", "test-shard"] : shardId);
+        const expectedNeeds = file === "ci.yml" ? (os === "macos" ? ["macos-shard", "test-shard", "scope"] : [shardId, "scope"]) : (os === "macos" ? ["macos-shard", "test-shard"] : shardId);
+        expect(join.needs, `${file} ${joinId}`).toEqual(expectedNeeds);
         expect(checks(join, joinId, pr([]), file).map(check => check.name)).toEqual([`node ${node} · ${os}-latest`]);
         for (const job of [shard, join]) {
           expect(job["continue-on-error"] ?? false).toBe(false);
-          for (const step of job.steps ?? []) { expect(step.if).toBeUndefined(); expect(step["continue-on-error"] ?? false).toBe(false); }
+          for (const step of job.steps ?? []) {
+            if (file === "ci.yml") expect([undefined, REUSE_STEP, NOT_REUSE_STEP], `${file} ${job.name}`).toContain(step.if);
+            else expect(step.if).toBeUndefined();
+            expect(step["continue-on-error"] ?? false).toBe(false);
+          }
         }
         // Each shard runs the whole suite's command on its slice and uploads Vitest's own report, written outside the
         // checkout: no candidate script summarizes it (Codex review round 1, finding 1).
@@ -661,7 +682,7 @@ describe("H1: the root lanes run in a workflow run of their own", () => {
       const job = workflow("ci.yml").jobs[id]!;
       expect(Object.keys(NATIVE_JOBS)).toContain(job.name);
       expect(job["runs-on"]).toBe("ubuntu-24.04");
-      expect(job.permissions).toEqual({ contents: "read", actions: "read" });
+      expect(job.permissions).toEqual({ contents: "read", actions: "read", "pull-requests": "read" });
       expect(runsOf(job).filter(run => /\bnpm\b|\bnpx\b|vitest|sudo/.test(run))).toEqual([]);
       expect(job.steps?.at(-1)?.env?.["CHECK"]).toBe(job.name);
       expect(job.steps?.at(-1)?.run).toContain("waiter=.trusted-base/scripts/ci-native-wait.mjs");
@@ -681,7 +702,7 @@ describe("H1: the root lanes run in a workflow run of their own", () => {
   });
   test("a called ci.yml keeps working: its caller starts the lanes and grants the read its waiters need", () => {
     for (const [file, id] of [["nightly.yml", "ci"], ["main-push.yml", "full"]] as const) {
-      expect(workflow(file).jobs[id]?.permissions, file).toEqual({ contents: "read", actions: "read" });
+      expect(workflow(file).jobs[id]?.permissions, file).toEqual({ contents: "read", actions: "read", "pull-requests": "read" });
       expect(workflow(file).jobs["native-lanes"]?.permissions, file).toEqual({ actions: "write", contents: "read" });
       expect(runsOf(workflow(file).jobs["native-lanes"]!).join(), file).toContain("gh workflow run native-lanes.yml");
     }
@@ -853,10 +874,57 @@ describe("the upgrade test on pull requests (.github/workflows/upgrade-path.yml)
     expect(decide).toContain("script=.trusted-base/scripts/ci-upgrade-scope.mjs");
     expect(runsOf(scope).join("\n")).not.toMatch(/npm (ci|install|run)/);
   });
+});
+
+describe("release-from-main part B: CI reuse workflow contract (scripts/ci-reuse.mjs)", () => {
+  test("scope in ci.yml and native-lanes.yml checks the exact CI_REUSE_CHECKS list from .trusted-base with read-only permissions", () => {
+    for (const file of ["ci.yml", "native-lanes.yml"]) {
+      const scope = workflow(file).jobs["scope"]!;
+      expect(scope.permissions, file).toEqual({ contents: "read", actions: "read", "pull-requests": "read" });
+      expect(scope.outputs, file).toEqual({ areas: "${{ steps.decide.outputs.areas }}", reuse: "${{ steps.reuse.outputs.reuse }}" });
+      const reuse = scope.steps?.find(step => step.id === "reuse");
+      expect(reuse?.run, file).toContain("reuser=.trusted-base/scripts/ci-reuse.mjs");
+      expect(reuse?.run, file).not.toContain("reuser=scripts/ci-reuse.mjs");
+      expect(parseRequired(String(reuse?.env?.["REUSE_CHECKS"])), file).toEqual({ ...CI_REUSE_CHECKS });
+    }
+    // Every required ci.yml check is covered by CI_REUSE_CHECKS.
+    const ciRequired = Object.entries(REQUIRED_PR_CHECKS_WORKFLOW).filter(([, file]) => file === CI).map(([name]) => name);
+    for (const name of ciRequired) expect(CI_REUSE_CHECKS[name as keyof typeof CI_REUSE_CHECKS], name).toBe(CI);
+  });
+
+  test("every ci.yml check independently verifies reuse from .trusted-base with full history and never skips on reuse", () => {
+    const ci = workflow("ci.yml");
+    const checkedJobs: [string, string][] = [
+      ["test", "node ${{ matrix.node }} · ubuntu-latest"],
+      ["macos", "node ${{ matrix.node }} · macos-latest"],
+      ["node-latest", "node 26 · SQLite"],
+      ["linux-native-containment", "linux native containment · delegated cgroup v2"],
+      ["linux-fence", "linux fence · sandbox-runtime"],
+      ["native-windows", "Windows Job Object containment"],
+      ["git-floor", "git 2.41 · debian trixie"],
+      ["git-247", "git 2.47 · debian trixie"],
+    ];
+    for (const [id, checkName] of checkedJobs) {
+      const job = ci.jobs[id]!;
+      expect(job.permissions, id).toEqual({ contents: "read", actions: "read", "pull-requests": "read" });
+      const checkout = job.steps?.find(step => step.uses?.startsWith("actions/checkout@") && step.with?.["ref"] === "${{ env.TESTED_SHA }}");
+      expect(checkout?.with?.["fetch-depth"], id).toBe(0);
+      expect(checkout?.with?.["persist-credentials"], id).toBe(false);
+      const reuseStep = job.steps?.find(step => step.name === "Reuse proven check from base");
+      expect(reuseStep?.if, id).toBe(REUSE_STEP);
+      expect(reuseStep?.env?.["CHECK"], id).toBe(checkName);
+      expect(reuseStep?.run, id).toBe('node .trusted-base/scripts/ci-reuse.mjs verify --event "$EVENT" --base-ref "$BASE_REF" --base "$BASE_SHA" --head "$TESTED_SHA" --repo "$GITHUB_REPOSITORY" --root "$GITHUB_WORKSPACE" --check "$CHECK" --workflow .github/workflows/ci.yml');
+    }
+    // Release candidate (Node 22) never reuses: every release-* PR runs Node 22 on its exact head.
+    expect(JSON.stringify(workflow("release-candidate.yml"))).not.toContain("ci-reuse.mjs");
+  });
+});
+
+describe("bare-scope scripts", () => {
 
   // That job installs nothing, so the rule must load from a bare checkout. An import of a package anywhere in what the
   // script loads fails the job, and a failed scope job runs the upgrade test on every pull request (it did: `yaml`).
-  test.each(["ci-upgrade-scope.mjs", "ci-scope.mjs"])("%s loads with nothing installed: only Node's own modules and its own files", script => {
+  test.each(["ci-upgrade-scope.mjs", "ci-scope.mjs", "ci-reuse.mjs"])("%s loads with nothing installed: only Node's own modules and its own files", script => {
     const seen = new Set<string>();
     const load = (file: string): void => {
       if (seen.has(file)) return;

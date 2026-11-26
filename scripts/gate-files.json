@@ -15,6 +15,7 @@
     { "path": "scripts/ci-shards.mjs", "why": "the shard verifier: which files must run and which skips are allowed" },
     { "path": "scripts/ci-no-skips.mjs", "why": "the git lanes' no-skip rule" },
     { "path": "scripts/ci-scope.mjs", "why": "which pull requests skip the area lanes" },
+    { "path": "scripts/ci-reuse.mjs", "why": "which pull requests reuse proven CI checks from main instead of re-running them" },
     { "path": "scripts/ci-native-wait.mjs", "why": "how the root lanes' verdicts are read" },
     { "path": "scripts/release-proof.mjs", "why": "what publication trusts about the pull request's checks" },
     { "path": "vitest.config.ts", "why": "which test files run" },

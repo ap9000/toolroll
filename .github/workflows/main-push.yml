@@ -91,10 +91,11 @@ jobs:
     # Runs unless the proof job succeeded and said proven: a failed or missing proof runs everything.
     if: ${{ always() && !(needs.proof.result == 'success' && needs.proof.outputs.proven == 'true') }}
     uses: ./.github/workflows/ci.yml
-    # Its waiting jobs read Actions runs; a called job can't have more than this.
+    # Its waiting and reuse-proof jobs read Actions runs and PR metadata; a called job can't have more than this.
     permissions:
       contents: read
       actions: read
+      pull-requests: read
 
   # The wire budgets on main (wire-budgets.yml): its report artifact is what a pull request's run compares against.
   # Advisory, like its pull-request run; nothing a release waits for.

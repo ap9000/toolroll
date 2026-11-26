@@ -4,9 +4,10 @@
  * page only shows: the approval POST (`/t/<id>/approve`, `sheet=release`) proves the person, the card and the scope
  * again (release-approval.ts approveReleaseCard).
  */
-import { html, joinHtml, postForm, type Html } from "../html.js";
+import { html, postForm, type Html } from "../html.js";
 import type { ApprovalFacts } from "../design/kit.js";
-import { ciWords, releaseConsequence, type ReleaseApprovalCard } from "../release-approval.js";
+import { ciWords, type ReleaseApprovalCard } from "../release-approval.js";
+import { releaseAccessWords } from "../release-card.js";
 import { checkAccessWords } from "../check-access.js";
 import { projectName } from "../project.js";
 import { screen, type Chrome, type Screen } from "./chrome.js";
@@ -25,7 +26,7 @@ export type ReleaseSheetData = {
   held?: string | null;
 };
 
-/** The change list, folded: every commit when it is whole, or why it isn't. */
+/** The change list: open for short releases (<= 5 commits), folded for larger ones. */
 function changesHtml(card: ReleaseApprovalCard): Html {
   const changes = card.card.changes;
   const id = card.seal.identity;
@@ -36,26 +37,41 @@ function changesHtml(card: ReleaseApprovalCard): Html {
   const head = changes.baseline === null ? `Pull request #${id.pr}'s commits` : `Since the last verified release (${changes.baseline.slice(0, 7)})`;
   const list = changes.commits.length === 0 ? note("No commits.")
     : html`<ul class="k-list">${changes.commits.map(one => html`<li><code class="k-mono">${one.sha.slice(0, 7)}</code> ${one.subject}</li>`)}</ul>`;
-  return disclose(`What changed: ${changes.commits.length} commit${changes.commits.length === 1 ? "" : "s"}`, html`<p class="k-note">${head}</p>${list}`);
+  return disclose(`What changed: ${changes.commits.length} commit${changes.commits.length === 1 ? "" : "s"}`, html`<p class="k-note">${head}</p>${list}`, changes.commits.length > 0 && changes.commits.length <= 5);
 }
 
-/** Every signed term, before the button. */
+/** Concise, human-readable summary of what approving this release does, with any unsandboxed access called out plainly. */
+function releaseSummaryHtml(card: ReleaseApprovalCard): Html {
+  const id = card.seal.identity;
+  const carries = card.seal.kind === "terms" && card.seal.terms.policy.carry;
+  const checkKind = card.seal.kind === "check" && card.seal.purpose.check === "deploy"
+    ? "Deploy check (~4 min)"
+    : checkAccessWords(id.access);
+  const accessWarning = releaseAccessWords(id.access);
+  const rows: ReadonlyArray<readonly [string, Html | string]> = [
+    ["Commit", html`<code class="k-mono" title="${id.approvedSha}">${id.approvedSha.slice(0, 7)}</code> · <code class="k-mono">${id.branch}</code>`],
+    ["Check", checkKind],
+    ["On approve", `Runs the release check on ${id.approvedSha.slice(0, 7)}, then deploys, merges, tags and publishes once GitHub CI and the check pass.`],
+    ["Later commits", carries ? "Later commits that only change tests, docs or the changelog carry this approval." : "Every later commit asks again."],
+  ];
+  return html`${accessWarning === null ? "" : notice(accessWarning)}${facts(rows)}`;
+}
+
+/** Every signed term, collapsed by default and grouped with release fields first so full audit detail stays one tap away. */
 function termsHtml(card: ReleaseApprovalCard): Html {
-  return disclose("Every term", facts(card.terms.map(line => [line.label, html`<span class="k-mono">${line.value}</span>`] as const)), true);
+  const isRelease = (key: string) => key.startsWith("release.") || key.startsWith("releaseCheck.");
+  const releaseTerms = card.terms.filter(line => isRelease(line.key));
+  const scopeTerms = card.terms.filter(line => !isRelease(line.key));
+  const renderRows = (lines: ReleaseApprovalCard["terms"]) => facts(lines.map(line => [line.label, html`<span class="k-mono">${line.value}</span>`] as const));
+  const inner = html`${releaseTerms.length === 0 ? "" : html`<h3>Release</h3>${renderRows(releaseTerms)}`}${scopeTerms.length === 0 ? "" : html`<h3>Underlying scope &amp; settings</h3>${renderRows(scopeTerms)}`}`;
+  return disclose(`Every term (${card.terms.length})`, inner, false);
 }
 
 export function releaseSheetPage(chrome: Chrome, data: ReleaseSheetData): Screen {
   const card = data.card;
   const id = card.seal.identity;
   const title = `Release ${id.packageVersion}`;
-  const summary = facts([
-    ["Pull request", `#${id.pr}`],
-    ["Branch", html`<code class="k-mono">${id.branch}</code>`],
-    ["Commit", html`<code class="k-mono">${id.approvedSha}</code>`],
-    ["Project", projectName(id.repo)],
-    ["Checks", checkAccessWords(id.access)],
-  ]);
-  const consequence = releaseConsequence(card);
+  const summaryHtml = releaseSummaryHtml(card);
   const ci = ciWords(card.ci, id.approvedSha);
   const notRunning = card.stopped === null ? "" : infoLine(html`The release isn't running (it stopped at ${card.stopped.step}). After you approve, run <code class="k-mono">toolroll release ${id.branch}</code>.`);
   let status: Html, text: string, acts: Html | string, terms: string, wait = false;
@@ -81,25 +97,21 @@ export function releaseSheetPage(chrome: Chrome, data: ReleaseSheetData): Screen
     text = ci;
     acts = data.nonce === "" ? "" : approveForm({
       action: `${taskHref(card.taskId)}/approve`, kind: "standard", facts: data.facts, label: "Approve release", primary: true,
-      before: html`<section class="k-sec"><h3>What approving does</h3>${joinHtml(consequence.map(line => html`<p class="k-note">${line}</p>`))}${termsHtml(card)}</section>`,
       form: { hidden: { nonce: data.nonce, digest: card.digest, sheet: "release" }, attrs: { class: "k-form", "data-release-approve": card.digest } },
     });
     terms = approvalTerms("standard", data.facts);
   }
-  // What, then what changed, then the one decision: its status, CI now, what approving does, every term, the button.
-  const formShown = acts !== "" && data.nonce !== "" && card.approved === null && card.refusal === null && data.local === null;
+  // Action card + concise summary up top so approving takes one screen; commits and full signed terms right below.
   const body = doc(
     docHeader({ title, back: [taskHref(card.taskId), "Task"], meta: `${projectName(id.repo)} · pull request #${id.pr}` }),
     // A refused approval says why first, above the card it now shows.
     data.problem === null ? "" : notice(data.problem),
-    summary,
-    changesHtml(card),
-    slots({ wait, attrs: { "data-release-sheet": card.taskId }, status, text, acts, terms }),
+    slots({ wait, attrs: { "data-release-sheet": card.taskId }, status, text, body: summaryHtml, acts, terms }),
     notRunning,
     data.held == null ? "" : html`<section class="k-sec" data-release-held><h3>Held after its merge</h3><p class="k-note">${data.held}.</p>${postForm(`${taskHref(card.taskId)}/release/go-on`,
       html`${field({ id: "go-on-password", label: "Your password", control: input({ id: "go-on-password", name: "password", type: "password", attrs: { required: true, autocomplete: "current-password" } }) })}${btn("Let it go on", { variant: "primary", type: "submit" })}`, { attrs: { class: "k-form" } })}</section>`,
-    // When the form isn't shown, the consequence and the terms are still on the page.
-    formShown ? "" : html`<section class="k-sec"><h3>What approving does</h3>${joinHtml(consequence.map(line => html`<p class="k-note">${line}</p>`))}</section>${termsHtml(card)}`,
+    changesHtml(card),
+    termsHtml(card),
   );
   return screen(title, body, { chrome });
 }

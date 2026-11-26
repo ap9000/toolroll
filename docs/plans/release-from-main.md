@@ -1,7 +1,6 @@
 # Releasing Toolroll from main
 
-Status: parts A and C built on `release-from-main` (2026-11-25). Parts B (docs-and-version pull requests reuse CI) and
-D (platform-dependent tests without new lanes) are not built.
+Status: parts A, B and C built (2026-11-25). Part D (platform-dependent tests without new lanes) is not built.
 
 ## What a release is now
 
@@ -140,9 +139,28 @@ toolroll release release-0.9.119 --repo <the gate checkout>
 Once 0.9.119 is deployed here, every later release is `toolroll release prepare 0.9.120` → merge → `toolroll release
 0.9.120` (no 40-minute check). Nothing in A or C weakens the proof or the approval to avoid that one full check.
 
+## CI result reuse (part B)
+
+Pull requests targeting `main` that touch ONLY regular `100644` documentation files (`README.md`, `CHANGELOG.md`,
+`docs/**.md`) and/or strict version-only bumps in `package.json` / `package-lock.json` (matching `toolroll release
+prepare`) reuse main's proven `ci.yml` results instead of re-running the 12 Node 24 shards, Node 26 SQLite, native root
+lanes, and git lanes (`scripts/ci-reuse.mjs`, run from `.trusted-base` with fail-closed bootstrap):
+
+- **Hash-verified Git reads (Codex item 2):** `ci-reuse.mjs` reads Git strictly through `scripts/deploy-git.mjs`
+  (`readGit`, `treeOf`, `objectsOf` — isolated view, no repo/system/global config, no filters or textconv, no replace
+  objects, no lazy fetch; every commit, tree and changed blob hashed against its object ID). It requires
+  `merge-base(base, head) === base`, a non-empty diff, no deletions/renames/mode changes/symlinks/submodules, and
+  strict JSON token equality (`versionOnly`) for versioned files.
+- **Exact per-check proof (Codex item 6):** Every required `ci.yml` check (and `node 26 · SQLite`) still runs and
+  concludes `success` (never `skipped`) after independently running `.trusted-base/scripts/ci-reuse.mjs verify` for its
+  exact check name. It accepts `base` only when GitHub's API proves `base` passed that exact check (concluding
+  `success`, never `skipped`) either via `release-proof.mjs proveRelease` or via a completed `main-push.yml` push run
+  on `main` (`main · full CI / <check>`). `release-candidate.yml` (Node 22) still runs on `release-*` branches so every
+  release runs Node 22 on its exact head.
+
 ## Not done
 
-- Part B (CI reuse for docs-and-version pull requests) and part D (the platform-read guard).
+- Part D (the platform-read guard).
 - `toolroll release <version>` doesn't wait for and merge the release pull request; a person merges it.
 - The upgrade sample's cost on the owner's Mac isn't measured.
 - The legacy `toolroll release <branch>` still works unchanged; pointing it to the new way (plan slice 7) is left for
