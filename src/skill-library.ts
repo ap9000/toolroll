@@ -7,6 +7,7 @@
  * - Integrates with `skill-local-sync.ts` ("Also install on this computer" for Claude Code, Codex, Gemini CLI).
  */
 import { createHash } from "node:crypto";
+import { unreachableWhy } from "./unreachable.js";
 import { scanForSecrets } from "./evidence.js";
 import { learningSha } from "./project-learning.js";
 import {
@@ -453,16 +454,6 @@ export type FetchedSkillBundle = {
   skipped: { folder: string; reason: string }[];
 };
 
-/** Why GitHub couldn't be reached, in plain words (a fetch that never got an answer: offline, blocked, slow). */
-function unreachableWhy(error: unknown): string {
-  const cause = (error as { cause?: { code?: unknown } } | null)?.cause;
-  const code = typeof cause?.code === "string" ? cause.code : "";
-  if ((error as { name?: unknown } | null)?.name === "TimeoutError") return "it didn't answer within 20 seconds";
-  if (code === "ENOTFOUND" || code === "EAI_AGAIN") return "its address couldn't be looked up (this computer may be offline)";
-  if (code === "ECONNREFUSED" || code === "ECONNRESET" || code === "EPERM" || code === "EACCES") return "the connection was refused or blocked";
-  return "the connection failed (this computer may be offline, or a firewall blocks it)";
-}
-
 async function githubJson<T>(
   owner: string,
   repoName: string,
@@ -478,7 +469,7 @@ async function githubJson<T>(
       headers: { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" },
     });
   } catch (error) {
-    throw Error(`Couldn't reach GitHub: ${unreachableWhy(error)}.`);
+    throw Error(`Couldn't reach GitHub: ${unreachableWhy(error, 20)}.`);
   }
   if (!response.ok) {
     throw Error(`GitHub returned ${response.status} for ${owner}/${repoName}${path.split("?")[0]}.`);
