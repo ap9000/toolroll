@@ -396,6 +396,9 @@ test("a synchronous write runs only its exact shapes: no caller option, setting,
     expect(syncWriteArgv(fetch(repo, `${sha}:refs/heads/toolroll/chat-1`))).toEqual(
       ["-c", "protocol.file.allow=always", "-c", "transfer.fsckObjects=true", "fetch", "--no-tags", "--no-write-fetch-head", "--", repo, `${sha}:refs/heads/toolroll/chat-1`]);
     expect(syncWriteArgv(["branch", "-D", "toolroll/chat-1"])).toEqual(["branch", "-D", "toolroll/chat-1"]);
+    const other = "b".repeat(40);
+    expect(syncWriteArgv(["update-ref", "--no-deref", "refs/heads/toolroll/code-1", sha, other])).toEqual(
+      ["update-ref", "--no-deref", "-m", "toolroll: branch moved by compare-and-swap", "refs/heads/toolroll/code-1", sha, other]);
     const linked = join(repo, "..", `${repo.split("/").pop()}-link`);
     symlinkSync(repo, linked);
     const refused: string[][] = [
@@ -418,6 +421,17 @@ test("a synchronous write runs only its exact shapes: no caller option, setting,
       fetch(repo, `${sha}:refs/heads/-x`),
       fetch(repo, `${sha}:refs/heads/x`, "extra"),
       ["update-ref", "refs/heads/x", sha],
+      ["update-ref", "--no-deref", "refs/heads/x", sha],
+      ["update-ref", "--no-deref", "refs/heads/x", sha, sha],
+      ["update-ref", "--no-deref", "refs/heads/x", sha, "0".repeat(40)],
+      ["update-ref", "--no-deref", "refs/heads/x", sha, "c".repeat(64)],
+      ["update-ref", "--no-deref", "refs/heads/x", "main", other],
+      ["update-ref", "--no-deref", "refs/tags/x", sha, other],
+      ["update-ref", "--no-deref", "HEAD", sha, other],
+      ["update-ref", "--no-deref", "refs/heads/../x", sha, other],
+      ["update-ref", "--no-deref", "-d", "refs/heads/x", sha],
+      ["update-ref", "-m", "x", "refs/heads/x", sha, other],
+      ["update-ref", "--stdin", "refs/heads/x", sha, other],
       ["branch", "-D", "HEAD"],
       ["branch", "-D", "--force"],
       ["branch", "-m", "x"],

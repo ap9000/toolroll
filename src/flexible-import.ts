@@ -47,7 +47,7 @@ import { PROTECTED_FILES, protectedChanges, protectedLinks } from "./agent-fence
 import { scanPatchForSecrets } from "./evidence.js";
 import { PROOF_LIMITS } from "./proof.js";
 import { run, type ExecResult } from "./exec.js";
-import { hardenedGit, recordedCommonDir } from "./teardown-git.js";
+import { hardenedGit, recordedCommonDir, viewedGitSync } from "./teardown-git.js";
 import { identityEnv, projectGitIdentity, THREAD_IDENTITY } from "./git-identity.js";
 import type { Store } from "./store.js";
 import type { Runner } from "./worktree.js";
@@ -915,8 +915,8 @@ function nulNames(stdout: string): string[] | null {
  * unsettled launch, so nothing changes the copy meanwhile): every change staged in that index (`add -A`), checked, then
  * written as a tree and ONE commit whose only parent is the recorded tip (commit-tree, the project's identity from
  * git-identity.ts, never this computer's name). Only objects are written until `allowed()` (the caller's re-proof of the
- * person, read at that moment) says yes; then the thread's branch moves from exactly that tip to the new commit
- * (update-ref compare-and-swap), and the copy's index becomes Toolroll's (so the copy reads as committed). The import
+ * person, read at that moment) says yes; then, with nothing awaited in between, the thread's branch moves from exactly
+ * that tip to the new commit (update-ref compare-and-swap, synchronously), and the copy's index becomes Toolroll's (so the copy reads as committed). The import
  * (importFlexibleCandidate) then checks the new commit as it checks every other.
  *
  * Before the commit, what the import would refuse for good is kept out instead, so leftover edits never block saving
@@ -999,10 +999,20 @@ export async function flexibleLeftover(store: Store, input: { thread: string; co
     const made = await git("build", ["commit-tree", "--no-gpg-sign", "-p", tip, "-m", LEFTOVER_COMMIT_MESSAGE, tree], identityEnv(identity.identity));
     const commit = made.stdout.trim();
     if (made.code !== 0 || !SHA.test(commit) || commit.length !== tip.length) return keep("git refused the commit");
-    // Nothing moved yet: only objects were written. The person is proved again right before the branch moves.
+    // Nothing moved yet: only objects were written. The person is proved again, and from that re-proof to the ref write
+    // everything is synchronous (viewedGitSync: the hardened view's config checks, then update-ref by compare-and-swap,
+    // each spawnSync), so nothing else in this process (a sign-out, a revoked account, a turn's start) can run between
+    // them. It takes no checkout lock: update-ref changes one ref, never a HEAD or index a carry-back could undo, and
+    // the thread's lock is held. Residual: another process (the command line) changing an account while the view's
+    // config checks and update-ref spawn, a few milliseconds; the project's repository is still written only after the
+    // save's own transaction proves the person again.
     if (input.allowed !== undefined && !input.allowed()) return { state: "refused" };
-    const moved = await git("build", ["update-ref", "--no-deref", "-m", "toolroll: the thread's uncommitted edits", `refs/heads/${flexibleThreadBranch(source.thread.id)}`, commit, tip]);
-    if (moved.code !== 0 || threadBranchTip(source.paths, source.thread.id) !== commit) return { state: "unknown", why: "the thread's branch moved while it was saved" };
+    let moved: boolean;
+    try {
+      moved = viewedGitSync(repo, ["update-ref", "--no-deref", `refs/heads/${flexibleThreadBranch(source.thread.id)}`, commit, tip],
+        { write: true, binding: { repo }, timeoutMs: Math.max(1, Math.min(60_000, deadline - Date.now())) }).status === 0;
+    } catch { moved = false; }
+    if (!moved || threadBranchTip(source.paths, source.thread.id) !== commit) return { state: "unknown", why: "the thread's branch moved while it was saved" };
     // The copy's index becomes the one the commit was made from (renamed over it: a link there is replaced, never followed).
     try { renameSync(index, join(repo, ".git", "index")); } catch { /* the copy's own index stays: its files are committed all the same */ }
     return { state: "committed", commit, paths: found };
