@@ -176,8 +176,10 @@ under a throwaway HOME, and runs `toolroll --version`, `toolroll help` and
 (`scripts/container-smoke.sh`, also on the startup and trust files) run the
 first terminal start and a repeat start at a real pseudo-terminal in Ubuntu
 (umask 0002, x64 and arm64), a container without user namespaces, Alpine,
-Fedora, Debian 12 and Debian 13, asserting what each leaves behind: local mode
-on, or nothing made. Run one with `docker run --rm --privileged -v
+Fedora, Debian 12, Debian 13 and Node 26, asserting what each leaves behind:
+local mode on, or nothing made. An opened start is stopped with `toolroll
+stop` and its recorded worker awaited until gone; the second start must be a
+new worker on the same installation. Run one with `docker run --rm --privileged -v
 <folder with the packed tarball and both scripts>:/work node:22-trixie sh
 /work/container-smoke.sh debian13`. The
 area lanes: Linux cgroup

@@ -6,18 +6,20 @@
  * and state, not words alone:
  *
  *   open    the screen opened password-free: the database has local mode on, the console recorded its address, and the
- *           screen drew; then it is stopped (SIGTERM to this run's own `script`, by its pid).
+ *           screen drew; then it is stopped the way a person stops it (`toolroll stop`), and every process the worker's
+ *           record names (runner-processes/) is awaited until it has exited. A second "open" must be a new worker (a
+ *           different recorded `up` identity) on the same installation (local mode's record unchanged).
  *   refuse  it stopped by itself with exit 3, said each --words pattern, and made no database (nothing to inherit).
  *
  * Never, in any lane: an uncaught error (no xdg-open, no ps, no display). --repair runs the commands the refusal printed
  * under "Fix it with:" before the second start. Runs inside a throwaway container as the lane's user: it reads no
  * secret, calls no model, and needs only the public npm registry.
  *
- *   node container-smoke.mjs --tarball <file.tgz> [--umask <octal>] [--home-prefix] --first open|refuse [--words <regex>]...
+ *   node container-smoke.mjs --tarball <file.tgz> [--umask <octal>] [--home-prefix] [--node-major <n>] --first open|refuse [--words <regex>]...
  *     [--repair] --again open|refuse
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -54,6 +56,36 @@ function run(file, list, options = {}) {
   return { code: done.status, out: `${done.stdout ?? ""}${done.stderr ?? ""}` };
 }
 
+/** Local mode's row as the database holds it, read only (enabled, owner, when it was set up), or null. */
+function localModeRow() {
+  if (!existsSync(database)) return null;
+  try {
+    const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite");
+    const db = new DatabaseSync(database, { readOnly: true });
+    try { const row = db.prepare("SELECT enabled, owner, initialized_at FROM local_mode WHERE id = 1").get(); return row === undefined ? null : { ...row }; } finally { db.close(); }
+  } catch { return null; }
+}
+
+/** The processes the worker's records name (runner-processes/*.json beside the database): pid, role, identity. */
+function recordedProcesses() {
+  const folder = join(state, "runner-processes");
+  let names = [];
+  try { names = readdirSync(folder).filter(name => name.endsWith(".json")); } catch { return []; }
+  return names.flatMap(name => { try { return JSON.parse(readFileSync(join(folder, name), "utf8")).processes ?? []; } catch { return []; } });
+}
+const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; } };
+
+/** Wait for a fact, polled, up to a ceiling (ms): true once it holds. */
+async function until(fact, ceilingMs) {
+  const deadline = Date.now() + ceilingMs;
+  while (Date.now() < deadline) {
+    if (fact()) return true;
+    // guard: bound one poll interval of a fact-based wait with a ceiling.
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  return fact();
+}
+
 /** Local mode as the database holds it, read only: true, false, or null when there is no such row or database. */
 function localModeOn() {
   if (!existsSync(database)) return null;
@@ -78,22 +110,41 @@ function start(project) {
     child.stderr.on("data", chunk => { out += chunk; });
     const finish = (code) => { if (settled) return; settled = true; clearInterval(look); clearTimeout(ceiling); resolve({ code, out: plain(out), opened }); };
     child.once("exit", code => finish(code));
-    // Facts, not time: the screen drew, local mode is on and the console recorded its address; then it is stopped.
+    // Facts, not time: the screen drew, local mode is on, the console recorded its address and the worker its `up`;
+    // then it is stopped the way a person stops it, and everything the worker recorded must exit.
     const look = setInterval(() => {
       if (opened || !OPENED.test(plain(out)) || localModeOn() !== true || !existsSync(join(state, "up-console.json"))) return;
-      opened = true;
-      child.kill("SIGTERM");
+      const worker = recordedProcesses();
+      if (!worker.some(one => one.role === "up" && alive(one.pid))) return;
+      opened = { worker, local: localModeRow() };
+      const stop = run("toolroll", ["stop"]);
+      opened.stop = stop;
+      // The screen ends once its worker is gone; if it doesn't, this run's own `script` is ended (by its pid).
+      void until(() => child.exitCode !== null || child.signalCode !== null, 60_000).then(done => { if (!done) child.kill("SIGTERM"); });
     }, 250);
     // guard: bound a lane that never opens nor exits fails here instead of at the job's limit.
     const ceiling = setTimeout(() => { child.kill("SIGKILL"); finish(null); }, 240_000);
   });
 }
 
-function expectRun(name, expected, result) {
+let previous = null;
+async function expectRun(name, expected, result) {
   say(!CRASH.test(result.out), `${name}: no uncaught error`, CRASH.exec(result.out)?.[0] ?? "");
   if (expected === "open") {
-    say(result.opened, `${name}: the screen opened`, result.opened ? "" : result.out.trim().split("\n").slice(-8).join(" | "));
+    const seen = result.opened;
+    say(seen !== false, `${name}: the screen opened`, seen !== false ? "" : result.out.trim().split("\n").slice(-8).join(" | "));
     say(localModeOn() === true, `${name}: password-free (local mode on in the database)`);
+    if (seen === false) return;
+    say(seen.stop.code === 0, `${name}: \`toolroll stop\` stopped it`, seen.stop.out.trim());
+    const pids = seen.worker.map(one => one.pid);
+    say(await until(() => pids.every(pid => !alive(pid)), 60_000), `${name}: every process the worker recorded has exited`, pids.filter(alive).join(", "));
+    const up = seen.worker.find(one => one.role === "up");
+    if (previous !== null) {
+      const before = previous.worker.find(one => one.role === "up");
+      say(up !== undefined && before !== undefined && (up.pid !== before.pid || up.started !== before.started), `${name}: a new worker (not the first one's)`, `${JSON.stringify(before)} → ${JSON.stringify(up)}`);
+      say(JSON.stringify(seen.local) === JSON.stringify(previous.local), `${name}: the same installation (local mode's record kept)`, `${JSON.stringify(previous.local)} → ${JSON.stringify(seen.local)}`);
+    }
+    previous = seen;
   } else {
     say(result.code === 3, `${name}: refused by itself with exit 3`, `exit ${result.code}`);
     for (const pattern of words) say(pattern.test(result.out), `${name}: says ${pattern}`, pattern.test(result.out) ? "" : result.out.trim().split("\n").slice(-12).join(" | "));
@@ -109,6 +160,8 @@ function repairCommands(out) {
   return commands;
 }
 
+const major = flag("--node-major");
+if (major !== undefined) say(process.versions.node.split(".")[0] === major, `Node ${major}`, process.version);
 const installed = run("npm", ["install", "-g", tarball, "--no-fund", "--no-audit", "--loglevel=error"]);
 say(installed.code === 0, "npm install -g the packed tarball", installed.code === 0 ? "" : installed.out.trim().slice(-600));
 const version = run("toolroll", ["--version"]);
@@ -121,7 +174,7 @@ run("git", ["-c", "user.name=Smoke", "-c", "user.email=smoke@example.invalid", "
 if (!failed) {
   const one = await start(project);
   process.stdout.write(`---- first start\n${one.out.trim().split("\n").slice(-25).join("\n")}\n----\n`);
-  expectRun("first start", first, one);
+  await expectRun("first start", first, one);
   if (repair) {
     const commands = repairCommands(one.out);
     say(commands.length > 0, "the refusal printed its repair", commands.join("; "));
@@ -131,7 +184,7 @@ if (!failed) {
   }
   const two = await start(project);
   process.stdout.write(`---- second start\n${two.out.trim().split("\n").slice(-25).join("\n")}\n----\n`);
-  expectRun("second start", again, two);
+  await expectRun("second start", again, two);
   if (again === "refuse") say(!existsSync(join(state, ".toolroll-secrets")), "no password was saved");
 }
 process.exit(failed ? 1 : 0);
