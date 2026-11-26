@@ -65,11 +65,16 @@ export function familyStartOf(store: Store, taskRef: number): string | null {
   if (root === null || root.repo !== ref.repo) return null;
   // Brought up to date (revision-catch-up.ts): the nearest version whose start Toolroll merged main into starts the
   // family's change at that main commit, the one its work now sits on. A revision's branch never moves to main any other
-  // way (freshBaseFor), so a move recorded on it is that merge.
+  // way (freshBaseFor), so a move recorded on it is that merge: `from` its merge commit, `to` main's. It counts only once
+  // that version's first attempt after it started at exactly that merge commit (its recorded base): a merge whose branch
+  // was never made at it, or an attempt that started elsewhere, is ignored.
   for (const member of ancestry.chain.slice(0, -1)) {
     const memberRef = store.lookupRef(member);
-    const moved = memberRef === null ? null : taskBranches(member).map(branch => store.latestBranchBaseMove(memberRef.id, branch)).find(one => one !== null) ?? null;
-    if (moved !== null) return moved.to;
+    if (memberRef === null) continue;
+    for (const branch of taskBranches(member)) {
+      const moved = store.latestBranchBaseMove(memberRef.id, branch);
+      if (moved !== null && store.firstBuilderBase(memberRef.id, branch) === moved.from) return moved.to;
+    }
   }
   const first = store.runsFor(root.id).filter(one => one.role === "builder" && one.branch !== null && one.baseRevision !== null).sort((a, b) => a.id - b.id)[0];
   if (first === undefined || first.branch === null) return null;

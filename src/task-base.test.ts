@@ -18,6 +18,29 @@ const seeded = () => {
   return store;
 };
 
+describe("a revision brought up to date with main (revision-catch-up.ts)", () => {
+  test("its family starts at the merged main commit only once its attempt started at that exact merge", () => {
+    const store = seeded();
+    const ref = store.refFor("built-in", "t-1").id, rev = store.refFor("built-in", "t-rev").id;
+    const HEAD1 = "aaaaaaaa".padEnd(40, "2"), MERGE = "bbbbbbbb".padEnd(40, "3");
+    const first = store.startRun({ taskRef: ref, leaseId: "l-1", runner: "builder-1", branch: "toolroll/t-1", worktree: "/pool/t-1", ...legacy, now: T0 });
+    store.stampRun(first, { baseRevision: OLD });
+    store.handle.prepare("UPDATE task_ref SET revision_of = 't-1' WHERE external_id = 't-rev'").run();
+    // Recorded, but the attempt that followed started from the original head (its lease failed, then a retry found
+    // main conflicting): the abandoned merge never becomes the base.
+    store.recordBranchBaseMove(rev, "toolroll/t-rev", MERGE, MAIN, T0);
+    const retry = store.startRun({ taskRef: rev, leaseId: "l-2", runner: "builder-1", branch: "toolroll/t-rev", worktree: "/pool/t-rev", ...legacy, now: T0 });
+    store.stampRun(retry, { baseRevision: HEAD1 });
+    expect(familyStartOf(store, rev)).toBe(OLD);
+    // A merge its attempt did start at: the family's change runs from main's commit.
+    store.recordBranchBaseMove(rev, "toolroll/t-rev", MERGE, MAIN, T0);
+    const merged = store.startRun({ taskRef: rev, leaseId: "l-3", runner: "builder-1", branch: "toolroll/t-rev", worktree: "/pool/t-rev", ...legacy, now: T0 });
+    store.stampRun(merged, { baseRevision: MERGE });
+    expect(familyStartOf(store, rev)).toBe(MAIN);
+    store.close();
+  });
+});
+
 describe("fresh base, the task's view", () => {
   test("names the branch's recorded base, then the base a move to current main left for the next attempt", () => {
     const store = seeded();

@@ -495,7 +495,7 @@ CREATE TABLE IF NOT EXISTS run_activity (
 `;
 
 /** A task branch moved to current main before an attempt (fresh base; v122, a new table: additive only): the branch
- * had no commits of its own and no changes, so it started over from `to_rev`; or a revision's new branch started at main's `to_rev` merged into `from_rev`
+ * had no commits of its own and no changes, so it started over from `to_rev`; or a revision's new branch started at `from_rev`, main's `to_rev` merged in
  * (revision-catch-up.ts; task-base.ts familyStartOf). `after_run` is the newest run id when it moved: the branch's whole-task diff runs from the first
  * builder base recorded after it (firstBuilderBase), never from the older main it left. */
 export const BRANCH_BASE_MOVE_SCHEMA = `

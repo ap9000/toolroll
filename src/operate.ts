@@ -3689,11 +3689,8 @@ async function tickCommand(
             const onto = landingBranchOf(store, repo, base);
             const result = await catchUpRevision(hardenedGit(git, "build", { repo }), repo, source.head, onto, id, clock());
             caughtUp = { head: source.head, onto, result };
-            if (result.kind === "merged") {
-              // Recorded before the branch is made at it: the family's whole change runs from this main commit (familyStartOf).
-              store.recordBranchBaseMove(ref.id, branch, source.head, result.main, clock());
-              buildBase = result.commit;
-            }
+            // The branch is made at the merge commit by the lease below; the move is recorded only once it stands there.
+            if (result.kind === "merged") buildBase = result.commit;
           }
         } else {
           const descendant = exists.code === 0 ? branch : base;
@@ -3719,6 +3716,15 @@ async function tickCommand(
       reclaim: { evidenceRoot: context.evidenceRoot },
       ...(exists.code === 0 ? freshBaseFor(store, id, branch, base) : {}),
     });
+    // A revision made at Toolroll's merge of main: recorded (from the merge commit to main's) only once the new branch is
+    // proved to stand at exactly that commit, before its attempt opens, so the family's whole change runs from main's
+    // commit (familyStartOf). A lease that failed, or a branch anywhere else, records nothing and says no merge.
+    if (caughtUp !== null && caughtUp.result.kind === "merged") {
+      const merged = caughtUp.result;
+      const at = leased.ok && leased.created ? await hardenedGit(git, "build", { repo })("git", ["rev-parse", "--verify", "-q", `refs/heads/${branch}^{commit}`], { cwd: repo }) : null;
+      if (at !== null && at.code === 0 && at.stdout.trim() === merged.commit) store.recordBranchBaseMove(ref.id, branch, merged.commit, merged.main, clock());
+      else caughtUp = { ...caughtUp, result: { kind: "unavailable" } };
+    }
     if (!leased.ok) {
       // The task is fine; this machine's pool is not. Hand the claim back so
       // a healthier pass can take it, and let the exit code say we broke.
