@@ -194,9 +194,9 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
         "sleep 60",
       ].join("\n"));
       chmodSync(join(bin, "claude"), 0o755);
+      const { id, paths } = await thread();
       // Only the stand-in and the system's own folders: no real agent program can be found.
       process.env["PATH"] = `${bin}:/usr/bin:/bin`;
-      const { id, paths } = await thread();
       const made = await startFlexibleRelay(world.store, { thread: id });
       if ("ok" in made) throw new Error(made.message);
       relay = made;
@@ -254,8 +254,8 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
       mkdirSync(bin);
       writeFileSync(join(bin, "claude"), ["#!/bin/sh", 'while IFS= read -r line; do echo \'{"type":"result","subtype":"success","is_error":false}\'; done'].join("\n"));
       chmodSync(join(bin, "claude"), 0o755);
-      process.env["PATH"] = `${bin}:/usr/bin:/bin`;
       const { id } = await thread();
+      process.env["PATH"] = `${bin}:/usr/bin:/bin`;
       const opened = openFlexibleSessions(world.store);
       if (!opened.ok) throw new Error(opened.message);
       const sessions = opened.sessions;
