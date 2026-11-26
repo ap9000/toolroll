@@ -69,7 +69,7 @@ import { parseProtectedPaths } from "../approval-policy.js";
 import { approvalRulesHtml, releaseApprovalHtml } from "../approval-rules-ui.js";
 import { releaseApprovalSetting, setReleaseApproval } from "../release-auto.js";
 import { flexibleAvailable, flexibleSetting, setFlexibleSetting } from "../flexible-available.js";
-import { autoUpdatePolicy, setAutoUpdatePolicy } from "../auto-update.js";
+import { autoUpdatePolicy, cancelAutomaticUpdate, setAutoUpdatePolicy } from "../auto-update.js";
 import { flexibleSignInStatus, recheckFlexibleSignIn, removeFlexibleSignIn, saveFlexibleSignIn, setupTokenFromPaste, signInCheckWords, tidyFlexibleSignIns } from "../flexible-sign-in.js";
 import { passwordFreeOwner } from "../task-outcome-cli.js";
 import { realpathSync } from "node:fs";
@@ -3435,7 +3435,11 @@ ${postForm("/settings/chat-approval/save", html`\
     });
     if (saved === "proof") return back("problem", "Enter your Toolroll password to change automatic updates.");
     if (saved === "unreadable") return back("problem", "The automatic updates setting can't be read. Nothing changed.");
-    return back("said", wanted === "on" ? "Automatic updates are on. Each new release installs by itself once running work finishes." : "Automatic updates are off.");
+    if (wanted === "on") return back("said", "Automatic updates are on. Each new release installs by itself once running work finishes.");
+    // Off also stops an automatic update under way while that is still safe; past that point it finishes or restores.
+    const databaseFile = store.databaseFile();
+    const cancelled = databaseFile === null ? null : cancelAutomaticUpdate(store, dirname(databaseFile), now);
+    return back("said", cancelled === null ? "Automatic updates are off." : `Automatic updates are off. ${cancelled}`);
   }
   return { registrations, modelsView };
 }

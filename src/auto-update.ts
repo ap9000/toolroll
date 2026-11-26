@@ -15,7 +15,7 @@
 import { join } from "node:path";
 import { isNewer } from "./releases.js";
 import type { Store } from "./store.js";
-import { readRuntimeUpdate, runtimeUpdateTerminal, type RuntimeUpdateJournal } from "./toolroll-update.js";
+import { readRuntimeUpdate, requestRuntimeUpdateCancel, runtimeUpdateTerminal, type RuntimeUpdateJournal } from "./toolroll-update.js";
 
 /** The ledger's action for a change of the switch. */
 export const AUTO_UPDATE_ACTION = "automatic updates";
@@ -184,4 +184,23 @@ export function reconcileAutoUpdates(store: Pick<Store, "handle" | "transact" | 
     if (ended !== null && recordAutoUpdateOutcome(store, attempt, ended.outcome, ended.detail, o.now)) recorded.push({ attempt, ...ended });
   }
   return recorded;
+}
+
+/**
+ * Turning automatic updates off: the automatic update under way (if any) is cancelled while that is still safe (before
+ * anything is stopped or switched; toolroll-update.ts requestRuntimeUpdateCancel, bound to that attempt's journal id so a
+ * person's own update is never touched). Past that point it finishes or restores on its own, and the words say so.
+ * Returns what to tell the person, or null when no automatic update is under way.
+ */
+export function cancelAutomaticUpdate(store: Pick<Store, "handle">, stateDir: string, now: Date): string | null {
+  let open: AutoUpdateAttempt[];
+  try { open = store.handle.prepare(`SELECT ${ATTEMPT_COLUMNS} FROM auto_update_attempt WHERE outcome IS NULL AND journal_id IS NOT NULL ORDER BY id DESC`).all().map(attemptOf); }
+  catch { return "The automatic update history can't be read, so nothing was cancelled. Settings → Updates shows any update under way."; }
+  for (const attempt of open) {
+    let said: string;
+    try { said = requestRuntimeUpdateCancel(stateDir, now, {}, attempt.journalId!); }
+    catch { return "The update record can't be read, so nothing was cancelled. Settings → Updates shows any update under way."; }
+    if (said !== "No update is in progress.") return said;
+  }
+  return null;
 }

@@ -915,16 +915,32 @@ function assertNoneActive(stateDir: string): void {
   if (existing && !runtimeUpdateTerminal(existing.phase)) throw new Refusal(`An update to ${existing.to.version} is already ${existing.phase === "scheduled" ? "scheduled" : "under way"} (${existing.detail}) Cancel it with toolroll update --cancel, or resume it with toolroll update --resume.`);
 }
 
+/** What a caller does inside the prepare lock (the automatic pass): `reserve` runs once nothing is under way and before
+ * the journal is made, and refuses with its words; `prepared` binds the saved journal before the lock is let go (when it
+ * throws, the journal is refused and nothing starts). */
+export type PrepareHooks = { reserve?: () => string | null; prepared?: (j: RuntimeUpdateJournal) => void;
+  /** A test's seam: how long to wait for another preparer (5 s by default). */
+  lockWaitMs?: number };
+
 /** Record an update without running it: the console's job resumes exactly this journal id. */
-export function prepareRuntimeUpdate(o: StartOptions, now: Date): RuntimeUpdateJournal | { refused: string } {
+export function prepareRuntimeUpdate(o: StartOptions, now: Date, hooks: PrepareHooks = {}): RuntimeUpdateJournal | { refused: string } {
   if (!/^\d+\.\d+\.\d+$/.test(o.version)) return { refused: `${o.version} is not a release version (x.y.z).` };
   if (!o.allowDowngrade && !isNewer(o.version, o.current.version)) return { refused: `Toolroll ${o.version} is not newer than ${o.current.version}. To go back to an older release, run toolroll update --version ${o.version} --allow-downgrade.` };
-  try { assertNoneActive(o.stateDir); keepCompletedUpdate(o.stateDir); } catch (error) { return { refused: (error as Error).message }; }
-  const at = o.when === "at" ? nextAt(o.at ?? "03:00", now).toISOString() : null;
-  const j = newJournal("update", { stateDir: o.stateDir, databaseFile: o.databaseFile, from: o.current, to: { version: o.version, dist: "" }, when: o.when, at, actor: o.actor }, now);
-  save(j, "scheduled", at ? `Scheduled for ${at}.` : "Starting.", now);
-  if (at) ledger(j.databaseFile, now, j.actor, "toolroll update scheduled", "scheduled", `${j.from.version} → ${j.to.version} at ${at}`);
-  return j;
+  try {
+    return withPrepareLock(o.stateDir, () => {
+      assertNoneActive(o.stateDir);
+      const reserved = hooks.reserve?.() ?? null;
+      if (reserved !== null) return { refused: reserved };
+      keepCompletedUpdate(o.stateDir);
+      const at = o.when === "at" ? nextAt(o.at ?? "03:00", now).toISOString() : null;
+      const j = newJournal("update", { stateDir: o.stateDir, databaseFile: o.databaseFile, from: o.current, to: { version: o.version, dist: "" }, when: o.when, at, actor: o.actor }, now);
+      save(j, "scheduled", at ? `Scheduled for ${at}.` : "Starting.", now);
+      try { hooks.prepared?.(j); }
+      catch (error) { save(j, "refused", `The update could not start: ${(error as Error).message}`, now); return { refused: `The update could not start: ${(error as Error).message}` }; }
+      if (at) ledger(j.databaseFile, now, j.actor, "toolroll update scheduled", "scheduled", `${j.from.version} → ${j.to.version} at ${at}`);
+      return j;
+    }, hooks.lockWaitMs);
+  } catch (error) { return { refused: (error as Error).message }; }
 }
 
 /** Start an update: stage, verify, then run the journaled steps. */
@@ -937,14 +953,23 @@ export async function startRuntimeUpdate(o: StartOptions, system: UpdateSystem):
 
 /** Return to the runtime and database backup an update replaced. */
 export async function startRuntimeRollback(o: { stateDir: string; databaseFile: string; current: RuntimeRef; actor: string; when: When }, system: UpdateSystem): Promise<UpdateOutcome> {
-  let last: RuntimeUpdateJournal | null;
-  try { assertNoneActive(o.stateDir); keepCompletedUpdate(o.stateDir); last = lastCompletedUpdate(o.stateDir); } catch (error) { return { ok: false, phase: "refused", message: (error as Error).message, journal: null }; }
-  if (!last || !last.backupPath || !last.backupHash) return { ok: false, phase: "refused", message: "There is no completed update to roll back.", journal: null };
-  if (!existsSync(join(last.from.dist, "bin.js")) || !existsSync(last.backupPath) || (last.codingBackupPath && !existsSync(last.codingBackupPath))) return { ok: false, phase: "refused", message: `The previous runtime (${last.from.version}) or its backup is no longer on this machine. Nothing was changed.`, journal: null };
-  const now = system.now();
-  const j = newJournal("rollback", { stateDir: o.stateDir, databaseFile: o.databaseFile, from: last.to, to: last.from, when: o.when, at: null, actor: o.actor }, now);
-  j.restoreFrom = { path: last.backupPath, hash: last.backupHash, updateId: last.id, ...(last.codingBackupPath && last.codingBackupHash ? { codingPath: last.codingBackupPath, codingHash: last.codingBackupHash } : {}) };
-  return driveRuntimeUpdate(j, system);
+  // Checked and saved under the prepare lock, as an update is: nothing else can start between the two.
+  let prepared: RuntimeUpdateJournal | UpdateOutcome;
+  try {
+    prepared = withPrepareLock(o.stateDir, (): RuntimeUpdateJournal | UpdateOutcome => {
+      assertNoneActive(o.stateDir); keepCompletedUpdate(o.stateDir);
+      const last = lastCompletedUpdate(o.stateDir);
+      if (!last || !last.backupPath || !last.backupHash) return { ok: false, phase: "refused", message: "There is no completed update to roll back.", journal: null };
+      if (!existsSync(join(last.from.dist, "bin.js")) || !existsSync(last.backupPath) || (last.codingBackupPath && !existsSync(last.codingBackupPath))) return { ok: false, phase: "refused", message: `The previous runtime (${last.from.version}) or its backup is no longer on this machine. Nothing was changed.`, journal: null };
+      const now = system.now();
+      const j = newJournal("rollback", { stateDir: o.stateDir, databaseFile: o.databaseFile, from: last.to, to: last.from, when: o.when, at: null, actor: o.actor }, now);
+      j.restoreFrom = { path: last.backupPath, hash: last.backupHash, updateId: last.id, ...(last.codingBackupPath && last.codingBackupHash ? { codingPath: last.codingBackupPath, codingHash: last.codingBackupHash } : {}) };
+      save(j, "scheduled", "Starting.", now);
+      return j;
+    });
+  } catch (error) { return { ok: false, phase: "refused", message: (error as Error).message, journal: null }; }
+  if ("ok" in prepared) return prepared;
+  return driveRuntimeUpdate(prepared, system);
 }
 
 /** Continue a saved update after a crash, where it left off. With `id` (the console's job), only that update:
@@ -964,10 +989,11 @@ export function abandonRuntimeUpdate(stateDir: string, id: string, why: string, 
 }
 
 const CANCELLABLE: readonly RuntimePhase[] = ["scheduled", "verifying", "draining"];
-/** `locked`: a test's seam, called once the updater's lock is held and before the journal is read again. */
-export function requestRuntimeUpdateCancel(stateDir: string, now = new Date(), seams: { locked?: () => void } = {}): string {
+/** `locked`: a test's seam, called once the updater's lock is held and before the journal is read again. `only`: cancel
+ * only the update with this journal id (turning automatic updates off cancels the automatic one, never a person's). */
+export function requestRuntimeUpdateCancel(stateDir: string, now = new Date(), seams: { locked?: () => void } = {}, only?: string): string {
   const j = readRuntimeUpdate(stateDir);
-  if (!j || runtimeUpdateTerminal(j.phase)) return "No update is in progress.";
+  if (!j || runtimeUpdateTerminal(j.phase) || (only !== undefined && j.id !== only)) return "No update is in progress.";
   const tooLate = (at: RuntimeUpdateJournal) => `The update to ${at.to.version} is past the point it can be cancelled (${at.phase}); it will finish or restore on its own.`;
   if (!CANCELLABLE.some(phase => phase === j.phase)) return tooLate(j);
   // No updater is running to see the request: cancel here, so the admission pause does not outlive it.
@@ -981,7 +1007,7 @@ export function requestRuntimeUpdateCancel(stateDir: string, now = new Date(), s
     // An updater may have moved on, finished or been replaced between the first read and the lock.
     const held = readRuntimeUpdate(stateDir);
     if (!held || runtimeUpdateTerminal(held.phase)) return "No update is in progress.";
-    if (held.id !== j.id) return "A different update was saved while cancelling. Nothing was cancelled.";
+    if (held.id !== j.id || (only !== undefined && held.id !== only)) return "A different update was saved while cancelling. Nothing was cancelled.";
     if (!CANCELLABLE.some(phase => phase === held.phase)) return tooLate(held);
     durableJson(cancelFile(held), { id: held.id, action: "cancel" });
     try { ungate(held); } catch { /* no pause yet */ }
@@ -1028,6 +1054,8 @@ async function driveRuntimeUpdate(j: RuntimeUpdateJournal, system: UpdateSystem)
     if (j.phase === "rolling-back" || j.phase === "needs-attention") return await restore(j, system, finish, verb, j.error ?? "An earlier attempt stopped.");
     if (resumedAt < at("switching")) {
       if (resumedAt <= at("verifying")) {
+        // Cancelled before this updater started (turning automatic updates off, or Cancel): nothing is downloaded.
+        if (cancelRequested(j)) return finish(true, "cancelled", `The ${noun} to ${j.to.version} was cancelled before it started. Nothing changed.`, `toolroll ${noun} cancelled`, "cancelled", verb);
         step("verifying", j.kind === "update" ? `Downloading and verifying Toolroll ${j.to.version}.` : `Checking the previous runtime (${j.to.version}) and its backup.`);
         if (j.kind === "update") await verify(j, system);
         else if (fileHash(j.restoreFrom!.path) !== j.restoreFrom!.hash || (j.restoreFrom!.codingPath && fileHash(j.restoreFrom!.codingPath) !== j.restoreFrom!.codingHash)) throw new Refusal("The update's backup changed since it was made. Nothing was changed.");
@@ -1625,4 +1653,18 @@ async function liveConsoleAt(databaseFile: string, version: string): Promise<boo
   try { return (await proveLiveConsole(databaseFile, { handle } as unknown as Parameters<typeof proveLiveConsole>[1], version)).ok; }
   catch { return false; }
   finally { handle.close(); }
+}
+
+// ---- the prepare lock (kept last: password-freshness.test.ts pins this file's functions by position) ----------------
+
+/** The prepare lock's file (tests look at whether it is held). */
+export const prepareLockFile = (stateDir: string) => join(stateDir, "toolroll-update.prepare.sqlite");
+/** One preparer at a time across every caller on this state folder (Settings, the CLI, a rollback, the automatic pass):
+ * "none active" is checked and the new journal saved while this OS lock is held, so two callers can never both find
+ * nothing under way and each start an update. Waits briefly for another preparer; refuses rather than racing. */
+function withPrepareLock<T>(stateDir: string, body: () => T, waitMs = 5000): T {
+  mkdirSync(stateDir, { recursive: true });
+  const lock = sqliteLock(prepareLockFile(stateDir), waitMs);
+  if (!lock) throw new Refusal("Another update is being prepared right now. Nothing was changed.");
+  try { return body(); } finally { lock.close(); }
 }

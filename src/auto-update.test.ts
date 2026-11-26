@@ -5,14 +5,15 @@
  * history or journals record nothing and reserve nothing. Isolated temp stores and state folders; no updater runs.
  */
 import { afterEach, describe, expect, test } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { durableJson } from "./desktop-update.js";
 import { addApprover } from "./scope.js";
 import { openStore, type Store } from "./store.js";
-import { prepareRuntimeUpdate, readRuntimeUpdate, type RuntimeUpdateJournal } from "./toolroll-update.js";
-import { autoUpdateAttempts, linkAutoUpdateJournal, reconcileAutoUpdates, reserveAutoUpdate, setAutoUpdatePolicy, AUTO_UPDATE_STALE_MS } from "./auto-update.js";
+import { prepareLockFile, prepareRuntimeUpdate, readRuntimeUpdate, resumeRuntimeUpdate, type RuntimeUpdateJournal, type UpdateSystem } from "./toolroll-update.js";
+import { lockHeld, sqliteLock } from "./desktop-update.js";
+import { autoUpdateAttempts, cancelAutomaticUpdate, linkAutoUpdateJournal, reconcileAutoUpdates, reserveAutoUpdate, setAutoUpdatePolicy, AUTO_UPDATE_STALE_MS } from "./auto-update.js";
 
 const T0 = new Date("2026-11-26T03:00:00.000Z");
 const later = (ms: number) => new Date(T0.getTime() + ms);
@@ -128,5 +129,76 @@ describe("recording how an attempt ended", () => {
     writeFileSync(join(w.dir, "toolroll-update.json"), "{ not json");
     expect(reconcileAutoUpdates(w.store, { stateDir: w.dir, current: "0.9.120", now: later(1000) })).toEqual([]);
     expect(autoUpdateAttempts(w.store)?.[0]?.outcome).toBeNull();
+  });
+});
+
+describe("one update at a time, and Off", () => {
+  const options = (w: { dir: string; databaseFile: string }, version: string) => ({ stateDir: w.dir, databaseFile: w.databaseFile, current: { version: "0.9.120", dist: join(w.dir, "dist") }, actor: "alex", version, when: "when-idle" as const });
+
+  test("the reservation and the journal are made under the one prepare lock every caller takes; a second preparer is refused, not raced", () => {
+    const w = world();
+    let heldDuringReserve = false;
+    const j = prepareRuntimeUpdate(options(w, "0.9.121"), T0, { reserve: () => { heldDuringReserve = lockHeld(prepareLockFile(w.dir)); return null; } });
+    expect("refused" in j).toBe(false);
+    expect(heldDuringReserve).toBe(true);
+    expect(lockHeld(prepareLockFile(w.dir))).toBe(false);
+    // Another preparer (another process) holds the lock: refused, nothing saved.
+    save({ ...readRuntimeUpdate(w.dir)!, phase: "refused" });
+    const other = sqliteLock(prepareLockFile(w.dir))!;
+    try { expect(prepareRuntimeUpdate(options(w, "0.9.122"), T0, { lockWaitMs: 0 })).toEqual({ refused: "Another update is being prepared right now. Nothing was changed." }); }
+    finally { other.close(); }
+    expect(readRuntimeUpdate(w.dir)?.to.version).toBe("0.9.121");
+  });
+
+  test("any update under way blocks the next, manual or automatic; a refusing reservation saves no journal; a failed bind refuses the journal", () => {
+    const w = world();
+    const first = journal(w, "0.9.121");
+    let reserved = 0;
+    expect(prepareRuntimeUpdate(options(w, "0.9.122"), T0, { reserve: () => { reserved++; return null; } })).toMatchObject({ refused: expect.stringMatching(/^An update to 0.9.121 is already scheduled/) });
+    expect(reserved).toBe(0);
+    save({ ...first, phase: "refused" });
+    expect(prepareRuntimeUpdate(options(w, "0.9.122"), T0, { reserve: () => "Automatic updates are off." })).toEqual({ refused: "Automatic updates are off." });
+    expect(readRuntimeUpdate(w.dir)?.id).toBe(first.id);
+    expect(prepareRuntimeUpdate(options(w, "0.9.122"), T0, { prepared: () => { throw new Error("the history can't be written"); } })).toEqual({ refused: "The update could not start: the history can't be written" });
+    expect(readRuntimeUpdate(w.dir)).toMatchObject({ phase: "refused", to: { version: "0.9.122" } });
+    // An unreadable saved journal refuses every new update.
+    writeFileSync(join(w.dir, "toolroll-update.json"), "{ not json");
+    expect("refused" in prepareRuntimeUpdate(options(w, "0.9.123"), T0)).toBe(true);
+  });
+
+  test("Off cancels the automatic update while that is safe, never a person's own update; past that point it says so", () => {
+    const w = world();
+    // A person's own update under way: Off leaves it alone.
+    const manual = journal(w, "0.9.121");
+    expect(cancelAutomaticUpdate(w.store, w.dir, T0)).toBeNull();
+    expect(readRuntimeUpdate(w.dir)?.phase).toBe("scheduled");
+    save({ ...manual, phase: "refused" });
+    // The automatic one, not yet started by its updater: cancelled here.
+    const reserved = reserveAutoUpdate(w.store, { version: "0.9.122", from: "0.9.120", now: T0 });
+    if (!reserved.ok) throw new Error(reserved.why);
+    const auto = journal(w, "0.9.122");
+    linkAutoUpdateJournal(w.store, reserved.attempt.id, auto.id);
+    expect(cancelAutomaticUpdate(w.store, w.dir, T0)).toBe("Cancelled the update to 0.9.122. Nothing was switched; new work resumes.");
+    expect(readRuntimeUpdate(w.dir)?.phase).toBe("cancelled");
+    expect(reconcileAutoUpdates(w.store, { stateDir: w.dir, current: "0.9.120", now: later(1000) }).map(one => one.outcome)).toEqual(["cancelled"]);
+    // Another, already stopping the service: too late to cancel; it finishes or restores on its own.
+    const third = reserveAutoUpdate(w.store, { version: "0.9.123", from: "0.9.120", now: T0 });
+    if (!third.ok) throw new Error(third.why);
+    const late = journal(w, "0.9.123", "backing-up");
+    linkAutoUpdateJournal(w.store, third.attempt.id, late.id);
+    expect(cancelAutomaticUpdate(w.store, w.dir, T0)).toBe("The update to 0.9.123 is past the point it can be cancelled (backing-up); it will finish or restore on its own.");
+    expect(readRuntimeUpdate(w.dir)?.phase).toBe("backing-up");
+  });
+
+  test("an updater that finds its update cancelled before it started downloads nothing", async () => {
+    const w = world();
+    const j = journal(w, "0.9.121");
+    writeFileSync(join(j.stageDir, "cancel-request.json"), JSON.stringify({ id: j.id, action: "cancel" }));
+    let asked = 0;
+    const system = { now: () => T0, sleep: async () => undefined, release: async () => { asked++; throw new Error("no registry in this test"); } } as unknown as UpdateSystem;
+    const outcome = await resumeRuntimeUpdate(w.dir, system, j.id);
+    expect(outcome).toMatchObject({ ok: true, phase: "cancelled" });
+    expect(asked).toBe(0);
+    expect(existsSync(join(j.stageDir, "runtime"))).toBe(false);
   });
 });
