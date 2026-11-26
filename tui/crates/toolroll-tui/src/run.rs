@@ -394,9 +394,16 @@ impl Loop {
                 let _ = tx.send(send_batch(&client, acts, task, run, text).await);
             })),
             Effect::Scrollback(lines) => {
-                // The normal screen, mouse off (so the person can select), the lines, then a word on how to come back.
+                // The normal screen, mouse off (so the person can select), cleared (an older session's last words
+                // never sit above the command), the lines, then a word on how to come back.
                 let out = term.backend_mut();
-                let _ = crossterm::execute!(out, DisableMouseCapture, LeaveAlternateScreen);
+                let _ = crossterm::execute!(
+                    out,
+                    DisableMouseCapture,
+                    LeaveAlternateScreen,
+                    terminal::Clear(terminal::ClearType::All),
+                    crossterm::cursor::MoveTo(0, 0)
+                );
                 let mut text = String::new();
                 for line in &lines {
                     text.push_str(&clean(line));

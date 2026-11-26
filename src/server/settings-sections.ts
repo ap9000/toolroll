@@ -313,7 +313,7 @@ function yourPasswordSection(deps: GeneralDeps): SectionImpl<{ passwordless: boo
             ? [formRow("Forgot it?", "On the computer running Toolroll, run this to choose a new one:", html``, "wide"), codeLine("toolroll password reset")]
             : [formRow("Where it is", "Your first password is saved on the computer running Toolroll. Toolroll never shows it in a browser. To read it, run this there:", html``, "wide"), codeLine(`cat ${saved}`)];
         })(),
-        summary.passwordless === null ? "" : formRow("Passwordless", "Sign in once; most approvals then need no password.", btn(`${summary.passwordless ? "On" : "Off"} · Change`, { sm: true, href: "/settings/passwordless" }), "inline"),
+        summary.passwordless === null ? "" : formRow("Passwordless", "Sign in once; most approvals then need no password. Settings → Passwordless lists what still asks.", btn(`${summary.passwordless ? "On" : "Off"} · Change`, { sm: true, href: "/settings/passwordless" }), "inline"),
       ]),
     }),
   };

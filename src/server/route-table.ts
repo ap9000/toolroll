@@ -464,6 +464,9 @@ get("tasks", "direct-chat.detail", `^\\/engine\\/direct-chats\\/${TERMINAL}$`, {
 // The pages (everyday-8 #6): the same chats, as a browser with no app reads them.
 get("tasks", "direct-chat.page-list", "/direct-chats", DIRECT_CHAT);
 get("tasks", "direct-chat.page", `^\\/direct-chats\\/${TERMINAL}$`, { ...DIRECT_CHAT, sample: `/direct-chats/${"a".repeat(32)}` });
+// A Ship review or a Ship read again by a GET (a reload or Back): only back to the chat page, never their git work or yes.
+get("tasks", "direct-chat.page-ship-review-again", `^\\/direct-chats\\/${TERMINAL}\\/ship-review$`, { ...DIRECT_CHAT, sample: `/direct-chats/${"a".repeat(32)}/ship-review` });
+get("tasks", "direct-chat.page-ship-done", `^\\/direct-chats\\/${TERMINAL}\\/ship$`, { ...DIRECT_CHAT, sample: `/direct-chats/${"a".repeat(32)}/ship` });
 get("tasks", "direct-chat.artifact", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/artifacts\\/${TERMINAL}$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/artifacts/${"b".repeat(32)}` });
 get("pages", "projects.browse", "/projects/browse", free);
 // The repository picker: folder names on the server's disk (the home folder, and any projects folder elsewhere), so an
@@ -578,6 +581,9 @@ get("tasks", "task.approval", `^\\/t\\/${TASK}\\/approval$`, { project: "task", 
 // One-tap release approval (trusted-release-reports.md A6/A7): the sheet, and the push's opaque locator, which only
 // redirects to it once the plane's own state says the task ref is a release in the person's projects.
 get("tasks", "task.release", `^\\/t\\/${TASK}\\/release$`, { project: "task", limited: "resource", ...free, sample: "/t/one/release" });
+// Land's address read again (a reload or Back after the POST): only back to the task page's landing card, which reads
+// the saved outcome; never Land or git.
+get("tasks", "task.land-again", `^\\/t\\/${TASK}\\/land$`, { project: "task", limited: "resource", ...free, sample: "/t/one/land" });
 get("tasks", "release.locate", `^\\/approve\\/${ID}$`, { project: "task-ref", limited: "resource", ...free, sample: "/approve/1" });
 get("pages", "ledger.export", "/ledger/export", { limited: "unscoped", ...free });
 get("tasks", "runs", "/runs", { limited: "collection", ...free }); // a redirect to /agents now

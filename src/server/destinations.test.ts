@@ -16,7 +16,7 @@ import { ROUTES, matchRoute } from "./route-table.js";
 import { IN_PLACE_ROUTES, inPlaceRoute } from "./in-place.js";
 import { createDemoSandbox } from "../demo.js";
 import { createDecisionServer } from "../serve.js";
-import { openStore } from "../store.js";
+import { openStore, type Store } from "../store.js";
 import { addApprover } from "../scope.js";
 
 type Kind = "page" | "alias" | "ceremony" | "data" | "mixed";
@@ -118,10 +118,12 @@ async function openProject(world: { base: string; cookie: string }, path: string
 }
 
 let demo: World, operator: World;
+let demoStore: Store;
 /** The demo's own samples where a row's generic sample names nothing there. `${api}` is the demo's payments project. */
 const DEMO_PATHS: Record<string, string> = {
   "review": "/review?result=fix-payout-rounding&run=6", "task.page": "/t/fix-payout-rounding", "task.release": "/t/fix-payout-rounding/release",
   "task.steps": "/t/fix-payout-rounding/steps", "task.approval": "/t/fix-payout-rounding/approval", "task.diff": "/t/fix-payout-rounding/diff", "task.result": "/t/fix-payout-rounding/result",
+  "task.land-again": "/t/fix-payout-rounding/land",
   "run.evidence": "/r/6/evidence/8", "flow.page": "/flows/3", "flow.insights": "/flows/3/insights", "flow.export": "/flows/3/export",
   "recipes.start": "/recipes/start?recipe=small-feature", "recipes.edit": "/recipes/edit?recipe=small-feature",
   "recipes.export": "/recipes/export?recipe=small-feature", "recipes.from-task": "/recipes/from-task?task=fix-payout-rounding",
@@ -145,6 +147,8 @@ const ABSENT: Record<string, { status: number; why: string }> = {
   // Direct Chat is for a solo install's own browser on this computer (server/direct-chat.ts admit): both consoles refuse.
   "direct-chat.page-list": { status: 403, why: "Direct Chat is only on a solo install, from this computer" },
   "direct-chat.page": { status: 403, why: "Direct Chat is only on a solo install, from this computer" },
+  "direct-chat.page-ship-review-again": { status: 403, why: "Direct Chat is only on a solo install, from this computer" },
+  "direct-chat.page-ship-done": { status: 403, why: "Direct Chat is only on a solo install, from this computer" },
 };
 /** Each mixed row's two answers, as the demo gives them (welcome's page: the empty console's first run). */
 const MIXED: Record<string, { page: { world: "demo" | "operator"; path: string }; alias: { world: "demo" | "operator"; path: string } }> = {
@@ -156,6 +160,7 @@ const MIXED: Record<string, { page: { world: "demo" | "operator"; path: string }
 beforeAll(async () => {
   // The demo, as `toolroll demo` serves it, with its payments project open.
   const made = createDemoSandbox(new Date());
+  demoStore = made.store;
   const demoServer = createDecisionServer({ store: made.store, evidenceRoot: made.evidenceRoot, clock: () => new Date(), repos: made.seed.repos, demoLead: made.lead });
   await listen(demoServer);
   const signed = await signIn(demoServer, made.seed.login.name);
@@ -206,6 +211,15 @@ function expectKind(id: string, kind: "page" | "alias" | "ceremony" | "data", an
     expect(answer.status === 200 && isDocument(answer), seen).toBe(false);
   }
 }
+
+test("Land's address read again (a reload or Back) only leads to the task page's landing card; nothing lands", async () => {
+  const landings = () => Number(demoStore.handle.prepare("SELECT count(*) AS n FROM action_ledger WHERE action LIKE 'land %'").get()!["n"]);
+  const before = landings();
+  const again = await get(demo, "/t/fix-payout-rounding/land");
+  expect([again.status, again.location]).toEqual([303, "/t/fix-payout-rounding#land"]);
+  expect((await get(demo, "/t/no-such-task/land")).status).toBe(404);
+  expect(landings()).toBe(before);
+});
 
 describe("each entry answers as its kind", () => {
   test("on the demo, and on an operator's console for the rows the demo account may not open", async () => {

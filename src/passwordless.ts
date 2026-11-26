@@ -30,9 +30,23 @@ export function setPasswordless(store: Store, on: boolean, by: string, now: Date
   const setting = passwordlessSetting(store);
   if (setting.on === on && (on || setting.at !== null)) return { changed: false };
   store.recordAction({ at: now.toISOString(), actor: by, repo: null, taskId: null, runId: null, action: PASSWORDLESS_ACTION, outcome: on ? "on" : "off", source: "policy",
-    detail: on ? "Passwordless on: approvals need no password" : "Passwordless off: step-ups ask for the password again" });
+    detail: on ? "Passwordless on: most browser approvals need no password" : "Passwordless off: step-ups ask for the password again" });
   store.bumpWake();
   return { changed: true };
 }
 
-export const PASSWORDLESS_TRADE = "Anyone holding a signed-in browser — an unlocked laptop, a phone, a stolen session — can then do everything you can without a second check. Signing in, session limits (12 hours idle, 7 days), signing out and ending sessions remain your protection. Creating or widening a way in (passwords, sign-in methods, API tokens, connected apps, people, workers, chat pairing, webhook secrets), or widening what a project's builds and checks reach (its network, where builds write, its home folder and its check access), still asks for your password.";
+export const PASSWORDLESS_TRADE = "Anyone holding a signed-in browser — an unlocked laptop, a phone, a stolen session — can then do everything you can without a second check, except what still asks below. Signing in, session limits (12 hours idle, 7 days), signing out and ending sessions remain your protection.";
+/** What still asks for the password with Passwordless on, as the acts' own checks decide it (credential acts never take
+ * a session standing in; scope.ts; local-owner.ts LOCAL_PASSWORD_ACTS; flexible-ship.ts and direct-chat-ship.ts ask for
+ * a password typed now, except the local owner's own acts on a laptop install, server/direct-chat.ts and flexible-ship.ts;
+ * a shell has no browser session). Words only: each act's own check is what asks. */
+export const PASSWORDLESS_STILL_ASKS: readonly string[] = Object.freeze([
+  "Signing in, and anything that adds or widens a way in: passwords, sign-in methods, API tokens, connected apps, people, workers, chat pairing and webhook secrets.",
+  "Widening what a project’s builds and checks reach: its network, where builds write, its home folder and its check commands.",
+  "Turning on interactive agent threads and saving the Claude sign-in they use.",
+  "Saving or shipping a Direct Chat’s work, and shipping a thread’s, except in Local mode on a laptop install, where this computer’s own browser and workbench don’t ask.",
+  "A toolroll command run in a shell without this computer’s remembered login.",
+]);
+/** How the other ways of skipping the password differ from Passwordless (General's Solo and Local mode, and a password
+ * remembered after typing it). */
+export const PASSWORDLESS_OTHERS = "Solo stands in the same way while you are the only person on this install. Local mode lets this computer’s browser file tasks, approve plans and add projects with no password at all. Without either, a password you just typed skips standard approvals on this computer for 15 minutes.";

@@ -19,7 +19,6 @@ export const ADVANCED_PAGES: readonly AdvancedPage[] = Object.freeze([
   { title: "Agents", href: "/agents", words: "Every agent at work now, and the computers that build" },
   { title: "Spend", href: "/spend", words: "What agent work cost, and monthly limits", operator: true },
   { title: "Subagents", href: "/settings/lead/subagents", words: "Helpers the lead looks after" },
-  { title: "Skills", href: "/settings/skills", words: "Reusable instructions for agents" },
   { title: "Learning", href: "/settings/learning", words: "Lessons kept from finished work" },
   { title: "Operating mode", href: "/mode", words: "Let a project run for a while without asking" },
   { title: "Policy", href: "/settings/policy", words: "Limits no task can go past" },

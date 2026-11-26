@@ -24,6 +24,8 @@ const SECRETS: Record<string, string> = {
 };
 const ALLOWED = new Set(["PATH", "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TERM", "TZ", "USER", "LOGNAME", "SHELL", "COLORTERM",
   "HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "GIT_TERMINAL_PROMPT"]);
+/** What a launched turn adds: its commit identity (git-identity.ts), never a secret. */
+const TURN_ADDS = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"];
 
 class FakeCustody implements CustodyIO {
   readonly platform: NodeJS.Platform = "darwin";
@@ -83,8 +85,10 @@ describe("attack: the server's secrets reaching a Direct Chat agent", () => {
     }
     expect(seen.map(one => one.provider)).toEqual([...DIRECT_CHAT_PROVIDERS]);
     for (const { provider, env } of seen) {
-      for (const name of Object.keys(env)) expect(ALLOWED.has(name), `${provider}: ${name}`).toBe(true);
+      for (const name of Object.keys(env)) expect(ALLOWED.has(name) || TURN_ADDS.includes(name), `${provider}: ${name}`).toBe(true);
       for (const value of Object.values(SECRETS)) expect(Object.values(env).join("\n"), provider).not.toContain(value);
+      // The project names no identity: the neutral one, for author and committer alike.
+      expect([env["GIT_AUTHOR_EMAIL"], env["GIT_COMMITTER_EMAIL"]], provider).toEqual(["direct-chat@toolroll.local", "direct-chat@toolroll.local"]);
     }
   });
 });

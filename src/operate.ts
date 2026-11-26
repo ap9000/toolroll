@@ -15394,7 +15394,9 @@ async function projectFlexibleCommand(positional: readonly string[], flags: Map<
   const refused = (message: string) => fail(write, json, command, "person-only", message, EXIT.refused);
   if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return refused("Only a person changes a project's thread terms, never the lead, a token or a chat app.");
   const acting = await askCredentials(flags, context);
-  if (acting === null) return refused(`${action === "enable" ? "Turning on interactive agent threads needs your password" : "This needs your sign-in"}: pass --as and --token.`);
+  if (acting === null) return refused(action === "enable"
+    ? "Turning on interactive agent threads needs your Toolroll password: run it again with `--as <your name>` and type the password when asked (`--token` is that password, only for scripts: it stays in shell history). Or turn them on in the browser, on the project's page in Settings."
+    : "This needs your sign-in: run it again with `--as <your name>` and type your Toolroll password when asked.");
   if (action === "enable") {
     if (!flexibleAvailable(store)) return fail(write, json, command, "not-available", FLEXIBLE_UNAVAILABLE, EXIT.refused);
     const proved = credentialApprover(store, acting.name, acting.token, repo);

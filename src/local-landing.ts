@@ -783,6 +783,16 @@ function handoffRows(store: Store, repo: string, taskId?: string): Handoff[] {
 export function handoffsOf(store: Store, repo: string, taskId?: string): Handoff[] {
   return handoffRows(store, repo, taskId).filter(one => one.settled);
 }
+/** The newest landing commit Toolroll made and kept for this task's accepted result (`candidate`), for the person to
+ * bring in themselves: the branch it is for and the exact command (handoffWords: the recorded folder, the kept commit),
+ * or null. Display only: the task page reads it after a Land (redirect-after-POST); it lands and decides nothing. */
+export function keptHandoffOf(store: Store, repo: string, rootId: string, candidate: string | null): { commit: string; branch: string; command: string | null; words: string } | null {
+  if (candidate === null || !OID.test(candidate)) return null;
+  const one = handoffsOf(store, repo, rootId).find(row => row.candidate === candidate);
+  if (one === undefined) return null;
+  const command = handoffCommand(one.folder, one.commit);
+  return { commit: one.commit, branch: one.ref.replace(/^refs\/heads\//, ""), command, words: handoffWords({ command }, one.commit) };
+}
 
 class Refused extends Error {
   constructor(readonly result: { ok: false; reason: LandRefusal; message: string }) { super(result.message); }

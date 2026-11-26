@@ -7,7 +7,7 @@
  * - Unified pinned skill set across Tasks, Coding sessions, Direct Chat (Claude/Codex/Gemini), Live Terminals, and the Lead
  * - Solo-owner passwordless management via POST /settings/skills/library
  */
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -35,6 +35,7 @@ import {
   importGithubSkillBundle,
   importLibrarySkill,
   listSkillBundles,
+  mergeProjectAndLibrarySkills,
   parseGithubBundleUrl,
   rollbackSkillBundle,
   setBundleAutoUpdate,
@@ -42,6 +43,8 @@ import {
   skillLibraryView,
   sweepSkillBundleUpdates,
 } from "./skill-library.js";
+import { skillLibrarySectionHtml } from "./skills-ui.js";
+import { htmlString } from "./html.js";
 import {
   detectLocalSkillDirs,
   localSyncStatus,
@@ -179,6 +182,16 @@ describe("Skill Library (schema v186)", () => {
     expect(selectProjectSkills(store, repoA, "owner").packages.map((p) => p.name)).toEqual(["review-code"]);
     expect(selectProjectSkills(store, repoB, "owner").packages.map((p) => p.name)).toEqual(["review-code", "write-tests"]);
 
+    // The project's own choice wins over its opt-out: the global card says what reaches new tasks, as the merge does.
+    const writeTests = skillLibraryView(store, { repo: repoA }).skills.find((s) => s.name === "write-tests")!;
+    const own = { "write-tests": { sha: writeTests.sha, enabled: true } };
+    expect(mergeProjectAndLibrarySkills(store, repoA, own).packages.map((p) => p.name)).toEqual(["review-code", "write-tests"]);
+    const card = htmlString(skillLibrarySectionHtml(skillLibraryView(store, { repo: repoA }), [], "", false, { repo: repoA, projectSelection: own }));
+    const writeCard = card.slice(card.indexOf("<span>write-tests</span>"));
+    expect(writeCard.slice(0, 400)).toContain("Active: this project enables it");
+    expect(writeCard.slice(0, 400)).not.toContain("Opted out here");
+    expect(card).toContain("this project opted out of it. This project’s own choice decides here.");
+
     // Opt repoB out of the entire global library (`*`).
     setProjectSkillOptOut(store, { repo: repoB, skillName: "*", optOut: true, actor: "owner" }, now);
     expect(selectProjectSkills(store, repoB, "owner").packages).toEqual([]);
@@ -254,6 +267,10 @@ describe("Skill Library (schema v186)", () => {
       commits: { [commit1]: { truncated: true, files: { "skills/one/SKILL.md": skillMd("one", "One") } } },
     });
     await expect(fetchGithubSkillBundle("https://github.com/acme/pstack", truncatedFetcher)).rejects.toThrow(/truncated/i);
+
+    // GitHub out of reach (offline, blocked): said in words, never a bare "fetch failed".
+    const offline = (async () => { throw new TypeError("fetch failed", { cause: { code: "ENOTFOUND" } }); }) as unknown as typeof fetch;
+    await expect(fetchGithubSkillBundle("https://github.com/acme/pstack", offline)).rejects.toThrow("Couldn't reach GitHub: its address couldn't be looked up (this computer may be offline).");
   });
 
   test("daily update sweep applies clean updates, holds suspicious updates, and rolls back in one step", async () => {
@@ -588,5 +605,26 @@ describe("Skill Library (schema v186)", () => {
     });
     expect(optOutPost.status).toBe(303);
     expect(enabledLibrarySkills(store, repo).packages).toEqual([]);
+
+    // A bundle import that can't reach GitHub: the page again, the typed address kept in its field (never in a redirect).
+    const real = globalThis.fetch;
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (String(input instanceof Request ? input.url : input).startsWith("https://api.github.com/")) throw new TypeError("fetch failed");
+      return real(input, init);
+    });
+    try {
+      const typed = "https://github.com/acme/pstack";
+      const failed = await fetch(`${url}/settings/skills/library`, {
+        method: "POST",
+        headers: { cookie, "content-type": "application/x-www-form-urlencoded", origin: url },
+        body: new URLSearchParams({ csrf, action: "import-bundle", repo, url: typed }).toString(),
+        redirect: "manual",
+      });
+      expect(failed.status).toBe(409);
+      const page = await failed.text();
+      expect(page).toContain("Couldn&#39;t reach GitHub: the connection failed");
+      expect(page).toContain("Nothing was imported.");
+      expect(page).toContain(`value="${typed}"`);
+    } finally { spy.mockRestore(); }
   });
 });

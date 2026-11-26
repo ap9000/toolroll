@@ -225,7 +225,7 @@ export function agentsGroup(facts: SettingsFacts, flags: Record<string, boolean>
     settingsLink({ href: "/settings/lead", title: "Chat", status: "The assistant you chat with" }),
     ...(advancedOn(facts) ? [settingsLink({ href: "/settings/lead/subagents", title: "Subagents", status: "Helpers the lead looks after" })] : []),
     settingsLink({ href: "/settings/tools", title: "Tools", status: "What builds can use, per project" }),
-    ...(advancedOn(facts) ? [settingsLink({ href: "/settings/skills", title: "Skills", status: "Reusable instructions for agents" })] : []),
+    settingsLink({ href: "/settings/skills", title: "Skills", status: "Reusable instructions for agents" }),
     settingsLink({ href: "/settings/knowledge", title: "Knowledge", status: "What agents know about each project" }),
     ...(advancedOn(facts) ? [settingsLink({ href: "/settings/learning", title: "Learning", status: "Lessons kept from finished work" })] : []),
   ]);
@@ -478,7 +478,7 @@ export function accessGroup(facts: SettingsFacts, flags: Record<string, boolean>
     ...(facts.operator && (advancedOn(facts) || facts.sso !== null) ? [
       settingsLink({ href: "/settings/sign-in", title: "Sign-in with a provider", status: facts.sso === null ? "Not set up: everyone uses a password" : `People sign in with ${facts.sso}` })] : []),
     ...(facts.operator && (advancedOn(facts) || facts.passwordless === true) ? [
-      settingsLink({ href: "/settings/passwordless", title: "Passwordless", status: facts.passwordless ? "On: approvals need no password" : "Off: approvals ask for your password" })] : []),
+      settingsLink({ href: "/settings/passwordless", title: "Passwordless", status: facts.passwordless ? "On: most approvals need no password" : "Off: approvals ask for your password" })] : []),
     // Local mode moved to General (settings plan F0); this row keeps the old #local-mode for links and bookmarks.
     ...(facts.local?.canTurnOff === true ? [html`<div id="local-mode">${settingsLink({ href: "/settings/general?section=local-mode", title: "Local mode", status: "On · in General" })}</div>`] : []),
   ];
@@ -691,7 +691,7 @@ export function inviteLinkHtml(view: { link: string; approver: boolean; projects
 
 /** The switch and the trade in plain words. Turning it on is a way in: it always asks for the password typed now.
  * Turning it off is one click. */
-export function passwordlessHtml(view: { on: boolean; since: string | null; trade: string; said: string | null; problem: string | null }): Html {
+export function passwordlessHtml(view: { on: boolean; since: string | null; trade: string; stillAsks: readonly string[]; others: string; said: string | null; problem: string | null }): Html {
   const answer = view.problem ? notice(sentence(view.problem)) : view.said ? infoLine(sentence(view.said)) : "";
   const control = view.on
     ? postForm("/settings/passwordless", html`<div class="k-acts">${btn("Turn Passwordless off", { type: "submit" })}</div>`, { hidden: { action: "off" } })
@@ -700,14 +700,14 @@ export function passwordlessHtml(view: { on: boolean; since: string | null; trad
   return settingsSubPage("access", "Passwordless", joinHtml([
     answer,
     settingsSection({ id: "passwordless", title: `Passwordless is ${view.on ? "on" : "off"}`, state: view.since === null ? "" : ` · ${view.since}`,
-      lead: "When it’s on, approvals, settings, budgets, signing a mode and starting a terminal no longer ask for your password again, in the browser, on the phone, and in this computer’s toolroll command (through its remembered login). Changes that add a way in still ask: sign-in, tokens, connections, agent threads and check commands.",
-      body: joinHtml([note(view.trade), control]) }),
+      lead: "When it’s on, approvals, settings, budgets, signing a mode and starting a terminal no longer ask for your password again, in the browser, on the phone, and in this computer’s toolroll command (through its remembered login).",
+      body: joinHtml([html`<p><strong>Still asks for your password</strong></p><ul data-passwordless-still-asks>${view.stillAsks.map(one => html`<li>${one}</li>`)}</ul>`, note(view.trade), note(view.others), control]) }),
   ]), { lead: "Sign in once; most approvals then need no password." });
 }
 
 /** Which project a per-project settings page shows: a GET form (an address, not a save). */
-export function projectPicker(action: string, projects: readonly { repo: string; name: string }[], chosen: string): Html {
-  if (projects.length < 2) return html``;
+export function projectPicker(action: string, projects: readonly { repo: string; name: string }[], chosen: string, options: { evenOne?: true } = {}): Html {
+  if (projects.length < (options.evenOne === true ? 1 : 2)) return html``;
   return html`<form method="get" action="${action}" class="k-acts k-picker">${select({ name: "repo", label: "Project", current: chosen, items: projects.map(one => [one.repo, one.name] as const) })}${btn("Show", { sm: true, type: "submit" })}</form>`;
 }
 

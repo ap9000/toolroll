@@ -755,9 +755,9 @@ export function testSkill(
             ? `Test ${skill.name}`
             : `Revise test: ${skill.name}`,
         repo: args.repo,
-        goal: `Test skill ${skill.name} version ${skill.sha} with this sample request:\n${sample}${feedback ? `\nFeedback from test run #${args.sourceRun}:\n${feedback}` : ""}\nRead the supplied SKILL.md, perform the parts allowed in a read-only report task, and report the actual output, files read, and missing tools or permissions. Do not claim a successful test for steps you could not perform.`,
+        goal: `Test skill ${skill.name} version ${skill.sha} with this sample request:\n${sample}${feedback ? `\nFeedback from test run #${args.sourceRun}:\n${feedback}` : ""}\nRead the supplied SKILL.md, perform the parts a report task allows (reading the project; a report that changes a file fails, and nothing it wrote is kept), and report the actual output, files read, and missing tools or permissions. Do not claim a successful test for steps you could not perform.`,
         outOfScope:
-          "No repository changes, deployments, messages to other people, external writes, dependency installation or permission changes. Report any skill steps that require these actions.",
+          "Nothing it changes in the project is kept (a report that changes a file fails). No deployments, messages to other people, external writes, dependency installation or permission changes. Report any skill steps that require these actions.",
         acceptance: [
           {
             id: "skill-result",

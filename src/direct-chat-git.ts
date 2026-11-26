@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { run } from "./exec.js";
 import { ENV, ENV_ALLOWLIST } from "./remote-main.js";
 import { checkoutGit, refusal, TEARDOWN_FLAGS, viewedGitSync } from "./teardown-git.js";
+import { DIRECT_CHAT_IDENTITY, identityFrom, identityValues, type GitIdentity } from "./git-identity.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -308,6 +309,26 @@ export function runTrustedCloneGit(
   );
 }
 
+/** The identity an agent's own commits in a chat's clone carry: the one Toolroll wrote into the clone's pinned config
+ * when it was made (the project's, else neutral), each half neutral when absent (a clone made before that); never the
+ * host's. Read only after the clone's binding is verified; a clone that can't be read gives the neutral identity. */
+export function cloneCommitIdentity(binding: TrustedCloneBinding | null): GitIdentity {
+  if (binding === null) return DIRECT_CHAT_IDENTITY;
+  let listing = "";
+  try { listing = runTrustedCloneGit(binding, ["config", "--local", "--list", "-z"]); } catch { /* neutral below */ }
+  const values = identityValues(listing);
+  return { name: values.name ?? DIRECT_CHAT_IDENTITY.name, email: values.email ?? DIRECT_CHAT_IDENTITY.email };
+}
+
+/** Write `identity` into a clone Toolroll just made, before its config is pinned. */
+function writeCloneIdentity(realGitDir: string, realClone: string, identity: GitIdentity): void {
+  const cloneEnv = cleanGitEnv({ GIT_COMMON_DIR: realGitDir });
+  for (const [key, value] of [["user.name", identity.name], ["user.email", identity.email]] as const) {
+    execFileSync("git", [...EXTRA_DIRECT_CHAT_GIT_FLAGS, `--git-dir=${realGitDir}`, `--work-tree=${realClone}`, "config", "--local", key, value],
+      { cwd: realClone, encoding: "utf8", env: cloneEnv, stdio: ["ignore", "pipe", "pipe"] });
+  }
+}
+
 function pinCloneGitConfig(realGitDir: string): string {
   const configPath = join(realGitDir, "config");
   try {
@@ -388,6 +409,7 @@ export function cloneIsolatedRepo(input: {
     { cwd: realClone, encoding: "utf8", env: cloneEnv, stdio: ["ignore", "pipe", "pipe"] },
   );
 
+  writeCloneIdentity(realGitDir, realClone, identityFrom(runHardenedMainGit(["config", "--local", "--list", "-z"], input.repo), DIRECT_CHAT_IDENTITY));
   const configSha256 = pinCloneGitConfig(realGitDir);
   return { baseSha, gitDir: realGitDir, configSha256, mainDirtyFiles };
 }
@@ -458,6 +480,8 @@ export async function cloneIsolatedRepoAsync(input: {
     { cwd: realClone, encoding: "utf8", env: cloneEnv },
   );
 
+  // The commit identity (git-identity.ts: the project's, else neutral; never the host's), before the config is pinned.
+  writeCloneIdentity(realGitDir, realClone, identityFrom(await runHardenedMainGitAsync(["config", "--local", "--list", "-z"], input.repo), DIRECT_CHAT_IDENTITY));
   const configSha256 = pinCloneGitConfig(realGitDir);
   return { baseSha, gitDir: realGitDir, configSha256, mainDirtyFiles };
 }

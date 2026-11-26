@@ -11,6 +11,7 @@ import { defaultCustodyIO } from "./flexible-launch.js";
 import { plainAgentEnv } from "./agent-fence.js";
 import { directChatFence, type DirectChatFenceFn, type DirectChatTurnFence } from "./direct-chat-fence.js";
 import { confined } from "./exec.js";
+import { identityEnv } from "./git-identity.js";
 import { cleanLiveText, HIDDEN_LINE, liveSecretHit } from "./live-records.js";
 import { projectName } from "./project.js";
 import {
@@ -26,6 +27,7 @@ import {
 import {
   assertManagedClonePath,
   assertTrustedCloneGit,
+  cloneCommitIdentity,
   cloneIsolatedRepoAsync,
   pinnedConfigBackupPath,
   repairCloneGitBinding,
@@ -1580,7 +1582,7 @@ export class DirectChatHost {
 
     let launched: { pid: number; pgid: number; startIdentity: string | null };
     try {
-      const childEnv = buildSanitizedChildEnv(thread.provider);
+      const childEnv = { ...buildSanitizedChildEnv(thread.provider), ...identityEnv(cloneCommitIdentity(bindingForTree)) };
       if (turnSkills.dir !== null) childEnv["TOOLROLL_SKILLS_DIR"] = turnSkills.dir;
       launched = this.spawnTurnFn({
         binary,

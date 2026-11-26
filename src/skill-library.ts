@@ -453,6 +453,16 @@ export type FetchedSkillBundle = {
   skipped: { folder: string; reason: string }[];
 };
 
+/** Why GitHub couldn't be reached, in plain words (a fetch that never got an answer: offline, blocked, slow). */
+function unreachableWhy(error: unknown): string {
+  const cause = (error as { cause?: { code?: unknown } } | null)?.cause;
+  const code = typeof cause?.code === "string" ? cause.code : "";
+  if ((error as { name?: unknown } | null)?.name === "TimeoutError") return "it didn't answer within 20 seconds";
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN") return "its address couldn't be looked up (this computer may be offline)";
+  if (code === "ECONNREFUSED" || code === "ECONNRESET" || code === "EPERM" || code === "EACCES") return "the connection was refused or blocked";
+  return "the connection failed (this computer may be offline, or a firewall blocks it)";
+}
+
 async function githubJson<T>(
   owner: string,
   repoName: string,
@@ -460,11 +470,16 @@ async function githubJson<T>(
   fetcher: typeof fetch,
   budget: { remaining: number },
 ): Promise<T> {
-  const response = await fetcher(`https://api.github.com/repos/${owner}/${repoName}${path}`, {
-    redirect: "error",
-    signal: AbortSignal.timeout(20_000),
-    headers: { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" },
-  });
+  let response: Response;
+  try {
+    response = await fetcher(`https://api.github.com/repos/${owner}/${repoName}${path}`, {
+      redirect: "error",
+      signal: AbortSignal.timeout(20_000),
+      headers: { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" },
+    });
+  } catch (error) {
+    throw Error(`Couldn't reach GitHub: ${unreachableWhy(error)}.`);
+  }
   if (!response.ok) {
     throw Error(`GitHub returned ${response.status} for ${owner}/${repoName}${path.split("?")[0]}.`);
   }

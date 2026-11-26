@@ -270,9 +270,9 @@ export function directChatShipReadiness(store: Store, repo: string): {
   const canAutoMerge = github !== null && check !== null;
   let autoMergeReason: string | null = null;
   if (github === null) {
-    autoMergeReason = "This project isn't connected to GitHub pull requests yet — use Keep branch instead.";
+    autoMergeReason = "This project isn't connected to GitHub pull requests yet, so Save the branch instead.";
   } else if (check === null) {
-    autoMergeReason = "Set a project check command in Settings before auto-merging — or use Keep branch.";
+    autoMergeReason = "Set a project check command in Settings before auto-merging, or Save the branch.";
   }
   return {
     canAutoMerge,
@@ -356,9 +356,9 @@ function previewWithInspection(
   const canAutoMerge = github !== null && check !== null;
   let autoMergeReason: string | null = null;
   if (github === null) {
-    autoMergeReason = "This project isn't connected to GitHub pull requests yet — use Keep branch instead.";
+    autoMergeReason = "This project isn't connected to GitHub pull requests yet, so Save the branch instead.";
   } else if (check === null) {
-    autoMergeReason = "Set a project check command in Settings before auto-merging — or use Keep branch.";
+    autoMergeReason = "Set a project check command in Settings before auto-merging, or Save the branch.";
   }
 
   const mode: DirectChatShipMode = input.mode ?? (canAutoMerge ? "ship" : "keep-branch");
@@ -461,7 +461,7 @@ export function executeDirectChatShip(
       ok: false,
       status: 409,
       code: "auto_merge_unavailable",
-      error: preview.autoMergeReason ?? "Auto-merge isn't available for this project; use Keep branch instead.",
+      error: preview.autoMergeReason ?? "Auto-merge isn't available for this project; Save the branch instead.",
     };
   }
 

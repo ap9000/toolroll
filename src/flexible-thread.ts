@@ -46,6 +46,7 @@ import { startIdentityOf, type CustodyIO } from "./flexible-custody.js";
 import type { FlexibleClock } from "./flexible-turns.js";
 import { defaultCustodyIO, holdLaunch, recordGateShut, recordLive, reserveLaunchOpen, recordNeverStarted, recordSpawning, settleLaunch, unsettledLaunch, type FlexibleLaunchMeta, type SettleResult } from "./flexible-launch.js";
 import { readProjectRefs, saveRefSnapshot } from "./flexible-refs.js";
+import { identityEnv, projectGitIdentity, THREAD_IDENTITY, type GitIdentity } from "./git-identity.js";
 import { projectRowKnown, type Store } from "./store.js";
 import { readProjectRegistryNow } from "./repos.js";
 import { poolRootOf, type Runner } from "./worktree.js";
@@ -511,14 +512,16 @@ export function flexibleThreadFence(store: Store, input: FlexibleThreadLaunchInp
 }
 
 /** The environment a thread's agent starts with, exactly (never merged over Toolroll's own): a few plain settings, its
- * own temp and caches, git that asks nobody, and the run's proxy. No SSH agent socket, token, key or provider
- * variable of Toolroll's reaches it. */
-export function flexibleThreadEnv(paths: FlexibleThreadPaths, proxy: Record<string, string>, base: Readonly<Record<string, string | undefined>> = process.env): Record<string, string> {
+ * own temp and caches, git that asks nobody, the commit identity (git-identity.ts: the project's, else a neutral one;
+ * never the host's), and the run's proxy. No SSH agent socket, token, key or provider variable of Toolroll's reaches it. */
+export function flexibleThreadEnv(paths: FlexibleThreadPaths, proxy: Record<string, string>, base: Readonly<Record<string, string | undefined>> = process.env,
+  identity: GitIdentity = THREAD_IDENTITY): Record<string, string> {
   return {
     ...plainAgentEnv(base),
     HOME: real(homedir()), TMPDIR: paths.tmp, ...buildCacheEnv(paths.cache),
     GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1",
     ...proxy,
+    ...identityEnv(identity),
   };
 }
 
@@ -671,7 +674,12 @@ async function spawnLocked(store: Store, input: FlexibleThreadSpawnInput, file: 
   const { launch, paths } = fenced;
   const terms = termsProblem(launch);
   if (terms !== null) return refuse("containment", terms);
-  const base = flexibleThreadEnv(paths, input.proxyEnv);
+  // The commit identity, read from the recorded project at each launch (a repository that can't be read refuses).
+  let project: string;
+  try { project = realpathSync(fenced.thread.repo); } catch { return refuse("repository-unusable"); }
+  const identity = await projectGitIdentity(project, THREAD_IDENTITY);
+  if (!identity.ok) return refuse("repository-unusable", identity.why);
+  const base = flexibleThreadEnv(paths, input.proxyEnv, process.env, identity.identity);
   const env = { ...Object.fromEntries(Object.entries(input.agentEnv ?? {}).filter(([name]) => !(name in base))), ...base };
   const probed = await probeContainment(launch, paths, env, platform);
   if (probed !== null) return refuse("containment", probed);
