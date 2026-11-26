@@ -30,10 +30,15 @@ jobs:
     name: native lanes · scope
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     outputs:
       areas: ${{ steps.decide.outputs.areas }}
+      reuse: ${{ steps.reuse.outputs.reuse }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -69,6 +74,31 @@ jobs:
             exit 0
           fi
           node "$classifier" decide --event "$EVENT" --head-ref "$HEAD_REF" --base "$BASE_SHA" --head "$TESTED_SHA" --root "$GITHUB_WORKSPACE" | tee -a "$GITHUB_OUTPUT"
+      - name: Reusable docs or version-only change
+        id: reuse
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          REUSE_CHECKS: >-
+            {"node 24 · ubuntu-latest": ".github/workflows/ci.yml",
+            "node 24 · macos-latest": ".github/workflows/ci.yml",
+            "node 26 · SQLite": ".github/workflows/ci.yml",
+            "linux native containment · delegated cgroup v2": ".github/workflows/ci.yml",
+            "linux fence · sandbox-runtime": ".github/workflows/ci.yml",
+            "Windows Job Object containment": ".github/workflows/ci.yml",
+            "git 2.41 · debian trixie": ".github/workflows/ci.yml",
+            "git 2.47 · debian trixie": ".github/workflows/ci.yml"}
+        run: |
+          reuser=.trusted-base/scripts/ci-reuse.mjs
+          if [ ! -f "$reuser" ]; then
+            echo "::notice::the base revision has no reuse prover yet; running native lanes"
+            echo "reuse=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          node "$reuser" decide --event "$EVENT" --base-ref "$BASE_REF" --base "$BASE_SHA" --head "$TESTED_SHA" --repo "$GITHUB_REPOSITORY" --root "$GITHUB_WORKSPACE" --checks "$REUSE_CHECKS" | tee -a "$GITHUB_OUTPUT"
 
   # The native containment backend, EXECUTED: a cgroup v2 leaf is delegated
   # to the runner user (chown, as the kernel's delegation model prescribes)
@@ -87,22 +117,28 @@ jobs:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         with:
           ref: ${{ env.TESTED_SHA }}
       - name: Tested commit
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         shell: bash
         run: |
           test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/setup-node@v5
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         with:
           node-version: "22"
           # The newest patch release: a cached older one hid SQLite 3.54.1 (Node 22.23, 24.22) from the suite.
           check-latest: true
           cache: npm
-      - run: npm ci
-      - run: npm run build
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: npm ci
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: npm run build
       - name: Delegate a cgroup v2 leaf and run the native tests inside it
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         run: |
           set -euo pipefail
           test -f /sys/fs/cgroup/cgroup.controllers
@@ -114,6 +150,10 @@ jobs:
         env:
           CI: "true"
           SO_EXPECT_NATIVE_CONTAINMENT: "1"
+      - name: Reused from proven base commit
+        if: ${{ needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true' }}
+        shell: bash
+        run: echo "Reused from proven base commit (verified by scope and ci.yml)."
 
   # The windows-baseline matrix (node 22/24 over the service, scheduler,
   # builder and recipe suites) is parked: shared Windows hosts kept timing
@@ -135,14 +175,17 @@ jobs:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         with:
           ref: ${{ env.TESTED_SHA }}
       - name: Tested commit
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         shell: bash
         run: |
           test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/setup-node@v5
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         with:
           node-version: "22"
           # The newest patch release: a cached older one hid SQLite 3.54.1 (Node 22.23, 24.22) from the suite.
@@ -153,6 +196,7 @@ jobs:
       # refresh-and-install attempts, each under `timeout`. The tools are checked here, so a missing one fails setup, not a test. Kept inline (no
       # composite action): it runs as root, and a local action would come from the change's own checkout.
       - name: Linux tools, pinned packages first, then Ubuntu's mirrors with bounded retries
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         timeout-minutes: 10
         run: |
           pkgs="bubblewrap socat ripgrep"
@@ -188,13 +232,21 @@ jobs:
           done
           have || { echo "::error::Linux tools could not be installed: Ubuntu's package servers did not answer"; exit 1; }
           bwrap --version && socat -V | head -2 | tail -1 && rg --version | head -1
-      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - run: npm ci
-      - run: npm run build
-      - run: npm run test:attacks
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: npm ci
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: npm run build
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: npm run test:attacks
         env:
           CI: "true"
           TOOLROLL_REQUIRE_NATIVE: linux
+      - name: Reused from proven base commit
+        if: ${{ needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true' }}
+        shell: bash
+        run: echo "Reused from proven base commit (verified by scope and ci.yml)."
 
   native-windows:
     name: native · windows job object
@@ -207,22 +259,32 @@ jobs:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         with:
           ref: ${{ env.TESTED_SHA }}
       - name: Tested commit
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         shell: bash
         run: |
           test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/setup-node@v5
+        if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
         with:
           node-version: "22"
           # The newest patch release: a cached older one hid SQLite 3.54.1 (Node 22.23, 24.22) from the suite.
           check-latest: true
           cache: npm
-      - run: npm ci
-      - run: npm run build
-      - run: npx vitest run src/containment-windows.test.ts
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: npm ci
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: npm run build
+      - if: ${{ !(needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true') }}
+        run: npx vitest run src/containment-windows.test.ts
         env:
           CI: "true"
           SO_EXPECT_NATIVE_CONTAINMENT: "1"
+      - name: Reused from proven base commit
+        if: ${{ needs.scope.result == 'success' && needs.scope.outputs.reuse == 'true' }}
+        shell: bash
+        run: echo "Reused from proven base commit (verified by scope and ci.yml)."
