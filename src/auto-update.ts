@@ -13,7 +13,7 @@
  *   anything is switched. Nothing here adds a download path, a registry or a package name.
  */
 import { join } from "node:path";
-import { isNewer } from "./releases.js";
+import { isNewer, RELEASES_PAGE } from "./releases.js";
 import type { Store } from "./store.js";
 import type { InstallKind } from "./install-method.js";
 import { abandonRuntimeUpdate, prepareRuntimeUpdate, readRuntimeUpdate, requestRuntimeUpdateCancel, runtimeUpdateTerminal, type RuntimeRef, type RuntimeUpdateJournal } from "./toolroll-update.js";
@@ -208,6 +208,9 @@ export function cancelAutomaticUpdate(store: Pick<Store, "handle">, stateDir: st
 
 // ---- the trigger ---------------------------------------------------------------------------------------------------
 
+/** What the automatic pass uses of the store. */
+export type AutoUpdateStore = Pick<Store, "handle" | "transact" | "isInstanceOperator" | "recordAction" | "accountFacts" | "enqueueNotification">;
+
 /** What the decision reads, each as it stands now; null where it can't be read. */
 export type AutoUpdateFacts = {
   policy: AutoUpdatePolicy | null;
@@ -257,12 +260,19 @@ export type AutoUpdatePassResult = { started: string; journal: string } | { held
  * independent updater Settings → Updates launches (prepare → a one-off job → resume that journal id only). The updater
  * never runs inside the service it stops. Never a downgrade, never a prerelease, one attempt per version.
  */
-export async function autoUpdatePass(store: Pick<Store, "handle" | "transact" | "isInstanceOperator" | "recordAction">, o: AutoUpdatePassOptions): Promise<AutoUpdatePassResult> {
-  reconcileAutoUpdates(store, { stateDir: o.stateDir, current: o.current.version, now: o.now() });
+export async function autoUpdatePass(store: AutoUpdateStore, o: AutoUpdatePassOptions): Promise<AutoUpdatePassResult> {
+  const recorded = reconcileAutoUpdates(store, { stateDir: o.stateDir, current: o.current.version, now: o.now() });
+  for (const one of recorded) { try { notifyAutoUpdate(store, { ...one.attempt, outcome: one.outcome, outcomeAt: o.now().toISOString(), detail: one.detail }, null, o.now()); } catch { /* the attempt row says what happened */ } }
   const policy = autoUpdatePolicy(store);
   let journal: AutoUpdateFacts["journal"];
-  try { const saved = readRuntimeUpdate(o.stateDir); journal = saved === null ? "none" : runtimeUpdateTerminal(saved.phase) ? "terminal" : "active"; }
+  let saved: RuntimeUpdateJournal | null = null;
+  try { saved = readRuntimeUpdate(o.stateDir); journal = saved === null ? "none" : runtimeUpdateTerminal(saved.phase) ? "terminal" : "active"; }
   catch { journal = "unreadable"; }
+  // An automatic update whose restore needs a person: told once.
+  if (saved?.phase === "needs-attention") {
+    const open = autoUpdateAttempts(store, 5)?.find(one => one.outcome === null && one.journalId === saved!.id);
+    if (open !== undefined) { try { notifyAutoUpdate(store, open, "needs-attention", o.now()); } catch { /* shown on Settings → Updates */ } }
+  }
   const decided = autoUpdateDecision({ policy, enablerStands: policy?.by != null && store.isInstanceOperator(policy.by), kind: o.kind, current: o.current.version, latest: o.latest,
     attempted: o.latest === null ? false : autoUpdateAttempted(store, o.latest), journal });
   if (!decided.go) return { held: decided.why };
@@ -306,7 +316,7 @@ export async function autoUpdatePass(store: Pick<Store, "handle" | "transact" | 
 }
 
 /** The console's automatic step after each update check: one pass at a time, never throwing into the check loop. */
-export function automaticUpdates(store: Pick<Store, "handle" | "transact" | "isInstanceOperator" | "recordAction">, o: Omit<AutoUpdatePassOptions, "latest">): (latest: string | null) => Promise<void> {
+export function automaticUpdates(store: AutoUpdateStore, o: Omit<AutoUpdatePassOptions, "latest">): (latest: string | null) => Promise<void> {
   let running = false;
   return async latest => {
     if (running) return;
@@ -315,4 +325,48 @@ export function automaticUpdates(store: Pick<Store, "handle" | "transact" | "isI
     catch { /* a closed store at shutdown, or a record that can't be read: nothing starts */ }
     finally { running = false; }
   };
+}
+
+// ---- what a person is told -----------------------------------------------------------------------------------------
+
+/** HH:MM on the computer running Toolroll. */
+const clockOf = (iso: string) => { const d = new Date(iso); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+/** A reason as one short sentence, without a trailing "Nothing was changed." the line already implies. */
+const reasonOf = (detail: string | null) => (detail ?? "it stopped").replace(/\s*Nothing (?:was )?changed[^.]*\.?\s*$/i, "").replace(/\.\s*$/, "").slice(0, 300) || "it stopped";
+export const whatsNewUrl = (version: string) => `${RELEASES_PAGE}v${version}`;
+
+/**
+ * The last automatic attempt in one line (Settings → Updates, the notice, `toolroll update --status`), truthfully: what
+ * runs now, and whether it will be tried again. `phase`: the update journal's phase while the attempt is open.
+ */
+export function autoUpdateLine(attempt: AutoUpdateAttempt, phase: string | null = null): { line: string; failed: boolean } {
+  const { version, from } = attempt;
+  const later = " It won't be tried again by itself; you can still update by hand.";
+  switch (attempt.outcome) {
+    case null: return phase === "needs-attention" ? { line: `The automatic update to ${version} needs attention: Toolroll couldn't put ${from} back on its own.`, failed: true }
+      : { line: `Updating to ${version} by itself.`, failed: false };
+    case "complete": return { line: `Updated to ${version} at ${clockOf(attempt.outcomeAt ?? attempt.reservedAt)}.`, failed: false };
+    case "restored": return { line: `Couldn't update to ${version}: ${reasonOf(attempt.detail)}. Still on ${from}; its database was put back from the backup.${later}`, failed: true };
+    case "refused": case "not-started": return { line: `Couldn't update to ${version}: ${reasonOf(attempt.detail)}. Still on ${from}.${later}`, failed: true };
+    case "cancelled": return { line: `The automatic update to ${version} was cancelled. Still on ${from}.`, failed: false };
+    case "rolled-back": return { line: `Updated to ${version}, then rolled back to ${from}.${later}`, failed: false };
+    case "unknown": return { line: `Couldn't tell how the automatic update to ${version} ended: ${reasonOf(attempt.detail)}.${later}`, failed: true };
+  }
+}
+
+/**
+ * Tell each instance operator, once per version and outcome (the outbox dedupes): updated, couldn't update, or a
+ * restore that needs attention. A person's own cancel or rollback needs no notice. Returns how many were queued.
+ */
+export function notifyAutoUpdate(store: Pick<Store, "accountFacts" | "isInstanceOperator" | "enqueueNotification">, attempt: AutoUpdateAttempt, phase: string | null, now: Date): number {
+  const told = attempt.outcome === null ? (phase === "needs-attention" ? "needs-attention" : null) : attempt.outcome === "cancelled" || attempt.outcome === "rolled-back" ? null : attempt.outcome;
+  if (told === null) return 0;
+  const { line } = autoUpdateLine(attempt, phase);
+  let queued = 0;
+  for (const recipient of store.accountFacts().map(one => one.name).filter(name => store.isInstanceOperator(name))) {
+    if (store.enqueueNotification({ dedupeKey: `auto-update:${attempt.version}:${told}:${recipient}`, kind: "auto-update", link: "/settings/updates", recipient, source: { installation: true },
+      ...(told === "complete" ? { subject: `${line.replace(/\.$/, "")} — what's new`, body: whatsNewUrl(attempt.version) }
+        : { subject: line, body: "Settings → Updates shows what happened.", pushClass: "attention" as const }) }, now)) queued++;
+  }
+  return queued;
 }

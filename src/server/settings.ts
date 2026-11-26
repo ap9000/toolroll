@@ -69,7 +69,7 @@ import { parseProtectedPaths } from "../approval-policy.js";
 import { approvalRulesHtml, releaseApprovalHtml } from "../approval-rules-ui.js";
 import { releaseApprovalSetting, setReleaseApproval } from "../release-auto.js";
 import { flexibleAvailable, flexibleSetting, setFlexibleSetting } from "../flexible-available.js";
-import { autoUpdatePolicy, cancelAutomaticUpdate, setAutoUpdatePolicy } from "../auto-update.js";
+import { autoUpdateAttempts, autoUpdateLine, autoUpdatePolicy, cancelAutomaticUpdate, setAutoUpdatePolicy, whatsNewUrl } from "../auto-update.js";
 import { flexibleSignInStatus, recheckFlexibleSignIn, removeFlexibleSignIn, saveFlexibleSignIn, setupTokenFromPaste, signInCheckWords, tidyFlexibleSignIns } from "../flexible-sign-in.js";
 import { passwordFreeOwner } from "../task-outcome-cli.js";
 import { realpathSync } from "node:fs";
@@ -178,7 +178,7 @@ import { checkTeamsCredentials,clearTeamsCredentials,loadTeamsCredentials,saveTe
 import { teamsSettingsHtml } from "../teams-settings.js";
 import { telegramSettingsHtml } from "../telegram-settings.js";
 import { hashPairingCode,loadBotToken,mintPairingCode,PAIRING_TTL_MS,redactToken,saveBotToken,TOKEN_ENV } from "../telegram.js";
-import { newerThan,updatesHtml,updatesScript,updateStepsHtml } from "../toolroll-update-ui.js";
+import { newerThan,updatesHtml,updatesScript,updateStepsHtml,type UpdatesView } from "../toolroll-update-ui.js";
 import { abandonRuntimeUpdate,currentRuntime,launchRuntimeUpdate,markWhatsNewSeen,prepareRuntimeUpdate,requestRuntimeUpdateCancel,runningWorkWords,runtimeUpdateStatus,runtimeUpdateTerminal,type When } from "../toolroll-update.js";
 import { TOOLS_PROJECT_SCRIPT,toolsHtml,toolsProjectPicker } from "../tools-ui.js";
 import { effectivePrimary,isMessagingChannel,savePrimary } from "../webhooks.js";
@@ -512,7 +512,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const known = lastChecks.known<{ version: string } | { problem: string }>("release")?.value ?? null;
     const method = options.updates?.method ?? installMethod();
     // Update automatically: only where `toolroll update` manages the install (other installs keep the notice).
-    const auto = method.kind === "managed" ? { policy: autoUpdatePolicy(store) } : undefined;
+    const auto = method.kind === "managed" ? updatesAutoView(status.journal, checksOff) : undefined;
     const view = { current, latest: active ? { version: current } : known ?? (checksOff ? { off: true as const } : { pending: true as const }), method, journal: status.journal, running: status.running, whatsNew: status.whatsNew, rollbackTo: status.lastUpdate?.to === current ? status.lastUpdate.from : null, csrf: who.session.csrf, ...(auto === undefined ? {} : { auto }) };
     return sendScreen(response, 200, screen("Updates", settingsSubPage("system", "Updates", html`${(updatesHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`),
       { chrome: chromeFor(project, "settings"), ...(active ? { functional: { script: updatesScript(), fetches: true } } : {}) }));
@@ -3440,6 +3440,15 @@ ${postForm("/settings/chat-approval/save", html`\
     const databaseFile = store.databaseFile();
     const cancelled = databaseFile === null ? null : cancelAutomaticUpdate(store, dirname(databaseFile), now);
     return back("said", cancelled === null ? "Automatic updates are off." : `Automatic updates are off. ${cancelled}`);
+  }
+  /** Settings → Updates → Update automatically, as saved: the switch, the last attempt in one line, and what holds it. */
+  function updatesAutoView(journal: { id: string; phase: string } | null, checksOff: boolean): NonNullable<UpdatesView["auto"]> {
+    const policy = autoUpdatePolicy(store);
+    const attempt = autoUpdateAttempts(store, 1)?.[0] ?? null;
+    const words = attempt === null ? null : autoUpdateLine(attempt, attempt.outcome === null && journal?.id === attempt.journalId ? journal.phase : null);
+    const held = policy?.on !== true ? null : policy.by !== null && !store.isInstanceOperator(policy.by) ? `Paused: ${policy.by}, who turned this on, can no longer manage this installation. Turn it on again to resume.`
+      : checksOff ? "Update checks are off, so no new release is seen. Turn on Check once a day in Settings → System." : null;
+    return { policy, held, last: words === null ? null : { ...words, whatsNew: attempt!.outcome === "complete" ? whatsNewUrl(attempt!.version) : null } };
   }
   return { registrations, modelsView };
 }

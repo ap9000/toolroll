@@ -29,7 +29,11 @@ export type UpdatesView = {
   csrf: string;
   /** "Update automatically" (auto-update.ts), shown on installs `toolroll update` manages: the saved switch, or null
    * when it can't be read. Absent elsewhere: other installs update through their package manager or app. */
-  auto?: { policy: { on: boolean; by: string | null } | null };
+  auto?: { policy: { on: boolean; by: string | null } | null;
+    /** The last automatic attempt in one line (auto-update.ts autoUpdateLine), with its release notes once it installed. */
+    last?: { line: string; failed: boolean; whatsNew: string | null } | null;
+    /** Why it can't install anything right now although it is on, in words; null when nothing holds it. */
+    held?: string | null };
 };
 
 /** What turning automatic updates on does, in one line (Settings → Updates). */
@@ -40,8 +44,11 @@ function autoHtml(auto: NonNullable<UpdatesView["auto"]>): Html {
   const policy = auto.policy;
   if (policy === null) return settingsSection({ id: "update-auto", title: "Update automatically", body: notice("The automatic updates setting can’t be read, so nothing updates by itself.") });
   const on = policy.on;
+  const last = auto.last ?? null;
+  const lastLine = last === null ? "" : html`<p class="k-note" data-update-auto-last${last.failed ? html` role="status"` : ""}>${last.line}${
+    last.whatsNew === null ? "" : html` <a class="k-link" href="${last.whatsNew}" rel="noreferrer">What’s new</a>`}</p>`;
   return settingsSection({ id: "update-auto", title: "Update automatically", state: on ? " · on" : " · off",
-    body: html`<div data-update-auto="${on ? "on" : "off"}">${joinHtml([note(AUTO_UPDATE_WORDS),
+    body: html`<div data-update-auto="${on ? "on" : "off"}">${joinHtml([note(AUTO_UPDATE_WORDS), on && auto.held ? notice(auto.held) : "", lastLine,
       kitSectionForm({ proof: "updates-auto", action: "/settings/updates/auto", id: "updates-auto-form", native: true, hidden: { enabled: on ? "off" : "on" },
         save: { label: on ? "Turn off" : "Turn on", variant: "outline" }, confirm: on ? "Turn off automatic updates" : "Turn on automatic updates", body: html`` })])}</div>` });
 }

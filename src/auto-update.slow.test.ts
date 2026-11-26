@@ -15,6 +15,8 @@ import { addApprover } from "./scope.js";
 import { autoUpdateAttempts, autoUpdatePass, reconcileAutoUpdates, setAutoUpdatePolicy } from "./auto-update.js";
 import { prepareRuntimeUpdate, readRuntimeUpdate, resumeRuntimeUpdate, type UpdateSystem } from "./toolroll-update.js";
 import { failingHealth, fixture, provenance } from "../test/toolroll-update-kit.js";
+import { runUpdateCommand } from "./toolroll-update-cli.js";
+import { autoUpdatePolicy } from "./auto-update.js";
 
 type Fixture = ReturnType<typeof fixture>;
 /** The console's store with automatic updates turned on by alex. */
@@ -51,6 +53,11 @@ test("a newer release installs by itself through the verified, journaled update,
       ["toolroll updated", "complete", "automatic update (turned on by alex)"],
       ["toolroll automatic update", "complete", "automatic update (turned on by alex)"],
     ]);
+    // `toolroll update --status` reads the switch and the last attempt; it changes nothing.
+    const lines: string[] = [];
+    expect(await runUpdateCommand(["--status"], line => lines.push(line), { databaseFile: f.databaseFile })).toBe(0);
+    expect(lines.slice(1)).toEqual(["Automatic updates: on (turned on by alex). Change it in Settings → Updates.", expect.stringMatching(/^Last automatic update: Updated to 0\.7\.0 at \d\d:\d\d\.$/)]);
+    expect(autoUpdatePolicy(store)).toMatchObject({ on: true, revision: 1 });
   } finally { store.close(); f.close(); }
 });
 
