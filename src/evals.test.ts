@@ -328,7 +328,7 @@ describe("a campaign", () => {
 
   test("a runner's pid held by a process that started at another time isn't the runner (PR #263 review)", () => {
     const started = processStartOf(process.pid);
-    expect(started).toMatch(/^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/);
+    expect(started).toMatch(/^(?:proc:[0-9a-f-]{36}:\d+|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z)$/);
     // This test's own process stands in for a later process that reuses the runner's pid: same number, another start.
     const reused = admit({ canonical: true, runner: { host: "this-mac", pid: process.pid, started: "Thu Jan 1 00:00:00 2015" } });
     if (!reused.ok) throw new Error(reused.message);
@@ -337,6 +337,12 @@ describe("a campaign", () => {
     const live = admit({ canonical: true, runner: { host: "this-mac", pid: process.pid, started } });
     if (!live.ok) throw new Error(live.message);
     expect(recoverEvalCampaigns(store, NOW, { host: "this-mac" })).toEqual([{ id: live.id, recovered: false, why: "its runner is still running" }]);
+    // A record from before identities were tagged (ps's raw words, UTC) still matches its live process.
+    if (!started!.startsWith("proc:")) {
+      const legacy = new Date(started!).toUTCString().replace(/^(\w{3}), (\d{2}) (\w{3}) (\d{4}) ([\d:]{8}) GMT$/, (_all, day: string, date: string, month: string, year: string, time: string) => `${day} ${month} ${Number(date)} ${time} ${year}`);
+      store.handle.prepare("UPDATE eval_campaign SET runner_started = ? WHERE id = ?").run(legacy, live.id);
+      expect(recoverEvalCampaigns(store, NOW, { host: "this-mac" })).toEqual([{ id: live.id, recovered: false, why: "its runner is still running" }]);
+    }
     // No start recorded: a held pid can't be told apart, so it is left running (a person abandons it).
     store.handle.prepare("UPDATE eval_campaign SET runner_started = NULL WHERE id = ?").run(live.id);
     expect(recoverEvalCampaigns(store, NOW, { host: "this-mac" })[0]).toMatchObject({ recovered: false });

@@ -5,7 +5,8 @@
  * when this installation's console is already running and PROVES it is (console-instance.ts: a fresh challenge on the
  * discovery socket and on its HTTP listener, answered with the secret in the database this CLI opened itself) —
  * adds the repository through the ordinary project admission and opens that proved console. Under an agent, or with
- * --json, it starts nothing and changes nothing: it says what it would do. Outside a repository, it scans as before
+ * --json, it starts nothing and changes nothing: it says what it would do. Without a terminal it never sets up a new
+ * installation (that is the terminal's easy start, or an explicit `toolroll up`): it says so and makes nothing. Outside a repository, it scans as before
  * (the scan is also `toolroll scan`).
  */
 import { lstatSync, realpathSync } from "node:fs";
@@ -28,6 +29,9 @@ export type QuickStartSeams = {
   admit: (repo: string) => Promise<number>;
   /** `up`, for this repository. */
   startUp: () => Promise<number>;
+  /** Whether this installation was ever set up (an account or local mode, easy-start.ts localModeRead "on"/"off"). A
+   * run without a terminal never sets one up: it would make a password install every later terminal start inherits. */
+  setUp?: () => boolean | Promise<boolean>;
   openBrowser: (url: string) => void | Promise<void>;
   terminal: boolean;
   attach?: AttachSeams;
@@ -108,7 +112,14 @@ export async function runQuickStart(argv: readonly string[], write: (line: strin
     write(`Toolroll can't attach: ${proof.message}.`);
     return EXIT.refused;
   }
-  if (!proof.ok) return seams.startUp();
+  if (!proof.ok) {
+    // Without a terminal, nothing is set up: no database, no account, no password (an explicit `toolroll up` still is).
+    if (seams.setUp !== undefined && !(await seams.setUp())) {
+      write(`Toolroll isn't set up on this computer yet. Run \`toolroll\` in a terminal to set it up without a password, or \`toolroll up\` to start it with one.`);
+      return EXIT.refused;
+    }
+    return seams.startUp();
+  }
 
   if (!enrolled) {
     const admitted = await seams.admit(repo);

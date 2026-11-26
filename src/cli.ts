@@ -500,6 +500,7 @@ async function dispatch(
       enrolled: async repo => { const loaded = await loadRepos(registryBeside(databaseFile)); return !("error" in loaded) && loaded.repos.includes(repo); },
       admit: repo => runReposCommand(["add", repo], write, mainOptions.onboard),
       startUp: () => runOperate("up", [], write, mainOptions.operate ?? {}),
+      setUp: async () => { const mode = (await import("./easy-start.js")).localModeRead(databaseFile); return mode === "on" || mode === "off"; },
       openBrowser: async url => { (await import("./operate.js")).openBrowser(url); },
       ...mainOptions.quickStart,
     });
@@ -1848,8 +1849,7 @@ async function runRemoteTuiCommand(argv: readonly string[], write: Write, connec
   const origin = profile.origin;
   const openUrl = async (path: string): Promise<string> => {
     const target = new URL(path, origin).href;
-    (await import("./operate.js")).openBrowser(target);
-    return `Opened ${target} in your browser.`;
+    return (await import("./operate.js")).openBrowser(target) ? `Opened ${target} in your browser.` : `Open ${target} in a browser.`;
   };
   const ended = await runTuiBinary({
     binary: chosen.binary,

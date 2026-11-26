@@ -38,6 +38,7 @@ import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { ExecResult, RunOptions } from "./exec.js";
 import type { Store } from "./store.js";
+import { trustRepair, type TrustRepair } from "./trust-repair.js";
 import { boundedAcl, trustedBinary, trustedFolders, type AclReader } from "./trusted-path.js";
 
 /** How long a status command may take, every check before it included. */
@@ -379,4 +380,35 @@ export function statusProbe(options: StatusProbeOptions = {}): (file: string, ar
       rmSync(cwd, { recursive: true, force: true });
     }
   };
+}
+
+/**
+ * Why the first match for `binary` on this PATH isn't run for its sign-in check, with the repair (trust-repair.ts): its
+ * PATH folder, its real file, a launcher's package folder and its interpreter, each canonical path that fails, one
+ * command per path (never a recursive one: it is another program's install). Null when it is trusted or isn't there.
+ * The check itself is resolveLaunch's, unchanged.
+ */
+export function statusBinaryDiagnosis(binary: string, trust: StatusTrust): { why: string; repair: TrustRepair | null } | null {
+  const found = resolveLaunch(binary, trust);
+  if (found.ok || found.missing) return null;
+  const firstMatch = (name: string): { folder: string; file: string } | null => {
+    for (const entry of trust.path.split(delimiter)) {
+      if (entry === "" || !isAbsolute(entry)) continue;
+      try { accessSync(join(entry, name), constants.X_OK); return { folder: entry, file: join(entry, name) }; } catch { /* next */ }
+    }
+    return null;
+  };
+  const paths: string[] = [];
+  const first = firstMatch(binary);
+  if (first !== null) {
+    paths.push(first.folder, first.file);
+    const real = realOrNull(first.file);
+    if (real !== null && isScript(real)) {
+      paths.push(packageFolderOf(real));
+      const bang = shebangOf(real);
+      const interpreter = bang === null ? null : bang.kind === "absolute" ? { folder: dirname(bang.path), file: bang.path } : firstMatch(bang.name);
+      if (interpreter !== null) paths.push(interpreter.folder, interpreter.file);
+    }
+  }
+  return { why: found.why, repair: trust.uid === undefined || paths.length === 0 ? null : trustRepair(paths, { owners: [trust.uid, 0], stickyAbove: true }) };
 }

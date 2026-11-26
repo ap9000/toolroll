@@ -5,12 +5,12 @@
 | Platform | Native terminal workbench | Sandbox requirements | Node / git minimum |
 |---|---|---|---|
 | macOS | Yes | Built-in Seatbelt (`sandbox-exec`); agent sandbox support | Node 22.20+, git 2.41+ |
-| Linux | Yes | `bubblewrap`, `socat`, `ripgrep`; working user namespaces (see [Linux](linux.md)) | Node 22.20+, git 2.41+ |
-| Windows | No native workbench; use WSL or `npx toolroll up` for the browser | No default agent fence: builds refuse to start; use WSL for confined builds | Node 22.20+, git 2.41+ |
+| Linux, 64-bit (x86_64, aarch64) | Yes | `bubblewrap`, `socat`, `ripgrep`, `bash`, `which`; working user namespaces (see [Linux](linux.md)). 32-bit Linux (armv7, a 32-bit Raspberry Pi OS) isn't supported | Node 22.20+, git 2.41+ |
+| Windows | Not supported: Toolroll can't run agents in a sandbox on Windows itself. Use WSL 2 | | |
 | WSL | Linux workbench | Same Linux tools and kernel sandbox requirements | Node 22.20+, git 2.41+ |
 
 Sign in to Claude Code (`claude`) or Codex (`codex`) on the builder.
-On Linux/WSL: `sudo apt update && sudo apt install bubblewrap socat ripgrep`.
+On Linux/WSL: `sudo apt update && sudo apt install bubblewrap socat ripgrep bash debianutils` (Fedora, Arch, Alpine, openSUSE: [Linux](linux.md#install-the-sandbox-tools)).
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ap9000/toolroll/main/install.sh | sh

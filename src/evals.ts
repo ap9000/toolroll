@@ -22,6 +22,7 @@
  *
  * Result-writing authority is this module's alone: a world never gets a handle on the plane's database.
  */
+import { identityProvider, lstartToIso, processIdentity } from "./process-identity.js";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, realpathSync, rmSync, writeSync } from "node:fs";
@@ -793,39 +794,37 @@ export function recoverEvalCampaigns(store: Store, now: Date, options: { host?: 
   return out;
 }
 
-/** A process's start time as the system reports it (`ps -o lstart`, whole seconds, in UTC and the C locale), or null
- * when it can't be read: the identity a saved pid is compared by, so a later process that reuses the number is never
- * taken for the one recorded. */
+/** A process's identity (process-identity.ts: `proc:<boot id>:<start ticks>` on Linux, else ps's start as an ISO
+ * second), or null when it can't be read: what a saved pid is compared by, so a later process that reuses the number is
+ * never taken for the one recorded. */
 export function processStartOf(pid: number): string | null {
-  if (process.platform === "win32" || !Number.isSafeInteger(pid) || pid <= 0) return null;
-  try {
-    const raw = execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
-      encoding: "utf8", env: { PATH: "/usr/bin:/bin", LC_ALL: "C", TZ: "UTC" }, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 1024, timeout: 2_000, killSignal: "SIGKILL",
-    }).trim().replace(/ +/g, " ");
-    return /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/.test(raw) ? raw : null;
-  } catch { return null; }
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  return processIdentity(pid);
 }
 
 /** Whether a campaign's runner may still be running (PR #263 review): its pid is held, and by the same process — its
- * start time, where one was recorded, matches. A pid now held by a process that started at another time is someone
- * else's. A start that can't be read now counts as alive (a person ends such a campaign: `evals recover --abandon`). */
+ * identity, where one was recorded, matches when read by the same provider. A pid now held by a process that started at
+ * another time is someone else's. An identity that can't be read now, or of a format this build doesn't know, counts as
+ * alive (a person ends such a campaign: `evals recover --abandon`). */
 export function runnerMayBeAlive(pid: number, started: string | null): boolean {
   if (!processMayBeAlive(pid, false)) return false;
-  const was = started === null ? null : startMs(started);
-  const now = processStartOf(pid);
-  const is = now === null ? null : startMs(now);
-  // Within two seconds is the same process: a system that derives the start from its boot time can shift it by a
-  // second, and a pid can't be reused while the process holding it lives.
+  if (started === null) return true;
+  const provider = identityProvider(started);
+  if (provider === null) return true;
+  const now = processIdentity(pid, provider);
+  if (now === null) return true;
+  if (provider === "proc") return now === started;
+  // ps: within two seconds is the same process (records from before the tag hold ps's raw words, in UTC): a system that
+  // derives the start from its boot time can shift it by a second, and a pid can't be reused while its process lives.
+  const was = startMs(started), is = startMs(now);
   return was === null || is === null || Math.abs(is - was) <= 2_000;
 }
 
-/** A `ps -o lstart` reading (UTC, C locale) as epoch milliseconds, or null when it isn't one exactly. */
+/** A ps start (an ISO second, or `ps -o lstart` words in UTC and the C locale) as epoch milliseconds, or null. */
 function startMs(raw: string): number | null {
-  const match = /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d{1,2}) (\d{2}:\d{2}:\d{2}) (\d{4})$/.exec(raw);
-  if (match === null) return null;
-  const utc = `${match[1]}, ${match[3]!.padStart(2, "0")} ${match[2]} ${match[5]} ${match[4]} GMT`;
-  const ms = Date.parse(utc);
-  return Number.isFinite(ms) && new Date(ms).toUTCString() === utc ? ms : null;
+  const iso = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(raw) ? raw : lstartToIso(raw);
+  const ms = iso === null ? NaN : Date.parse(iso);
+  return Number.isFinite(ms) ? ms : null;
 }
 
 /**

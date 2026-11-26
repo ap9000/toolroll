@@ -24,8 +24,9 @@ import { envelopeJson } from "./envelope.js";
 import { GIT_FLOOR_WORDS, installedGitFloorProblem } from "./git-floor.js";
 import { run as runCommand } from "./exec.js";
 import { OWN_KEY_ENV } from "./keys.js";
+import { processIdentityProblem } from "./process-identity.js";
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
-import { SANDBOX_RUNTIME, sandboxRuntimeProblem, sandboxRuntimeWords } from "./sandbox-runtime.js";
+import { SANDBOX_RUNTIME, sandboxAdviceLines, sandboxRuntimeDiagnosis, sandboxRuntimeWords, UNCONFINED_OPT_IN } from "./sandbox-runtime.js";
 
 /** Something that holds a credential a build could read, by name only, and what the owner does about it. */
 export type DoctorFinding = { where: string; names: string[]; steps: string[] };
@@ -34,9 +35,14 @@ export type DoctorUnreadable = { where: string; problem: string; steps: string[]
 export type DoctorReport = { ok: boolean; checked: string[]; findings: DoctorFinding[]; unreadable: DoctorUnreadable[]; notes: string[];
   /** The sandbox every build runs in (sandbox-runtime.ts): Anthropic's sandbox-runtime, its version, and why it can't
    * sandbox here (null when it can). */
-  sandbox?: { engine: string; version: string; problem: string | null };
+  sandbox?: { engine: string; version: string; problem: string | null; kind?: string; repair?: string[] };
+  /** Agent installs Toolroll won't run for their sign-in check (a trust failure), each with its repair in words. */
+  agents?: { name: string; problem: string }[];
   /** The installed git against Toolroll's floor (git-floor.ts): null when it is new enough (or unreadable). */
-  git?: { floor: string; problem: string | null } };
+  git?: { floor: string; problem: string | null };
+  /** Whether this system can tell a process from a later one with its id (process-identity.ts): `up` won't start
+   * without it. Null when it can. */
+  processIdentity?: { problem: string | null } };
 
 export type DoctorDeps = {
   platform?: NodeJS.Platform;
@@ -50,7 +56,27 @@ export type DoctorDeps = {
   env?: NodeJS.ProcessEnv;
   /** The installed git's floor problem (a test's stand-in for git-floor.ts installedGitFloorProblem). */
   gitFloorProblem?: string | null;
+  /** Agent installs that fail their trust check (a test's stand-in; by default status-probe.ts statusBinaryDiagnosis
+   * over this doctor's PATH). */
+  agentProblems?: () => Promise<{ name: string; problem: string }[]>;
+  /** A test's stand-in for process-identity.ts processIdentityProblem. */
+  processIdentityProblem?: string | null;
 };
+
+/** Claude Code's and Codex's installs on `env`'s PATH that Toolroll won't run for their sign-in check, with the repair. */
+async function agentTrustProblems(env: NodeJS.ProcessEnv, uid: number): Promise<{ name: string; problem: string }[]> {
+  const { excludedFolders, statusBinaryDiagnosis } = await import("./status-probe.js");
+  const { agentTrustWords } = await import("./agent-detect.js");
+  const { platformAcl } = await import("./trusted-path.js");
+  const untrusted = await excludedFolders({}) ?? [];
+  const path = (env["PATH"] ?? "").split(":").filter(one => one.startsWith("/")).join(":");
+  const found: { name: string; problem: string }[] = [];
+  for (const [binary, name] of [["claude", "Claude Code"], ["codex", "Codex"]] as const) {
+    const words = agentTrustWords(statusBinaryDiagnosis(binary, { path, uid, untrusted, acl: platformAcl() }));
+    if (words !== null) found.push({ name, problem: words });
+  }
+  return found;
+}
 
 /** Names that say they hold a credential. */
 const CREDENTIAL_NAME = /(?:^|_)(?:API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|SECRET|SECRET_?KEY|TOKEN|AUTH_?TOKEN|PASSWORD|PASSWD|CREDENTIALS?|PAT)(?:_|$)/i;
@@ -381,6 +407,7 @@ export async function auditServiceEnvironment(deps: DoctorDeps = {}): Promise<Do
 export function doctorLines(report: DoctorReport): string[] {
   const lines: string[] = [];
   if (report.git?.problem != null) lines.push(`Git: ${report.git.problem}`, "");
+  if (report.processIdentity?.problem != null) lines.push(`Processes: ${report.processIdentity.problem}. Toolroll's worker won't start until it can.`, "");
   if (report.findings.length === 0 && report.unreadable.length === 0) lines.push("No secrets found in Toolroll's service. A build can't read a key from it.");
   else if (report.findings.length > 0) lines.push(`Toolroll's service holds ${report.findings.length === 1 ? "a secret" : "secrets"} a build could read. Nothing was changed; follow these steps.`);
   else lines.push("Toolroll couldn't check everything, so it can't say the service is clean. Nothing was changed.");
@@ -393,7 +420,10 @@ export function doctorLines(report: DoctorReport): string[] {
     gap.steps.forEach((step, index) => lines.push(`  ${index + 1}. ${step}`));
   }
   for (const note of report.notes) lines.push("", `Note: ${note}`);
-  if (report.sandbox !== undefined) lines.push("", `Sandbox: ${sandboxRuntimeWords()}${report.sandbox.problem === null ? ", working here." : `, not available here: ${report.sandbox.problem}. Builds don't start unless an instance operator allows unconfined agents.`}`);
+  const optIn = report.sandbox?.repair?.includes(UNCONFINED_OPT_IN) === true;
+  if (report.sandbox !== undefined) lines.push("", `Sandbox: ${sandboxRuntimeWords()}${report.sandbox.problem === null ? ", working here." : `, not available here: ${report.sandbox.problem}. Builds don't start ${optIn ? "here." : "unless an instance operator allows unconfined agents."}`}`);
+  if (report.sandbox?.repair !== undefined && report.sandbox.repair.length > 0) lines.push(...report.sandbox.repair, ...report.sandbox.kind === "trust" ? ["Then run `toolroll doctor` again."] : []);
+  for (const agent of report.agents ?? []) lines.push("", `${agent.name}: ${agent.problem}`);
   if (report.checked.length > 0) lines.push("", "Checked:", ...report.checked.map(one => `  ${one}`));
   return lines;
 }
@@ -409,10 +439,14 @@ export async function runDoctorCommand(argv: readonly string[], write: (line: st
     return 2;
   }
   const report = await auditServiceEnvironment(deps);
-  report.sandbox = { engine: SANDBOX_RUNTIME.name, version: SANDBOX_RUNTIME.version, problem: sandboxRuntimeProblem() };
+  const diagnosis = sandboxRuntimeDiagnosis();
+  report.sandbox = { engine: SANDBOX_RUNTIME.name, version: SANDBOX_RUNTIME.version, problem: diagnosis.ok ? null : diagnosis.why, ...(diagnosis.ok ? {} : { kind: diagnosis.kind, repair: sandboxAdviceLines(diagnosis) }) };
+  report.agents = await (deps.agentProblems ?? (() => agentTrustProblems(deps.env ?? process.env, deps.uid ?? process.getuid?.() ?? -1)))();
   // A git older than the floor: named here too, and the console and worker won't start on it.
   report.git = { floor: GIT_FLOOR_WORDS, problem: deps.gitFloorProblem === undefined ? installedGitFloorProblem() : deps.gitFloorProblem };
   if (report.git.problem !== null) report.ok = false;
+  report.processIdentity = { problem: deps.processIdentityProblem === undefined ? processIdentityProblem() : deps.processIdentityProblem };
+  if (report.processIdentity.problem !== null) report.ok = false;
   if (json) write(envelopeJson({ command: "doctor", ...report }));
   else for (const line of doctorLines(report)) write(line);
   return report.ok ? 0 : 1;

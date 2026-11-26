@@ -11,9 +11,10 @@
  * `RLIMIT_FSIZE` applies to every POSIX spawn. The whole group is killed with SIGKILL on any limit, and again when the
  * root exits, so nothing the root started outlives it.
  */
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { lstatSync, readdirSync, rmSync } from "node:fs";
 import { join, relative, isAbsolute } from "node:path";
+import { processGroupId, processGroupRss, processIdentity, sameProcess } from "./process-identity.js";
 import { createContainer, effectiveContainment, probeContainmentCapability, type Container, type EffectiveContainment } from "./containment.js";
 
 export type BoundedStart = { pid: number; pgid: number; startedAt: string | null };
@@ -55,30 +56,15 @@ const preferred = (): EffectiveContainment => containment ??= effectiveContainme
 /** Tests: forget the probed machine. */
 export function resetBoundedContainmentForTests(): void { containment = null; }
 
-/** A process's own start time, as `ps` reports it: what tells a live process from a reused pid. */
+/** A process's identity (process-identity.ts: `proc:<boot id>:<start ticks>` on Linux, else ps's start as an ISO
+ * second): what tells a live process from a reused pid. Null when it can't be read. */
 export function processStartedAt(pid: number): string | null {
-  if (process.platform === "win32") return null;
-  try { return execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", timeout: 2_000, stdio: ["ignore", "pipe", "ignore"] }).trim() || null; }
-  catch { return null; }
-}
-function processGroupOf(pid: number): number | null {
-  if (process.platform === "win32") return null;
-  try { const group = Number(execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8", timeout: 2_000, stdio: ["ignore", "pipe", "ignore"] }).trim()); return Number.isInteger(group) && group > 1 ? group : null; }
-  catch { return null; }
+  return processIdentity(pid);
 }
 
+/** The group's resident memory (process-identity.ts processGroupRss), read off the event loop's hot path. */
 function groupRss(pgid: number): Promise<number | null> {
-  return new Promise(done => {
-    execFile("ps", ["-A", "-o", "pgid=,rss="], { encoding: "utf8", timeout: 2_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
-      if (error !== null) { done(null); return; }
-      let kilobytes = 0;
-      for (const line of stdout.split("\n")) {
-        const [group, rss] = line.trim().split(/\s+/);
-        if (Number(group) === pgid) kilobytes += Number(rss) || 0;
-      }
-      done(kilobytes * 1024);
-    });
-  });
+  return Promise.resolve().then(() => processGroupRss(pgid));
 }
 
 /** The folder's total size, without following a link. */
@@ -179,7 +165,10 @@ export type SpawnRecord = { pid: number | null; pgid: number | null; startedAt: 
  */
 export function cleanupLeftover(record: SpawnRecord, root: string): { killed: boolean; removed: boolean } {
   let killed = false, removed = false;
-  if (record.pid !== null && record.pgid !== null && record.startedAt !== null && processStartedAt(record.pid) === record.startedAt && processGroupOf(record.pid) === record.pgid) {
+  // Killed only when the leader is proved the recorded process by its identity's own provider; unknown is never a kill.
+  // (A record from before identities were tagged holds ps's local-time lstart, which reads as another process: not
+  // killed, as unknown; on Linux the cgroup janitor ends it.)
+  if (record.pid !== null && record.pgid !== null && record.startedAt !== null && sameProcess(record.pid, record.startedAt) === "same" && processGroupId(record.pid) === record.pgid) {
     killGroup(record.pgid);
     killed = true;
   }

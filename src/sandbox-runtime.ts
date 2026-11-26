@@ -21,7 +21,10 @@ import { fileURLToPath } from "node:url";
 import { wrapCommandWithSandboxMacOS } from "@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js";
 import { checkLinuxDependencies, getLinuxDependencyStatus } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 import type { FsReadRestrictionConfig, FsWriteRestrictionConfig } from "@anthropic-ai/sandbox-runtime";
-import { linuxSandboxTools, sandboxToolExclusions, type LinuxSandboxTools, type LinuxSandboxToolsVerdict, type ToolExclusions } from "./sandbox-tools.js";
+import { linuxSandboxTools, sandboxToolExclusions, sandboxToolsRepair, type LinuxSandboxTools, type LinuxSandboxToolsVerdict, type ToolExclusions } from "./sandbox-tools.js";
+import { trustRepairLines } from "./trust-repair.js";
+import { shownText } from "./shown-text.js";
+import { installLine, packageSystem, type PackageSystem } from "./linux-packages.js";
 
 const require = createRequire(import.meta.url);
 
@@ -61,43 +64,171 @@ const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
  * still can, so it proves nothing). */
 export const SEATBELT_PROBE = "(version 1)(deny default)(allow process-exec)(allow process-fork)(allow file-read*)(allow sysctl-read)(allow mach-lookup)";
 
+/**
+ * Why the runtime can't sandbox here, as a kind: a program missing, one that fails its trust check, a processor the
+ * runtime ships no helper for, a probe that couldn't start or didn't finish, or a sandbox the system denied. A denial
+ * never names a cause: a setting this machine shows (a sysctl a container may expose from its host, while its own
+ * seccomp profile is what denies; or a profile may allow bubblewrap anyway) is context, listed with what an
+ * administrator could change if it is the cause. `detail`:
+ * the probe's own words, bounded.
+ */
+export type SandboxDiagnosis = { ok: true } | { ok: false; kind: "unsupported-platform" | "missing-tool" | "trust" | "unsupported-arch" | "launch-error" | "timeout" | "sandbox-denied"; why: string; detail?: string; context?: SandboxSetting[] };
+/** A setting this machine lets Toolroll read that can deny user namespaces: context, never the stated cause. */
+export type SandboxSetting = { words: string; fix: string };
+
+/** What the probe reads besides running bubblewrap (a test's stand-in). */
+export type SandboxIo = { read?: (file: string) => string; exists?: (file: string) => boolean };
+
+const DETAIL_MAX = 300;
+/** A probe's output, kept short and on one line (it may carry anything: never more than this). */
+const bounded = (text: string): string => shownText(text.trim()).slice(0, DETAIL_MAX);
+
 /** Why the runtime can't sandbox here, or null when it can (checked before every launch; nothing runs bare). */
 export function sandboxRuntimeProblem(platform: NodeJS.Platform = process.platform): string | null {
+  const diagnosis = sandboxRuntimeDiagnosis(platform);
+  return diagnosis.ok ? null : diagnosis.why;
+}
+
+/** sandboxRuntimeProblem, as a kind with its evidence (see SandboxDiagnosis). Its reason names paths someone else may
+ * have chosen: shown escaped (shown-text.ts), so a name can't forge a line. */
+export function sandboxRuntimeDiagnosis(platform: NodeJS.Platform = process.platform, io: SandboxIo = {}): SandboxDiagnosis {
+  const found = diagnose(platform, io);
+  return found.ok ? found : { ...found, why: shownText(found.why) };
+}
+
+function diagnose(platform: NodeJS.Platform, io: SandboxIo): SandboxDiagnosis {
   if (platform === "darwin") {
-    if (!existsSync(SANDBOX_EXEC)) return "this Mac has no sandbox-exec";
-    const probe = spawnSync(SANDBOX_EXEC, ["-p", SEATBELT_PROBE, "/usr/bin/true"], { timeout: 5_000, stdio: "ignore" });
-    return probe.status === 0 ? null : "sandbox-exec can't start a sandbox here (is this already inside one?)";
+    if (!existsSync(SANDBOX_EXEC)) return { ok: false, kind: "missing-tool", why: "this Mac has no sandbox-exec" };
+    const probe = spawnSync(SANDBOX_EXEC, ["-p", SEATBELT_PROBE, "/usr/bin/true"], { timeout: 5_000, stdio: ["ignore", "ignore", "pipe"], encoding: "utf8" });
+    return probe.status === 0 ? { ok: true } : { ok: false, kind: "sandbox-denied", why: "sandbox-exec can't start a sandbox here (is this already inside one?)", detail: bounded(probe.stderr ?? "") };
   }
   if (platform === "linux") {
     // The programs it needs, named with the line that installs them (LINUX_SANDBOX_TOOLS), before anything else.
     const missing = missingLinuxSandboxTools();
-    if (missing.length > 0) return `${toolWords(missing)} ${missing.length === 1 ? "is" : "are"} not installed (${linuxSandboxInstallLine(missing)})`;
+    if (missing.length > 0) return { ok: false, kind: "missing-tool", why: `${toolWords(missing)} ${missing.length === 1 ? "is" : "are"} not installed (${linuxSandboxInstallLine(missing)})` };
     // Each program the sandbox runs, by a path Toolroll trusts (never a PATH lookup): none, and no sandbox starts.
     const resolved = linuxSandboxTools();
-    if (!resolved.ok) return resolved.why;
+    if (!resolved.ok) {
+      const kind = resolved.failure === "unsupported-arch" ? "unsupported-arch" : resolved.failure === "missing" ? "missing-tool" : "trust";
+      return { ok: false, kind, why: resolved.why };
+    }
     const { tools } = resolved;
     const paths = { bwrapPath: tools.bwrap.real, socatPath: tools.socat.real, seccompConfig: { applyPath: tools.seccomp.real } };
     const checked = checkLinuxDependencies(paths);
-    if (checked.errors.length > 0) return checked.errors.join("; ");
-    if (!getLinuxDependencyStatus(paths).hasSeccompApply) return "the sandbox runtime's seccomp helper isn't available for this processor";
+    if (checked.errors.length > 0) return { ok: false, kind: "launch-error", why: checked.errors.join("; ") };
+    if (!getLinuxDependencyStatus(paths).hasSeccompApply) return { ok: false, kind: "unsupported-arch", why: "the sandbox runtime's seccomp helper isn't available for this processor" };
     // The runtime finds nested protected names (a subfolder's .git/hooks, .vscode, shell profiles) with ripgrep.
-    if (spawnSync(tools.rg.real, ["--version"], { timeout: 5_000, stdio: "ignore" }).status !== 0) return `ripgrep (${tools.rg.real}) doesn't run`;
-    const probe = spawnSync(tools.bwrap.real, ["--ro-bind", "/", "/", "--unshare-pid", "--unshare-user", "--proc", "/proc", "--new-session", "--", "true"], { timeout: 5_000, stdio: "ignore" });
-    return probe.status === 0 ? null : "bubblewrap can't start a sandbox here (unprivileged user namespaces may be off)";
+    if (spawnSync(tools.rg.real, ["--version"], { timeout: 5_000, stdio: "ignore" }).status !== 0) return { ok: false, kind: "launch-error", why: `ripgrep (${tools.rg.real}) doesn't run` };
+    // The probe runs as this user, with Toolroll's own checked bubblewrap: what a launch needs (a user and pid namespace).
+    const probe = spawnSync(tools.bwrap.real, ["--ro-bind", "/", "/", "--unshare-pid", "--unshare-user", "--proc", "/proc", "--new-session", "--", "true"], { timeout: 5_000, stdio: ["ignore", "ignore", "pipe"], encoding: "utf8", maxBuffer: 64 * 1024 });
+    if (probe.status === 0) return { ok: true };
+    const detail = bounded(probe.stderr ?? "");
+    const code = (probe.error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ETIMEDOUT") return { ok: false, kind: "timeout", why: "bubblewrap didn't finish starting a sandbox in time", detail };
+    if (probe.error !== undefined) return { ok: false, kind: "launch-error", why: `bubblewrap (${tools.bwrap.real}) couldn't be started (${code ?? "error"})`, detail };
+    return deniedDiagnosis(detail, io);
   }
-  return `the sandbox runtime has no sandbox for ${platform}`;
+  return { ok: false, kind: "unsupported-platform", why: `the sandbox runtime has no sandbox for ${platform}` };
+}
+
+/** A user namespace the system denied: the cause unknown, whatever settings it shows (listed as context). */
+export function deniedDiagnosis(detail: string, io: SandboxIo = {}): SandboxDiagnosis {
+  return { ok: false, kind: "sandbox-denied", context: userNamespaceSettings(io), detail,
+    why: "this system denied the user namespace the sandbox needs; the cause isn't visible from inside this machine" };
 }
 
 /**
- * The programs the Linux sandbox needs on PATH, each with the package that installs it (the same name in apt, dnf and
- * pacman). bubblewrap and socat are what the runtime's own check (checkLinuxDependencies) requires; ripgrep is how it
- * finds nested protected names. The one list: every message, install.sh's tip and docs/guide/linux.md name exactly
- * these (sandbox-runtime.test.ts holds them to it).
+ * The settings this Linux lets this user read that can deny an unprivileged user namespace, each with what an
+ * administrator could change. Context only: none of them proves the cause (a container can show its host's setting
+ * while its seccomp profile denies; a profile may allow bubblewrap whatever the setting), and EPERM, a container
+ * marker or a seccomp filter can't tell one restriction from another either.
+ */
+export function userNamespaceSettings(io: SandboxIo = {}): SandboxSetting[] {
+  const found: SandboxSetting[] = [];
+  const read = (file: string): string | null => { try { return (io.read ?? (one => readFileSync(one, "utf8")))(file).trim(); } catch { return null; } };
+  if (read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") === "1") found.push({
+    words: "kernel.apparmor_restrict_unprivileged_userns = 1 (AppArmor restricts unprivileged user namespaces)",
+    fix: "an administrator can give bubblewrap an AppArmor profile that allows user namespaces (a profile for /usr/bin/bwrap with `userns,`), rather than lifting the restriction for every program",
+  });
+  if (read("/proc/sys/kernel/unprivileged_userns_clone") === "0") found.push({
+    words: "kernel.unprivileged_userns_clone = 0 (unprivileged user namespaces off)",
+    fix: "an administrator can turn them on: `sudo sysctl -w kernel.unprivileged_userns_clone=1`, kept in a file under /etc/sysctl.d/",
+  });
+  if (read("/proc/sys/user/max_user_namespaces") === "0") found.push({
+    words: "user.max_user_namespaces = 0 (no user namespaces at all)",
+    fix: "an administrator can allow them: `sudo sysctl -w user.max_user_namespaces=15000`, kept in a file under /etc/sysctl.d/",
+  });
+  return found;
+}
+
+/** Whether this looks like a container (a marker file, or a seccomp filter on this process): only to word the advice. */
+function looksContained(io: SandboxIo): boolean {
+  const exists = io.exists ?? existsSync;
+  if (exists("/.dockerenv") || exists("/run/.containerenv")) return true;
+  try { return /^Seccomp:\s*2$/m.test((io.read ?? (one => readFileSync(one, "utf8")))("/proc/self/status")); } catch { return false; }
+}
+
+/**
+ * What a person can do when the sandbox can't start, as lines (none for a missing program: its install line says it,
+ * and a trust failure: its repair does). An administrator's targeted policy first; weakening a container's own
+ * protection only as the last, said so; then the existing opt-in, which runs agents without OS confinement and stays an
+ * instance operator's logged choice (never automatic, refused in local mode).
+ */
+export function sandboxRemedyLines(diagnosis: SandboxDiagnosis, io: SandboxIo = {}): string[] {
+  if (diagnosis.ok || diagnosis.kind === "missing-tool" || diagnosis.kind === "trust") return [];
+  const lines: string[] = [];
+  if (diagnosis.kind === "sandbox-denied") for (const setting of diagnosis.context ?? []) lines.push(`This machine shows ${setting.words}, which may be what denies it; if so, ${setting.fix}.`);
+  if (diagnosis.kind === "sandbox-denied" && looksContained(io)) {
+    lines.push("In a container (Docker, a devcontainer, Codespaces) its seccomp or AppArmor profile usually denies user namespaces: an administrator can allow them with a profile for this container. Starting it with `--security-opt seccomp=unconfined --security-opt apparmor=unconfined` also works, but weakens the container's own protection.");
+  }
+  if (diagnosis.kind === "unsupported-arch") lines.push("This processor has no sandbox helper: Toolroll's sandbox runs on 64-bit Intel/AMD (x64) and ARM (arm64) Linux.");
+  lines.push(UNCONFINED_OPT_IN);
+  return lines;
+}
+
+/** The existing opt-in, as every surface names it: an instance operator's choice, never automatic. */
+export const UNCONFINED_OPT_IN = "Or an instance operator can let agents run without OS confinement: `toolroll config unconfined-agents allow` (their password, logged; refused while Toolroll runs without a password).";
+
+/** The lines after "the sandbox isn't available here": a trust failure's exact repair, else what the probe said and the
+ * remedies (sandboxRemedyLines). None when it works or a program is missing (its install line is in the reason). */
+export function sandboxAdviceLines(diagnosis: SandboxDiagnosis, io: SandboxIo = {}): string[] {
+  if (diagnosis.ok || diagnosis.kind === "missing-tool") return [];
+  if (diagnosis.kind === "trust") return sandboxRuntimeRepair();
+  const said = diagnosis.detail === undefined || diagnosis.detail === "" ? [] : [`(${diagnosis.kind === "sandbox-denied" || diagnosis.kind === "timeout" ? "bubblewrap" : "it"} said: ${diagnosis.detail})`];
+  return [...said, ...sandboxRemedyLines(diagnosis, io)].map(shownText);
+}
+
+/**
+ * The refusal when nothing can confine `what` ("an agent", "the build's commands"): why (the diagnosis, never "install"
+ * when the programs are installed), what fixes it, and the opt-in. Read now, on the refusal's own path.
+ */
+export function noConfinementWords(what: string, done: string, diagnosis: SandboxDiagnosis = sandboxRuntimeDiagnosis()): string {
+  const why = diagnosis.ok ? "its sandbox isn't available to this run" : diagnosis.why;
+  const fix = diagnosis.ok || diagnosis.kind === "missing-tool" ? "" : diagnosis.kind === "trust" ? " `toolroll doctor` prints the exact fix." : "";
+  return shownText(`This machine can't confine ${what}, so ${done}: ${why}.${fix} ${UNCONFINED_OPT_IN}`);
+}
+
+/** Linux: when an installed sandbox program or the seccomp helper fails its trust check, what fails and the exact repair, as lines
+ * (sandbox-tools.ts seccompHelperRepair); none otherwise. The check is unchanged and runs again at every launch. */
+export function sandboxRuntimeRepair(platform: NodeJS.Platform = process.platform): string[] {
+  if (platform !== "linux") return [];
+  const repair = sandboxToolsRepair();
+  return repair === null ? [] : trustRepairLines(repair);
+}
+
+/**
+ * The programs the Linux sandbox needs on PATH, each with the package that installs it (linux-packages.ts names it per
+ * manager). bubblewrap and socat are what the runtime's own check (checkLinuxDependencies) requires; ripgrep is how it
+ * finds nested protected names; bash and which are what it runs commands with and looks the shell up by
+ * (sandbox-tools.ts checks every one). The one list: every message, install.sh's tip and docs/guide/linux.md name
+ * exactly these (sandbox-runtime.test.ts holds them to it).
  */
 export const LINUX_SANDBOX_TOOLS: readonly { command: string; package: string }[] = [
   { command: "bwrap", package: "bubblewrap" },
   { command: "socat", package: "socat" },
   { command: "rg", package: "ripgrep" },
+  { command: "bash", package: "bash" },
+  { command: "which", package: "which" },
 ];
 
 /** "bubblewrap, socat and ripgrep": packages, in words. */
@@ -114,9 +245,10 @@ export function missingLinuxSandboxTools(path: string = process.env["PATH"] ?? "
   return LINUX_SANDBOX_TOOLS.filter(tool => !found(tool.command)).map(tool => tool.package);
 }
 
-/** The line that installs these packages: apt (its package lists refreshed first: a fresh image's are empty), then dnf. */
-export function linuxSandboxInstallLine(packages: readonly string[] = LINUX_SANDBOX_TOOLS.map(tool => tool.package)): string {
-  return `sudo apt update && sudo apt install ${packages.join(" ")} (Fedora: sudo dnf install ${packages.join(" ")})`;
+/** The line that installs these packages with this computer's package manager (linux-packages.ts: apt with its lists
+ * refreshed first, dnf, zypper, pacman or apk; sudo only when not root; every manager's line when none is found). */
+export function linuxSandboxInstallLine(packages: readonly string[] = LINUX_SANDBOX_TOOLS.map(tool => tool.package), system: PackageSystem = packageSystem()): string {
+  return installLine(packages, system);
 }
 
 /** "bubblewrap, socat and ripgrep": what every "Install …" sentence names. */

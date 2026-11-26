@@ -1,6 +1,9 @@
 import { test, expect } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { changedHistory, historySnapshot, RETIRED_TABLES } from "./toolroll-update.js";
+import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { changedHistory, historySnapshot, prepareRuntimeUpdate, RETIRED_TABLES } from "./toolroll-update.js";
 import { V115_DROPPED_TABLES } from "./store.js";
 
 /** A small saved database: the ledger tables, an ordinary table, a WITHOUT ROWID one and the v113 shapes v114 changes. */
@@ -247,4 +250,15 @@ test("v116: an old chat table may go only when every row arrived in the shared t
   expect(move(outbound + slack)).toEqual(["telegram_decision_message"]);
   // A table with no rule still may not disappear.
   expect(changes("DROP TABLE task")).toEqual(["task"]);
+});
+
+test("`toolroll update` where nothing is set up is refused plainly before anything is staged, and no database is made", () => {
+  const stateDir = realpathSync(mkdtempSync(join(tmpdir(), "so-update-nodb-")));
+  try {
+    const databaseFile = join(stateDir, "orders.db");
+    const prepared = prepareRuntimeUpdate({ stateDir, databaseFile, current: { version: "0.9.1", dist: join(stateDir, "dist") }, actor: "ada", version: "0.9.2", when: "now" }, new Date());
+    expect(prepared).toEqual({ refused: `Toolroll isn't set up on this computer yet (there's no database at ${databaseFile}), so there's nothing to update. Nothing was changed. To get the newest command, run npm install -g toolroll@latest.` });
+    expect(existsSync(databaseFile)).toBe(false);
+    expect(existsSync(join(stateDir, "staged-upgrades"))).toBe(false);
+  } finally { rmSync(stateDir, { recursive: true, force: true }); }
 });

@@ -5,6 +5,7 @@
  * ask-once about the background, and what quitting does to the `up` it owns. And the gate in cli.ts: without a
  * terminal, with --json or under a coding agent, nothing here runs and bare `toolroll` behaves exactly as before.
  */
+import { linuxSandboxInstallLine } from "./sandbox-runtime.js";
 import { describe, expect, test, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -433,7 +434,7 @@ describe("l1: a Linux computer missing the sandbox's programs (stranger test, Ub
         expect(await runEasyStart("start", args, seams), local).toBe(3);
         expect(lines).toEqual([
           "Toolroll needs socat and ripgrep to run agents in a sandbox on this computer.",
-          "Install them, then run toolroll again: sudo apt update && sudo apt install socat ripgrep (Fedora: sudo dnf install socat ripgrep)",
+          `Install them, then run toolroll again: ${linuxSandboxInstallLine(["socat", "ripgrep"])}`,
         ]);
         expect(inits).toEqual([]);
         expect(calls).toEqual([]);
@@ -497,8 +498,39 @@ describe("l1: a Linux computer missing the sandbox's programs (stranger test, Ub
     expect(check(join(dir, "none", "orders.db"))).toBe(false);
   });
 
+  test("preflight: a sandbox that can't start stops the first start before anything is made, with its repair and an explicit password road", async () => {
+    const problem = "bubblewrap can't start a sandbox here (unprivileged user namespaces may be off)";
+    const { seams, lines, inits, calls } = scripted({ proofs: [NONE], local: ["absent"], problem });
+    seams.sandbox = async () => ({ missing: [], problem, repair: ["Fix it with:", "  chmod go-w '/home/dev/.npm-global'"] });
+    expect(await runEasyStart("start", bare, seams)).toBe(3);
+    expect(lines).toEqual([`Agents can't run in a sandbox here: ${problem}.`, "Fix it with:", "  chmod go-w '/home/dev/.npm-global'", "Then run toolroll again.",
+      "To start now with a password instead, run `toolroll up`. Agents then run only once the sandbox works, or if an instance operator lets them run without OS confinement (`toolroll config unconfined-agents allow`)."]);
+    expect(inits).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  test("preflight: everything that would stop it is listed together, each with its fix; a missing browser is advice, never a stop", async () => {
+    const { seams, lines, inits, calls } = scripted({ proofs: [NONE], local: ["candidate"], missing: ["bubblewrap"] });
+    seams.prerequisites = async () => ({ blockers: [["Toolroll needs git 2.41 or newer, and this machine's git is 2.39.5. Install a newer git."], ["Toolroll can't read when a process started here: install procps."]],
+      advisories: ["No browser opens here (there is no display here): the terminal workbench doesn't need one, and Toolroll prints its address."] });
+    expect(await runEasyStart("start", bare, seams)).toBe(3);
+    expect(lines[0]).toBe("Toolroll can't start on this computer yet. Fix these, then run toolroll again:");
+    expect(lines.filter(line => /^\d\. /.test(line)).map(line => line.slice(0, 18))).toEqual(["1. Toolroll needs ", "2. Toolroll needs ", "3. Toolroll can't "]);
+    expect(lines.join("\n")).not.toContain("password");
+    expect(inits).toEqual([]);
+    expect(calls).toEqual([]);
+    // Only advice: the start goes on.
+    const fine = scripted({ proofs: [NONE, LIVE], local: ["candidate", "on"] });
+    fine.seams.prerequisites = async () => ({ blockers: [], advisories: ["No browser opens here (this is an SSH session): the terminal workbench doesn't need one, and Toolroll prints its address."] });
+    expect(await runEasyStart("start", bare, fine.seams)).toBe(0);
+    expect(fine.calls).toEqual(["spawn --laptop --no-open", "tui"]);
+  });
+
   test("a new install that still can't go password-free (no sandbox for another reason): why, and where its password is", async () => {
-    const { seams, lines } = scripted({ proofs: [NONE, LIVE], local: ["absent", "off"], init: false, problem: "bubblewrap can't start a sandbox here (unprivileged user namespaces may be off)", savedLogin: "/tmp/t-home/.config/toolroll/.toolroll-secrets/up-login.txt" });
+    // The preflight passed (the sandbox worked then); making local mode still failed.
+    const { seams, lines } = scripted({ proofs: [NONE, LIVE], local: ["absent", "off"], init: false, problem: null, savedLogin: "/tmp/t-home/.config/toolroll/.toolroll-secrets/up-login.txt" });
+    const answers = [{ missing: [], problem: null }, { missing: [], problem: "bubblewrap can't start a sandbox here (unprivileged user namespaces may be off)" }];
+    seams.sandbox = async () => answers.length > 1 ? answers.shift()! : answers[0]!;
     // The `up` it started runs until stopped (Ctrl-C): stopped here once the words are out.
     const spawn = seams.spawnUp;
     seams.spawnUp = args => { const child = spawn(args); setTimeout(() => child.stop(), 20); return child; };
@@ -520,7 +552,7 @@ describe("l1: a Linux computer missing the sandbox's programs (stranger test, Ub
       spawnUp: () => { throw Error("started an up"); }, runUpForeground: async () => { throw Error("started an up"); },
     } } });
     expect(code).toBe(3);
-    expect(out.join("\n")).toContain("sudo apt update && sudo apt install socat (Fedora: sudo dnf install socat)");
+    expect(out.join("\n")).toContain(linuxSandboxInstallLine(["socat"]));
     expect(existsSync(file)).toBe(false);
   });
 });

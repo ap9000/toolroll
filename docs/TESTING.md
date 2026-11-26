@@ -172,7 +172,16 @@ the demo; every `release-*` pull request) and by hand: it packs the build,
 installs the tarball with `npm i -g` and with install.sh into scratch prefixes
 under a throwaway HOME, and runs `toolroll --version`, `toolroll help` and
 `toolroll demo` start to stop. Run it locally with
-`node scripts/install-smoke.mjs --port <n>`. The
+`node scripts/install-smoke.mjs --port <n>`. Its container lanes
+(`scripts/container-smoke.sh`, also on the startup and trust files) run the
+first terminal start and a repeat start at a real pseudo-terminal in Ubuntu
+(umask 0002, x64 and arm64), a container without user namespaces, Alpine,
+Fedora, Debian 12, Debian 13 and Node 26, asserting what each leaves behind:
+local mode on, or nothing made. An opened start is stopped with `toolroll
+stop` and its recorded worker awaited until gone; the second start must be a
+new worker on the same installation. Run one with `docker run --rm --privileged -v
+<folder with the packed tarball and both scripts>:/work node:22-trixie sh
+/work/container-smoke.sh debian13`. The
 area lanes: Linux cgroup
 containment, the Linux fence, Windows Job Object containment and the git
 2.41/2.47 lanes. A documentation-only pull request (only Markdown under

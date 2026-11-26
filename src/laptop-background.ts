@@ -20,7 +20,7 @@
  * Other services (the desktop app's com.toolroll.browser, a watch on this database) are reported, never touched.
  */
 
-import { execFileSync } from "node:child_process";
+import { processParentId } from "./process-identity.js";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir, hostname } from "node:os";
@@ -114,12 +114,8 @@ function installedBuild(entry: string): string | null {
 }
 
 function parentPid(pid: number): number | null {
-  if (!Number.isSafeInteger(pid) || pid <= 1 || process.platform === "win32") return null;
-  try {
-    const raw = execFileSync("/bin/ps", ["-p", String(pid), "-o", "ppid="], { encoding: "utf8", env: { PATH: "/usr/bin:/bin", LC_ALL: "C" }, stdio: ["ignore", "pipe", "ignore"], timeout: 2_000 });
-    const parent = Number(raw.trim());
-    return Number.isSafeInteger(parent) && parent > 0 ? parent : null;
-  } catch { return null; }
+  // /proc on Linux (busybox `ps` can't answer), `ps -o ppid=` elsewhere: process-identity.ts.
+  return processParentId(pid);
 }
 
 function portIsFree(port: number): Promise<boolean> {
