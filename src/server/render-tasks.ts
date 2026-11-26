@@ -3423,13 +3423,22 @@ export function cancelPinsOf(state: string, runs: readonly { id: number }[]): { 
 }
 
 /** Land on main (everyday-8 #1): where a task's accepted work stands on the project's branch, as the task page shows it. */
-export type TaskLanding = { taskId: string; landed: string | null; canLand: boolean; canUndo: boolean };
+export type TaskLanding = { taskId: string; landed: string | null; canLand: boolean; canUndo: boolean;
+  /** A landing commit Toolroll kept for the person to bring in (their folder had the branch checked out): the exact
+   * command, from its record, so the page still shows it after a reload. */
+  kept?: { commit: string; branch: string; command: string | null; words: string } | null };
 
-/** One card: landed (and the undo), or not yet (and Land it, which first shows exactly what lands where). */
+/** One card: landed (and the undo), or not yet (and Land it, which first shows exactly what lands where), or a kept
+ * landing commit waiting for the person's own merge (its exact command). */
 export function landingCardHtml(landing: TaskLanding, csrf: string): Html {
   const act = csrf === "" ? "" : landing.canLand
     ? postForm(`${taskHref(landing.taskId)}/land`, btn("Land it", { type: "submit" }))
     : landing.canUndo ? postForm(`${taskHref(landing.taskId)}/land`, btn("Undo landing", { variant: "ghost", type: "submit" }), { hidden: { undo: "1" } }) : "";
+  const kept = landing.landed === null ? landing.kept ?? null : null;
+  if (kept !== null) {
+    const how = kept.command === null ? html`<p>${kept.words}</p>` : html`<p>To bring it in: <code class="k-mono" data-land-command>${kept.command}</code></p>`;
+    return html`<section class="card" id="land" data-landing="kept"><strong>Landing commit ${kept.commit.slice(0, 7)} is ready</strong><p class="meta">Your project folder has ${kept.branch} checked out, so Toolroll didn't touch it.</p>${how}</section>`;
+  }
   const title = landing.landed !== null && !landing.canLand ? landing.landed : "Not on your branch yet";
   const meta = landing.canLand ? "You see where it lands before anything moves." : "";
   return html`<section class="card" id="land" data-landing="${landing.landed === null ? "no" : "yes"}"><strong>${title}</strong>${meta === "" ? "" : html`<p class="meta">${meta}</p>`}${act}</section>`;

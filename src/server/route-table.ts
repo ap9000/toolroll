@@ -464,6 +464,9 @@ get("tasks", "direct-chat.detail", `^\\/engine\\/direct-chats\\/${TERMINAL}$`, {
 // The pages (everyday-8 #6): the same chats, as a browser with no app reads them.
 get("tasks", "direct-chat.page-list", "/direct-chats", DIRECT_CHAT);
 get("tasks", "direct-chat.page", `^\\/direct-chats\\/${TERMINAL}$`, { ...DIRECT_CHAT, sample: `/direct-chats/${"a".repeat(32)}` });
+// A Ship review or a Ship read again by a GET (a reload or Back): only back to the chat page, never their git work or yes.
+get("tasks", "direct-chat.page-ship-review-again", `^\\/direct-chats\\/${TERMINAL}\\/ship-review$`, { ...DIRECT_CHAT, sample: `/direct-chats/${"a".repeat(32)}/ship-review` });
+get("tasks", "direct-chat.page-ship-done", `^\\/direct-chats\\/${TERMINAL}\\/ship$`, { ...DIRECT_CHAT, sample: `/direct-chats/${"a".repeat(32)}/ship` });
 get("tasks", "direct-chat.artifact", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/artifacts\\/${TERMINAL}$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/artifacts/${"b".repeat(32)}` });
 get("pages", "projects.browse", "/projects/browse", free);
 // The repository picker: folder names on the server's disk (the home folder, and any projects folder elsewhere), so an

@@ -466,7 +466,7 @@ export function prepareSharedAction(
       terms.push(
         `Direct Chat: ${chatTitle} (branch ${String(row["branch"] ?? "")})`,
         changedCount > 0 ? `Changes: ${changedCount} ${changedCount === 1 ? "file" : "files"} changed` : "Inspect current clone changes in the Ship preview.",
-        mode === "keep-branch" ? "Mode: Keep branch on this Mac." : "Mode: Ship (runs project check before merging).",
+        mode === "keep-branch" ? "Mode: Save the branch on this computer." : "Mode: Ship (runs project check before merging).",
         "Opens the Ship preview so you can review and confirm before anything is pushed or merged.",
       );
     } else {

@@ -3316,7 +3316,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (!done.ok) return taskScreen(response, who, shown, done.message, done.reason === "authority" ? 403 : 409);
     if (done.handoff !== null) {
       const words = `Landing commit ${done.commit.slice(0, 7)} is ready. Your project folder has ${done.branch} checked out, so Toolroll didn't touch it. ${handoffWords(done.handoff, done.commit)}`;
-      return answersInPlace(ctx.request) ? answerActInPlace(response, "done", words, 200, done.handoff.command) : taskScreen(response, who, shown, words, 200);
+      // A browser goes back to the task page (redirect-after-POST), whose landing card reads the kept commit and its exact
+      // command from the record: a reload shows it again and lands nothing.
+      return answersInPlace(ctx.request) ? answerActInPlace(response, "done", words, 200, done.handoff.command) : redirect(response, `${taskHref(shown)}#land`);
     }
     if (answersInPlace(ctx.request)) return answerActInPlace(response, "done", `${done.kind === "undo" ? "Undone" : "Landed"} on ${done.branch} (${done.commit.slice(0, 7)}).`, 200);
     return redirect(response, taskHref(shown));
