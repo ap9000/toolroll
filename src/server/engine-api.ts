@@ -30,6 +30,7 @@ import { laptopShipProblem } from "../flexible-laptop.js";
 import { threadsStatusNote, tidyFlexibleSignIns } from "../flexible-sign-in.js";
 import { FLEXIBLE_UNAVAILABLE } from "../flexible.js";
 import { saveFlexibleBranch } from "../flexible-save.js";
+import { flexibleShipNeeds } from "../flexible-ship.js";
 import { admitFlexibleThreadOwner, answerFlexibleRequest, cancelFlexibleThreadShip, closeFlexibleSessions, closeFlexibleThread, continueFlexibleThread, flexibleThreadShipTerms, latestFlexibleShip, sendBackFlexibleThread, shipFlexibleThread, tidyEndedFlexibleThreads, flexibleThreadChangeOf, flexibleThreadEdited, flexibleThreadLiveOf, flexibleThreadsOf, FLEXIBLE_WAIT_MS, flexibleThreadsExist, flexibleWorkOpen, openFlexibleSessions,
   recoverFlexibleHolders, startFlexibleThread, settleFlexibleStops, tickFlexibleSessions, waitFlexibleThreadChange, flexibleThreadChanges, flexibleThreadTipOf, type FlexibleChoice, type FlexibleSessions } from "../flexible-session.js";
 import { createFlexibleLauncher, type FlexibleLauncher } from "../flexible-launcher.js";
@@ -646,14 +647,17 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     if (flexible === null) return acted(response, 404, "refused", "There's no such thread.");
     if (who.via !== "cookie" || rereadBrowser(runtime, request, who) === null) return acted(response, 403, "refused", "Only a person signed in here can do that.");
     const id = url.pathname.slice("/agents/live/thread/".length, -`/${act}`.length);
-    if (ownedThread(request, who, flexible, id) === null) return acted(response, 404, "refused", "There's no such thread.");
+    const repo = ownedThread(request, who, flexible, id);
+    if (repo === null) return acted(response, 404, "refused", "There's no such thread.");
     if (who.authority === "local-owner" && localActNow(store, act === "end" ? "end-thread" : "stop-thread") === null) return acted(response, 403, "refused", "Sign in with your password to do this.");
     const held = sessionHeld(who, flexible, id);
     if (held === null || !held()) return acted(response, 403, "refused", "Only a person signed in here can do that.");
     const done = await closeFlexibleThread(store, flexible, { thread: id, by: { name: who.name, generation: who.session.generation }, act });
     if (!done.ok) return acted(response, 409, "refused", done.message);
     const words = act === "end"
-      ? done.already ? "This thread had already ended." : done.stopPending ? "Ended. Stopping its agent…" : "Ended. You can still ship its work."
+      ? done.already ? "This thread had already ended." : done.stopPending ? "Ended. Stopping its agent…"
+        // Ship promised only where this project can take one; Save as branch works everywhere.
+        : flexibleShipNeeds(store, repo) === null ? "Ended. You can still ship its work, or save it as a branch." : "Ended. You can still save its work as a branch (S on the thread)."
       : done.stopPending ? "Stopping its agent…" : "Stopped. Reply to go on.";
     return acted(response, 200, "done", words);
   };

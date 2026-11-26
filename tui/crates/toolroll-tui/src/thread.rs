@@ -552,7 +552,7 @@ pub fn confirm_act_lines(act: ThreadAct) -> (&'static str, Vec<Line<'static>>) {
         ThreadAct::End => (
             " End thread ",
             "End this thread?",
-            "Its agent stops and it can't be reopened. You can still ship its work.",
+            "Its agent stops and it can't be reopened. S still saves its work as a branch.",
             "End it",
         ),
     };

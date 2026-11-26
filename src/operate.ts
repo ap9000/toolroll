@@ -2,7 +2,7 @@ import { FLEXIBLE_CANDIDATE_FIXED, FLEXIBLE_FILED_PREFIX, flexibleMergeRefusal }
 import { clearResolvedAgentRequests, fileAgentRequest, listAgentRequests, resolveAgentRequest, waitForAgentRequest, type AgentRequest } from "./agent-requests.js";
 import { readStoredGeminiStatus, refreshSubscriptions } from "./subscription-usage.js";
 import { liveCommandsShown } from "./live-detail.js";
-import { flexibleArmedPass } from "./flexible-ship.js";
+import { flexibleArmedPass, flexibleShipNeeds } from "./flexible-ship.js";
 import { directChatArmedPass } from "./direct-chat-ship.js";
 import { saveFlexibleBranch } from "./flexible-save.js";
 import { closeFlexibleThread, flexibleShipNeedsFor, flexibleThreadRecords, flexibleThreadShipTerms, flexibleThreadTitleOf, latestFlexibleShip, removeFlexibleThreadCopy, shipFlexibleThread, stopFlexibleThreadsEverywhere, type FlexibleStopReport } from "./flexible-session.js";
@@ -15774,7 +15774,8 @@ async function threadCommand(positional: readonly string[], flags: Map<string, s
     // Its agent stopped here too, by its own recorded launches' process identities only (the console that holds it
     // closes the rest); no other thread is touched.
     if (done.stopPending) await stopFlexibleThreadsEverywhere(store, { reason: "its owner ended the thread", thread, clock });
-    return succeed(write, json, command, { thread, already: done.already }, () => [done.already ? "This thread had already ended." : "Ended. You can still ship its work for a week; then its copy is tidied."]);
+    const keeps = flexibleShipNeeds(store, row.repo) === null ? "ship its work, or save it as a branch," : `save its work as a branch (\`toolroll thread save ${thread.slice(0, 8)}\`)`;
+    return succeed(write, json, command, { thread, already: done.already }, () => [done.already ? "This thread had already ended." : `Ended. You can still ${keeps} for a week; then its copy is tidied.`]);
   }
   // save: its committed work as the branch toolroll/code-<id> in its project (flexible-save.ts: the controlled import, no
   // pull request, task or merge). The same proof End takes, asked again inside the save's own transaction.
