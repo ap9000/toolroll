@@ -300,9 +300,10 @@ const CONFLICT_MSG = (branch: string, old: string, files: readonly string[], can
     + `Toolroll can't merge them by itself. To land it, merge ${short(candidate)} into ${branch} yourself and resolve the conflicts, or file a new task on the current ${branch}.`;
 };
 
-/** The branch a project's work lands on: its recorded destination when that is this project's own repository, else
- * `fallback` (the branch the project folder stands on). From Toolroll's records only. */
-export function landingBranchOf(store: Store, repo: string, fallback: string): string {
+/** The branch a project's work lands on, as Land reads it with no --into and as a send back merges it in
+ * (revision-catch-up.ts), for every surface that says how far behind it work is: its recorded destination when that is
+ * this project's own repository, else `fallback` (the branch the project folder stands on). From Toolroll's records. */
+export function landingBranchOf<T extends string | null>(store: Store, repo: string, fallback: T): string | T {
   const recorded = recordedDestination(store, repo);
   return recorded !== null && recorded.common === commonDirOf(repo) ? recorded.ref.slice("refs/heads/".length) : fallback;
 }

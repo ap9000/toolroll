@@ -15,7 +15,7 @@ import { shipChecksForTask, type Store } from "./store.js";
 import { approvedCheckStateOf, requirementWordOf } from "./task-status.js";
 import { projectCheckSet } from "./check-levels.js";
 import { projectName } from "./project.js";
-import { landingHistoryOf, publishesThroughPullRequests, shownName } from "./local-landing.js";
+import { landingBranchOf, landingHistoryOf, publishesThroughPullRequests, shownName } from "./local-landing.js";
 import { catchUpConflictOf } from "./revision-catch-up.js";
 import { recentGitReads, type GitRead, type TaskBaseView } from "./task-base.js";
 
@@ -226,7 +226,10 @@ const conflictNames = (files: readonly string[]): string => files.length === 0 ?
 export function behindMainOf(store: Store, assignment: AssignmentSnapshot, main: string | null | undefined, read: GitRead = landingReads): { main: string | null; behind: number | null; conflict: string[] | null } | null {
   const receipt = assignment.receipt;
   if (receipt === null || assignment.repo === null) return null;
-  const standing = resultBehindMain(assignment.repo, receipt.head, main, read);
+  // Against the branch work lands on and a send back merges in (local-landing.ts landingBranchOf): the recorded
+  // destination, else the branch the project folder stands on.
+  const checkedOut = main === undefined ? read(assignment.repo, ["symbolic-ref", "--short", "-q", "HEAD"]) || null : main;
+  const standing = resultBehindMain(assignment.repo, receipt.head, landingBranchOf(store, assignment.repo, checkedOut), read);
   if (standing.main === null || standing.behind === null || standing.behind === 0) return { ...standing, conflict: null };
   const tip = read(assignment.repo, ["rev-parse", "--verify", "-q", `refs/heads/${standing.main}^{commit}`]);
   return { ...standing, conflict: tip === null ? null : catchUpConflictOf(store, receipt.taskId, tip) };

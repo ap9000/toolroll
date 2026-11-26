@@ -16,6 +16,7 @@ import { openStore } from "./store.js";
 import { familyStartOf, taskBaseOf } from "./task-base.js";
 import { CATCH_UP_ACTION } from "./revision-catch-up.js";
 import { mergeChecklistOf } from "./merge-checklist.js";
+import { stepCardsOf } from "./engine-reads.js";
 import type { Runner } from "./builder.js";
 import { AGENT_SAID, OK, concludeDone, registerRunner } from "../test/tick-kit.js";
 import { termsArgs } from "../test/approval-terms.js";
@@ -143,6 +144,21 @@ describe("work behind main gets a working way forward", () => {
         expect(row.say).toContain("Send it back");
       } finally { store.close(); }
     }
+
+    // With the project folder on another branch, every surface still measures against where work lands (main, the
+    // destination the first landing recorded) and a send back merges, never the branch the folder stands on.
+    const first = await git(["rev-list", "--max-parents=0", "main"]);
+    await git(["checkout", "-q", "-b", "develop", first]);
+    {
+      const store = openStore(db);
+      try {
+        const row = mergeChecklistOf(store, "t-b", later(4), { principal: "operator", repos: [repo] })!.rows.find(one => one.key === "up-to-date")!;
+        expect(row.say).toContain("main has 1 commit this work doesn't");
+        const cards = stepCardsOf({ store, family: store.taskFamilyOf("t-b", null, true)!, now: later(4), access: { principal: "operator", repos: [repo] }, evidenceRoot: join(base, "evidence") });
+        expect(cards.behindMain).toMatchObject({ main: "main", behind: 1 });
+      } finally { store.close(); }
+    }
+    await git(["checkout", "-q", "main"]);
 
     const b = await headOf("t-b");
     const revision = await sendBack("t-b", later(5));
