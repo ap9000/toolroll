@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { durableJson } from "./desktop-update.js";
 import { addApprover } from "./scope.js";
 import { openStore, type Store } from "./store.js";
+import { fakePid } from "../test/fake-pid.js";
 import { launchRuntimeUpdate, prepareLockFile, prepareRuntimeUpdate, readRuntimeUpdate, resumeRuntimeUpdate, type RuntimeUpdateJournal, type UpdateSystem } from "./toolroll-update.js";
 import { lockHeld, sqliteLock } from "./desktop-update.js";
 import { autoUpdateAttempts, autoUpdateDecision, autoUpdatePass, autoUpdatePolicy, cancelAutomaticUpdate, type AutoUpdateFacts, linkAutoUpdateJournal, reconcileAutoUpdates, reserveAutoUpdate, setAutoUpdatePolicy, AUTO_UPDATE_STALE_MS } from "./auto-update.js";
@@ -389,7 +390,7 @@ describe("the update job is this user's, shared by every database", () => {
     const run = (async (_file: string, args: readonly string[]) => {
       state.calls.push([...args]);
       const ok = { code: 0, stdout: "", stderr: "", timedOut: false };
-      if (args[0] === "print") return !state.loaded ? { ...ok, code: 113 } : { ...ok, stdout: state.running ? "com.toolroll.update = {\n\tstate = running\n\tpid = 4242\n}" : "com.toolroll.update = {\n\tstate = not running\n}" };
+      if (args[0] === "print") return !state.loaded ? { ...ok, code: 113 } : { ...ok, stdout: state.running ? `com.toolroll.update = {\n\tstate = running\n\tpid = ${fakePid(1)}\n}` : "com.toolroll.update = {\n\tstate = not running\n}" };
       if (args[0] === "bootstrap") { state.loaded = true; state.running = true; }
       if (args[0] === "bootout") { state.loaded = false; state.running = false; }
       return ok;
