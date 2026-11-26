@@ -43,7 +43,10 @@ static KITTY: AtomicBool = AtomicBool::new(false);
 /// The terminal's own title was kept (notify::TITLE_PUSH) and is given back on the way out.
 static TITLE: AtomicBool = AtomicBool::new(false);
 
-/// Give the terminal back: whatever state the screen left it in (also from the panic hook).
+/// Give the terminal back: whatever state the screen left it in (also from the panic hook). What follows (the
+/// launcher's "Stopping Toolroll…", "Session ended…") starts on a fresh line: the cursor the normal screen gives back
+/// may sit mid-row (after a line with no newline, or at the right edge where a terminal without an alternate screen
+/// left the last frame), so a new row, and nothing of a frame below it.
 pub fn restore() {
     let mut out = std::io::stdout();
     if TITLE.swap(false, Ordering::SeqCst) {
@@ -57,7 +60,9 @@ pub fn restore() {
         DisableBracketedPaste,
         DisableMouseCapture,
         LeaveAlternateScreen,
-        crossterm::cursor::Show
+        crossterm::cursor::Show,
+        crossterm::style::Print("\r\n"),
+        terminal::Clear(terminal::ClearType::FromCursorDown)
     );
     let _ = terminal::disable_raw_mode();
 }
