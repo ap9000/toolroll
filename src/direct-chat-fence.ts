@@ -27,7 +27,7 @@ export type DirectChatFenceFn = (input: DirectChatFenceInput) => Promise<DirectC
 
 const real = (path: string): string => { try { return realpathSync(path); } catch { return path; } };
 
-export function directChatFence(store: Store): DirectChatFenceFn {
+export function directChatFence(store: Store, evidenceRoot: string | null = null): DirectChatFenceFn {
   return async input => {
     if (!macosFenceAvailable() && !linuxFenceAvailable()) {
       // As a build: unconfined only where an instance operator allowed unconfined agents.
@@ -69,6 +69,7 @@ export function directChatFence(store: Store): DirectChatFenceFn {
       const gitReadOnly = ["config", "hooks", "info"].map(name => join(gitDir, name));
       const made = fenceFor("build", {
         databaseFile, worktree: clone, boundary, binding: null, runFolders: runFolders(temp), poolRoots, storage, policy: FENCE_POLICY_CURRENT, provider: "claude",
+        evidenceRoot,
         // The project's own checkout (the chat works on its clone), and the project's read denies, read live.
         extra: [repo, ...allowed.deny],
         readDeny: store.projectSandbox(input.repo).readDeny.map(one => readDenyPath(one, home)),

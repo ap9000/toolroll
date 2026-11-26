@@ -196,7 +196,7 @@ async function checkCohort(store: Store, root: string, repo: string, cohort: Mem
       if ((liveSetup?.digest ?? null) !== (setup?.digest ?? null)) return { conflict: false, tested, outcome: { ran: false, failure: "The project's approved setup changed before the check started." }, setupFailed: false };
       if (liveSetup !== null) {
         const shell = approvedCommandShell(liveSetup.command);
-        const prepared = await runWithIsolatedDatabase(checkoutRunner(store, repo, checkout, guardedRunner, set.map(one => one.runId), setRan), shell.file, shell.args, { cwd: checkout, timeoutMs: liveSetup.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
+        const prepared = await runWithIsolatedDatabase(checkoutRunner(store, repo, checkout, guardedRunner, set.map(one => one.runId), setRan, undefined, root), shell.file, shell.args, { cwd: checkout, timeoutMs: liveSetup.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
         note(set, section(`${label} · approved project setup on ${tested.slice(0, 7)}`, liveSetup.command, prepared));
         proveSet(set);
         if (prepared.code !== 0 || prepared.timedOut || prepared.notFound) return { conflict: false, tested, outcome: { ran: false, failure: "The project's setup failed, so the check didn't run." }, setupFailed: true };
@@ -204,7 +204,7 @@ async function checkCohort(store: Store, root: string, repo: string, cohort: Mem
       const live = store.liveVerifyCommand(repo);
       if (live === null || live.digest !== command.digest) return { conflict: false, tested, outcome: { ran: false, failure: "The approved check changed before it started." }, setupFailed: false };
       const shell = approvedCommandShell(live.command);
-      const ran = await runWithIsolatedDatabase(checkoutRunner(store, repo, checkout, guardedRunner, set.map(one => one.runId), setRan), shell.file, shell.args, { cwd: checkout, timeoutMs: live.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
+      const ran = await runWithIsolatedDatabase(checkoutRunner(store, repo, checkout, guardedRunner, set.map(one => one.runId), setRan, undefined, root), shell.file, shell.args, { cwd: checkout, timeoutMs: live.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
       note(set, section(`${label} · full check on ${tested.slice(0, 7)}`, live.command, ran));
       proveSet(set);
       // Its screenshots, while its checkout is still here (check-screenshots.ts): only for a single result, whose commit is

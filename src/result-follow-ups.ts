@@ -286,7 +286,7 @@ export async function runFollowUpCheck(store: Store, root: string, request: numb
       let ready = true;
       if (setup !== null) {
         const shell = approvedCommandShell(setup.command);
-        const prepared = await runWithIsolatedDatabase(launched(checkoutRunner(store, target.repo, checkout, guardedRunner, [runId], level => ranAt.push(level))), shell.file, shell.args, { cwd: checkout, timeoutMs: setup.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
+        const prepared = await runWithIsolatedDatabase(launched(checkoutRunner(store, target.repo, checkout, guardedRunner, [runId], level => ranAt.push(level), undefined, root)), shell.file, shell.args, { cwd: checkout, timeoutMs: setup.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
         note("Approved project setup", setup.command, prepared);
         proveLaunch();
         if (prepared.code !== 0 || prepared.timedOut || prepared.notFound) { ready = false; result = { ran: false, failure: "The project's setup failed, so the check didn't run." }; }
@@ -298,7 +298,7 @@ export async function runFollowUpCheck(store: Store, root: string, request: numb
           result = { ran: false, failure: "The approved check changed before it started." };
         } else {
           const shell = approvedCommandShell(live.command);
-          const ran = await runWithIsolatedDatabase(launched(checkoutRunner(store, target.repo, checkout, guardedRunner, [runId], level => ranAt.push(level))), shell.file, shell.args, { cwd: checkout, timeoutMs: live.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
+          const ran = await runWithIsolatedDatabase(launched(checkoutRunner(store, target.repo, checkout, guardedRunner, [runId], level => ranAt.push(level), undefined, root)), shell.file, shell.args, { cwd: checkout, timeoutMs: live.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
           note(`${CHECK_LEVEL_WORDS[target.level]} check`, live.command, ran);
           proveLaunch();
           // Its screenshots, while its checkout is still here: reviewer evidence of exactly this commit (check-screenshots.ts).

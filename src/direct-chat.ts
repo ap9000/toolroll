@@ -723,6 +723,8 @@ export type DirectChatHostSeams = {
     /** The outer fence Claude's turn runs in (direct-chat-fence.ts); absent for the other agents. */
     fence?: DirectChatTurnFence;
   }) => { pid: number; pgid: number; startIdentity: string | null };
+  /** Custom evidence folder denied to every Direct Chat turn. */
+  evidenceRoot?: string | null;
   /** How a Claude turn's fence is made (default: direct-chat-fence.ts directChatFence). A test that injects spawnTurn
    * and no fenceTurn makes none (no proxy or storage walk starts); production never injects spawnTurn. */
   fenceTurn?: DirectChatFenceFn;
@@ -911,7 +913,7 @@ export class DirectChatHost {
     this.stopGraceMs = seams.stopGraceMs ?? DEFAULT_STOP_GRACE_MS;
     this.locateBinary = seams.locateBinary ?? (provider => locateDirectChatBinary(provider));
     this.spawnTurnFn = seams.spawnTurn ?? (input => defaultSpawnTurn(this.custody, input));
-    this.fenceTurnFn = seams.fenceTurn ?? (seams.spawnTurn === undefined ? directChatFence(store) : null);
+    this.fenceTurnFn = seams.fenceTurn ?? (seams.spawnTurn === undefined ? directChatFence(store, seams.evidenceRoot ?? null) : null);
     this.prepareCloneFn = seams.prepareClone ?? defaultPrepareCloneAsync;
     this.hasCustomReadDiff = seams.readDiff !== undefined;
     this.readDiffFn = seams.readDiff ?? defaultReadDiff;

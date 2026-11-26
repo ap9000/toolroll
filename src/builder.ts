@@ -578,12 +578,12 @@ function buildCheckoutGit(given: Runner, worktree: string, mainCheckout: string 
 
 /** A run's setup and check commands, in its build's fence, writing where the approval this build runs under sealed
  * (never the scope as it may since have been rewritten; invoke.ts fencedCommands). */
-function commandRunner(store: Store, runId: number, profile: ExecutionProfile, inner: Runner): Runner {
+function commandRunner(store: Store, runId: number, profile: ExecutionProfile, inner: Runner, customEvidenceRoot: string | null = null): Runner {
   // How far its checks reach (check-access.ts): what its approval sealed, stamped on the run (again: the dispatch stamped
   // it first) so a later check of its result never runs wider; under sign-ins, behind its checks' own network.
   const { access, network } = checkLaunchOf(store, runId, profile);
   store.stampRunCheckAccess(runId, access, network);
-  return fencedCommands(store, runId, launchWritesOf(profile), inner, undefined, access, network ?? undefined, launchSandboxOf(profile));
+  return fencedCommands(store, runId, launchWritesOf(profile), inner, undefined, access, network ?? undefined, launchSandboxOf(profile), customEvidenceRoot);
 }
 
 /** A build's checks' level and network: its approval's level as this platform can give it (sign-ins sealed before
@@ -1051,7 +1051,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
       // Setup runs under the stop watch (v52), owned by this run: an
       // operator's stop ends the setup's process group and the attempt
       // settles as interrupted below, never as a setup failure.
-      const made = await underStopWatch(store, request.runId, () => runWithIsolatedDatabase(witnessedRunner(store, request.runId, request.clock ?? (() => now), commandRunner(store, request.runId, effective.profile, runSetup)), shell.file, shell.args, {
+      const made = await underStopWatch(store, request.runId, () => runWithIsolatedDatabase(witnessedRunner(store, request.runId, request.clock ?? (() => now), commandRunner(store, request.runId, effective.profile, runSetup, request.evidenceRoot ?? evidenceRoot(homedir()))), shell.file, shell.args, {
         cwd: worktree,
         timeoutMs: setupWanted.timeoutMs,
         processGroup: true,
@@ -1736,6 +1736,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
         network: launchNetworkOf(store, request.taskRef, effective.profile),
         writes: launchWritesOf(effective.profile), sandbox: launchSandboxOf(effective.profile),
         skills: projectSkills,
+        evidenceRoot: root,
         ...(agent === undefined ? {} : { runner: agent }),
         onSpawn: (pid: number) => { spawned = true; request.onProviderSpawn?.(pid); },
         onStreamEvent: (event: Record<string, unknown>) => liveLog.observe(event),
@@ -2235,7 +2236,7 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
           return current.ok && current.digest === observation.gateDigest && !stopRequestedFor(store, request.runId, request.shouldStop) && store.proveRunnerCustodyForSpawn(request.runId, clock());
         };
         if (!eligible()) throw Error("The observation source or execution authority changed.");
-        const execute: Runner = (file, args, options) => underStopWatch(store, request.runId, () => runWithIsolatedDatabase(witnessedRunner(store, request.runId, clock, commandRunner(store, request.runId, captured.effective.profile, request.verify ?? run)), file, args, {
+        const execute: Runner = (file, args, options) => underStopWatch(store, request.runId, () => runWithIsolatedDatabase(witnessedRunner(store, request.runId, clock, commandRunner(store, request.runId, captured.effective.profile, request.verify ?? run, root)), file, args, {
           ...options, processGroup: true, owner: runOwnerTag(store, request.runId), beforeSpawn: eligible,
           onSpawn: pid => request.onProviderSpawn?.(pid), envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST,
         }));
@@ -2817,7 +2818,7 @@ async function settleProof(
       // The check runs under the stop watch (v52), owned by this run.
       const result: ExecResult = missing !== null
         ? { code: 127, stdout: "", stderr: `Toolroll did not start the check: ${missing} wasn't found.`, timedOut: false, notFound: false }
-        : await underStopWatch(store, runId, () => { loadWatch?.attemptStarted(); return runWithIsolatedDatabase(witnessedRunner(store, runId, now, commandRunner(store, runId, captured.effective.profile, verifyRunner)), verifyShell.file, verifyShell.args, {
+        : await underStopWatch(store, runId, () => { loadWatch?.attemptStarted(); return runWithIsolatedDatabase(witnessedRunner(store, runId, now, commandRunner(store, runId, captured.effective.profile, verifyRunner, root)), verifyShell.file, verifyShell.args, {
         cwd: worktree,
         timeoutMs: loadWatch?.limitMs ?? configured.timeoutMs,
         processGroup: true,
@@ -2860,7 +2861,7 @@ async function settleProof(
       detachShared(worktree, depsRoot);
       const label = "Own install · approved project setup (package.json or lockfile changed)";
       const setupShell = approvedCommandShell(live.command);
-      const installed = await underStopWatch(store, runId, () => runWithIsolatedDatabase(witnessedRunner(store, runId, now, commandRunner(store, runId, captured.effective.profile, request.setup ?? run)), setupShell.file, setupShell.args, {
+      const installed = await underStopWatch(store, runId, () => runWithIsolatedDatabase(witnessedRunner(store, runId, now, commandRunner(store, runId, captured.effective.profile, request.setup ?? run, root)), setupShell.file, setupShell.args, {
         cwd: worktree,
         timeoutMs: live.timeoutMs,
         processGroup: true,
@@ -2941,7 +2942,7 @@ async function settleProof(
           } else {
             const setupRunner = request.setup ?? run;
             const setupShell = approvedCommandShell(liveBeforeSetup.command);
-            const restored = await underStopWatch(store, runId, () => runWithIsolatedDatabase(witnessedRunner(store, runId, now, commandRunner(store, runId, captured.effective.profile, setupRunner)), setupShell.file, setupShell.args, {
+            const restored = await underStopWatch(store, runId, () => runWithIsolatedDatabase(witnessedRunner(store, runId, now, commandRunner(store, runId, captured.effective.profile, setupRunner, root)), setupShell.file, setupShell.args, {
               cwd: worktree,
               timeoutMs: liveBeforeSetup.timeoutMs,
               processGroup: true,
@@ -3297,6 +3298,7 @@ async function resumeUnhandedWork(captured: CapturedBuild, sessionId: string | u
         network: launchNetworkOf(store, request.taskRef, effective.profile),
         writes: launchWritesOf(effective.profile), sandbox: launchSandboxOf(effective.profile),
         skills: captured.skills ?? null,
+        evidenceRoot: request.evidenceRoot ?? evidenceRoot(homedir()),
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,
@@ -3646,6 +3648,7 @@ async function ingestPark(args: {
         omitEnv: AGENT_ENV_DENYLIST,
         ...(args.profile === undefined ? {} : { network: launchNetworkOf(store, request.taskRef, args.profile), writes: launchWritesOf(args.profile), sandbox: launchSandboxOf(args.profile) }),
         skills: resumableRepair ? (args.skills ?? null) : null,
+        evidenceRoot: request.evidenceRoot ?? evidenceRoot(homedir()),
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,
