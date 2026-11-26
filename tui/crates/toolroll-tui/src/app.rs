@@ -7066,7 +7066,8 @@ impl App {
                 | ActOutcome::ShipTerms { .. }
                 | ActOutcome::LandTerms { .. }
                 | ActOutcome::BuilderPassword { .. }
-                | ActOutcome::NextStep { .. },
+                | ActOutcome::NextStep { .. }
+                | ActOutcome::Commanded { .. },
             ) => {
                 self.say(
                     Tone::Refused,
