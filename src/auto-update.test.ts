@@ -13,7 +13,7 @@ import { addApprover } from "./scope.js";
 import { openStore, type Store } from "./store.js";
 import { launchRuntimeUpdate, prepareLockFile, prepareRuntimeUpdate, readRuntimeUpdate, resumeRuntimeUpdate, type RuntimeUpdateJournal, type UpdateSystem } from "./toolroll-update.js";
 import { lockHeld, sqliteLock } from "./desktop-update.js";
-import { autoUpdateAttempts, autoUpdateDecision, autoUpdatePass, cancelAutomaticUpdate, type AutoUpdateFacts, linkAutoUpdateJournal, reconcileAutoUpdates, reserveAutoUpdate, setAutoUpdatePolicy, AUTO_UPDATE_STALE_MS } from "./auto-update.js";
+import { autoUpdateAttempts, autoUpdateDecision, autoUpdatePass, autoUpdatePolicy, cancelAutomaticUpdate, type AutoUpdateFacts, linkAutoUpdateJournal, reconcileAutoUpdates, reserveAutoUpdate, setAutoUpdatePolicy, AUTO_UPDATE_STALE_MS } from "./auto-update.js";
 
 const T0 = new Date("2026-11-26T03:00:00.000Z");
 const later = (ms: number) => new Date(T0.getTime() + ms);
@@ -103,7 +103,8 @@ describe("recording how an attempt ended", () => {
     // The rollback replaced the saved journal and names the update it undid.
     save({ ...j, id: "f".repeat(8) + "-ffff-ffff-ffff-" + "f".repeat(12), kind: "rollback", phase: "complete", from: j.to, to: j.from, restoreFrom: { path: "/kept", hash: "0", updateId: j.id } });
     expect(reconcileAutoUpdates(w.store, { stateDir: w.dir, current: "0.9.120", now: later(1000) })).toMatchObject([{ outcome: "rolled-back", detail: "Rolled back to 0.9.120." }]);
-    // Another attempt, replaced by a later manual update: its own stage copy says how it ended.
+    // Another attempt (alex turns automatic updates on again), replaced by a later manual update: its own stage copy says how it ended.
+    setAutoUpdatePolicy(w.store, true, "alex", T0);
     const second = reserved(w, "0.9.122");
     const k = journal(w, "0.9.122", "refused");
     linkAutoUpdateJournal(w.store, second.id, k.id);
@@ -116,6 +117,7 @@ describe("recording how an attempt ended", () => {
     reserved(w, "0.9.121");
     expect(reconcileAutoUpdates(w.store, { stateDir: w.dir, current: "0.9.120", now: later(AUTO_UPDATE_STALE_MS - 1) })).toEqual([]);
     expect(reconcileAutoUpdates(w.store, { stateDir: w.dir, current: "0.9.120", now: later(AUTO_UPDATE_STALE_MS) })).toMatchObject([{ outcome: "not-started" }]);
+    setAutoUpdatePolicy(w.store, true, "alex", T0);
     const lost = reserved(w, "0.9.122");
     linkAutoUpdateJournal(w.store, lost.id, "a".repeat(8) + "-aaaa-aaaa-aaaa-" + "a".repeat(12));
     expect(reconcileAutoUpdates(w.store, { stateDir: w.dir, current: "0.9.120", now: later(1000) })).toMatchObject([{ outcome: "unknown" }]);
@@ -181,7 +183,8 @@ describe("one update at a time, and Off", () => {
     expect(cancelAutomaticUpdate(w.store, w.dir, T0)).toBe("Cancelled the update to 0.9.122. Nothing was switched; new work resumes.");
     expect(readRuntimeUpdate(w.dir)?.phase).toBe("cancelled");
     expect(reconcileAutoUpdates(w.store, { stateDir: w.dir, current: "0.9.120", now: later(1000) }).map(one => one.outcome)).toEqual(["cancelled"]);
-    // Another, already stopping the service: too late to cancel; it finishes or restores on its own.
+    // Another (turned on again), already stopping the service: too late to cancel; it finishes or restores on its own.
+    setAutoUpdatePolicy(w.store, true, "alex", T0);
     const third = reserveAutoUpdate(w.store, { version: "0.9.123", from: "0.9.120", now: T0 });
     if (!third.ok) throw new Error(third.why);
     const late = journal(w, "0.9.123", "backing-up");
@@ -260,6 +263,8 @@ describe("the pass", () => {
     expect(await pass(w, { launch: async () => { throw new Error("launchctl said no"); } }).result).toEqual({ failed: "The update could not start: launchctl said no", version: "0.9.121" });
     expect(readRuntimeUpdate(w.dir)).toMatchObject({ phase: "refused" });
     expect(autoUpdateAttempts(w.store)?.[0]).toMatchObject({ outcome: "not-started", detail: "The update could not start: launchctl said no" });
+    expect(await pass(w).result).toEqual({ held: "off" });
+    setAutoUpdatePolicy(w.store, true, "alex", T0);
     expect(await pass(w).result).toEqual({ held: "attempted" });
     // A person can still update to it by hand: the manual road never reads the attempts.
     expect("refused" in prepareRuntimeUpdate({ stateDir: w.dir, databaseFile: w.databaseFile, current: { version: "0.9.120", dist: join(w.dir, "dist") }, actor: "alex", version: "0.9.121", when: "when-idle" }, T0)).toBe(false);
@@ -272,8 +277,10 @@ describe("the pass", () => {
     expect(reserved.ok).toBe(true);
     expect(await pass(w).result).toEqual({ held: "attempted" });
     expect(readRuntimeUpdate(w.dir)).toBeNull();
-    expect(await pass(w, { now: () => later(AUTO_UPDATE_STALE_MS) }).result).toEqual({ held: "attempted" });
+    expect(await pass(w, { now: () => later(AUTO_UPDATE_STALE_MS) }).result).toEqual({ held: "off" });
     expect(autoUpdateAttempts(w.store)?.[0]).toMatchObject({ outcome: "not-started" });
+    setAutoUpdatePolicy(w.store, true, "alex", T0);
+    expect(await pass(w).result).toEqual({ held: "attempted" });
   });
 
   test("off, unsupported installs, prereleases and old versions start nothing; a person's update under way holds it", async () => {
@@ -303,7 +310,8 @@ describe("what a person is told", () => {
     await run(w, "0.9.120");
     await run(w, "0.9.120");
     expect(notices(w.store)).toEqual([{ dedupe_key: "auto-update:0.9.121:restored:alex", push_class: "attention",
-      subject: "Couldn't update to 0.9.121: Toolroll 0.9.121 did not pass its health check. Still on 0.9.120; its database was put back from the backup, so automatic updates are off until you turn them on again. It won't be tried again by itself; you can still update by hand." }]);
+      subject: "Couldn't update to 0.9.121: Toolroll 0.9.121 did not pass its health check. Still on 0.9.120; its database was put back from the backup. Automatic updates were turned off until you turn them on again." }]);
+    setAutoUpdatePolicy(w.store, true, "alex", T0);
     const second = reserveAutoUpdate(w.store, { version: "0.9.122", from: "0.9.120", now: T0 });
     if (!second.ok) throw new Error(second.why);
     const k = journal(w, "0.9.122", "cancelled");
@@ -319,7 +327,7 @@ describe("what a person is told", () => {
     expect(await pass(launchFails, async () => { throw new Error("launchctl said no"); })).toMatchObject({ failed: expect.any(String) });
     await run(launchFails, "0.9.120");
     expect(notices(launchFails.store)).toEqual([{ dedupe_key: "auto-update:0.9.121:not-started:alex", push_class: "attention",
-      subject: "Couldn't update to 0.9.121: launchctl said no. Still on 0.9.120. It won't be tried again by itself; you can still update by hand." }]);
+      subject: "Couldn't update to 0.9.121: launchctl said no. Still on 0.9.120. Automatic updates were turned off until you turn them on again." }]);
     // The journal can't even be prepared (its stage folder can't be made): reserved, then settled and told.
     const prepareFails = world();
     writeFileSync(join(prepareFails.dir, "staged-upgrades"), "not a folder");
@@ -343,33 +351,34 @@ describe("what a person is told", () => {
   });
 });
 
-describe("versions never tried again, whatever database is put back", () => {
+describe("an attempt that doesn't complete turns automatic updates off", () => {
   const run = (w: { dir: string; databaseFile: string; store: Store }, latest: string, current = "0.9.120", launch: (args: { id: string }) => Promise<void> = async () => undefined) =>
     autoUpdatePass(w.store, { stateDir: w.dir, databaseFile: w.databaseFile, current: { version: current, dist: join(w.dir, "dist") }, kind: "managed", latest, now: () => T0, launch });
-  /** A database put back from before `version` was attempted: its row is gone (as a restore or rollback leaves it). */
-  const restoredWithout = (store: Store, version: string) => {
-    store.handle.exec("DROP TRIGGER auto_update_attempt_no_delete");
-    store.handle.prepare("DELETE FROM auto_update_attempt WHERE version = ?").run(version);
-  };
+  const offRows = (store: Store) => store.handle.prepare("SELECT actor, outcome FROM action_ledger WHERE action = 'automatic updates' ORDER BY id").all().map(row => ({ ...row }));
 
-  test("A installs, automatic B fails, a rollback to A's backup drops B's row: the next pass still refuses B", async () => {
+  test.each(["restored", "refused", "cancelled"] as const)("%s: off with its ledger row; a person turns it on again; the version stays tried", async phase => {
     const w = world();
     expect(await run(w, "0.9.121")).toMatchObject({ started: "0.9.121" });
-    save({ ...readRuntimeUpdate(w.dir)!, phase: "complete" });
-    expect(await run(w, "0.9.122", "0.9.121", async () => { throw new Error("launchctl said no"); })).toMatchObject({ failed: expect.any(String) });
-    restoredWithout(w.store, "0.9.122");
-    expect(await run(w, "0.9.122", "0.9.121")).toEqual({ held: "attempted" });
-    expect(readRuntimeUpdate(w.dir)?.to.version).toBe("0.9.122");
+    save({ ...readRuntimeUpdate(w.dir)!, phase });
+    expect(await run(w, "0.9.122")).toEqual({ held: "off" });
+    expect(autoUpdatePolicy(w.store)).toMatchObject({ on: false, revision: 2, by: "automatic update" });
+    expect(offRows(w.store).slice(-1)).toEqual([{ actor: "automatic update", outcome: "off" }]);
+    setAutoUpdatePolicy(w.store, true, "alex", T0);
+    expect(await run(w, "0.9.121")).toEqual({ held: "attempted" });
   });
 
-  test("a list beside the journal that can't be read holds every automatic update", async () => {
+  test("a failed launch turns it off too; a person who turned it on again since is not overruled", async () => {
     const w = world();
-    writeFileSync(join(w.dir, "toolroll-update.never-automatic.json"), "{ not json", { mode: 0o600 });
-    expect(await run(w, "0.9.121")).toEqual({ held: "history-unreadable" });
-    writeFileSync(join(w.dir, "toolroll-update.never-automatic.json"), "[]");
-    chmodSync(join(w.dir, "toolroll-update.never-automatic.json"), 0o644);
-    expect(await run(w, "0.9.121")).toEqual({ held: "history-unreadable" });
-    expect(autoUpdateAttempts(w.store)).toEqual([]);
+    expect(await run(w, "0.9.121", "0.9.120", async () => { throw new Error("launchctl said no"); })).toMatchObject({ failed: expect.any(String) });
+    expect(autoUpdatePolicy(w.store)?.on).toBe(false);
+    // Another attempt, settled after alex turned automatic updates on again: alex's newer yes stands.
+    setAutoUpdatePolicy(w.store, true, "alex", T0);
+    expect(await run(w, "0.9.122")).toMatchObject({ started: "0.9.122" });
+    setAutoUpdatePolicy(w.store, true, "alex", T0);
+    save({ ...readRuntimeUpdate(w.dir)!, phase: "refused" });
+    expect(await run(w, "0.9.122")).toEqual({ held: "attempted" });
+    expect(autoUpdateAttempts(w.store)?.[0]).toMatchObject({ version: "0.9.122", outcome: "refused" });
+    expect(autoUpdatePolicy(w.store)?.on).toBe(true);
   });
 });
 

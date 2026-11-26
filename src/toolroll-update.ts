@@ -967,10 +967,6 @@ export async function startRuntimeRollback(o: { stateDir: string; databaseFile: 
       const now = system.now();
       const j = newJournal("rollback", { stateDir: o.stateDir, databaseFile: o.databaseFile, from: last.to, to: last.from, when: o.when, at: null, actor: o.actor }, now);
       j.restoreFrom = { path: last.backupPath, hash: last.backupHash, updateId: last.id, ...(last.codingBackupPath && last.codingBackupHash ? { codingPath: last.codingBackupPath, codingHash: last.codingBackupHash } : {}) };
-      // A person is going back from this version, however it was installed: automatic updates never install it again.
-      // Recorded beside the journal before anything is stopped, so no database put back can forget it.
-      try { addNeverAutomatic(o.stateDir, { version: last.to.version, why: "rolled-back", at: now.toISOString(), journal: last.id }); }
-      catch (error) { throw new Refusal(`Toolroll couldn't record that ${last.to.version} must not be installed again automatically (${(error as Error).message}). Nothing was changed.`); }
       save(j, "scheduled", "Starting.", now);
       return j;
     });
@@ -1699,33 +1695,6 @@ function retireAutoUpdatesIn(j: RuntimeUpdateJournal): void {
     catch (error) { db.exec("ROLLBACK"); throw error; }
   } finally { db.close(); }
   if (retired > 0) ledger(j.databaseFile, new Date(now), j.actor, "automatic updates", "off", RESTORED_AUTO_UPDATES_OFF);
-}
-
-// ---- versions never installed automatically again (kept beside the journal, outside any database a restore replaces) -
-
-/** The list's file: beside the update journal in the state folder, which no backup restore or rollback replaces. */
-export const neverAutomaticFile = (stateDir: string) => join(stateDir, "toolroll-update.never-automatic.json");
-/** A version automatic updates must never install: one an automatic attempt was reserved for, or one a person rolled
- * back (whoever installed it). Append-only. */
-export type NeverAutomatic = { version: string; why: "automatic-attempt" | "rolled-back"; at: string; journal: string | null };
-/** The list, or a throw when it can't be read or isn't exactly this shape (callers fail closed). No file: none yet. */
-export function neverAutomatic(stateDir: string): NeverAutomatic[] {
-  const file = neverAutomaticFile(stateDir);
-  let stat: ReturnType<typeof lstatSync>;
-  try { stat = lstatSync(file); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
-  if (!stat.isFile() || stat.isSymbolicLink() || (process.platform !== "win32" && ((Number(stat.mode) & 0o077) !== 0 || stat.uid !== process.getuid?.()))) throw Error("The list of versions never installed automatically is not an owner-only regular file.");
-  const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
-  const valid = (one: unknown): one is NeverAutomatic => typeof one === "object" && one !== null && typeof (one as NeverAutomatic).version === "string" && /^\d+\.\d+\.\d+$/.test((one as NeverAutomatic).version)
-    && ["automatic-attempt", "rolled-back"].includes((one as NeverAutomatic).why) && typeof (one as NeverAutomatic).at === "string" && ((one as NeverAutomatic).journal === null || typeof (one as NeverAutomatic).journal === "string");
-  if (!Array.isArray(parsed) || !parsed.every(valid)) throw Error("The list of versions never installed automatically is invalid.");
-  return parsed;
-}
-/** Add a version (once; nothing is ever removed). Only under the prepare lock, so two writers never race. Throws when it
- * can't be read or written. */
-export function addNeverAutomatic(stateDir: string, entry: NeverAutomatic): void {
-  const known = neverAutomatic(stateDir);
-  if (known.some(one => one.version === entry.version)) return;
-  durableJson(neverAutomaticFile(stateDir), [...known, entry]);
 }
 
 // ---- the one-off job is this user's, shared by every database ----------------------------------------------------

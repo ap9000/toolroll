@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { isNewer, RELEASES_PAGE } from "./releases.js";
 import type { Store } from "./store.js";
 import type { InstallKind } from "./install-method.js";
-import { abandonRuntimeUpdate, addNeverAutomatic, neverAutomatic, prepareRuntimeUpdate, readRuntimeUpdate, requestRuntimeUpdateCancel, runtimeUpdateTerminal, type RuntimeRef, type RuntimeUpdateJournal } from "./toolroll-update.js";
+import { abandonRuntimeUpdate, prepareRuntimeUpdate, readRuntimeUpdate, requestRuntimeUpdateCancel, runtimeUpdateTerminal, type RuntimeRef, type RuntimeUpdateJournal } from "./toolroll-update.js";
 
 /** The ledger's action for a change of the switch. */
 export const AUTO_UPDATE_ACTION = "automatic updates";
@@ -86,12 +86,6 @@ export function autoUpdateAttempts(store: Pick<Store, "handle">, limit = 20): Au
   catch { return null; }
 }
 
-/** Whether `version` is on the list kept beside the journal (an automatic attempt, or a version a person rolled back),
- * or null when that list can't be read. The list outlives any database a restore or rollback puts back. */
-export function neverAutomaticListed(stateDir: string, version: string): boolean | null {
-  try { return neverAutomatic(stateDir).some(one => one.version === version); } catch { return null; }
-}
-
 /** Whether an automatic update was ever reserved for `version`, or null when the history can't be read. */
 export function autoUpdateAttempted(store: Pick<Store, "handle">, version: string): boolean | null {
   try { return store.handle.prepare("SELECT 1 FROM auto_update_attempt WHERE version = ?").get(version) !== undefined; }
@@ -147,6 +141,9 @@ export function recordAutoUpdateOutcome(store: OutcomeStore, attempt: AutoUpdate
     if (!changed) return false;
     store.recordAction({ at: now.toISOString(), actor: autoUpdateActor(attempt.enabledBy), repo: null, taskId: null, runId: null, action: AUTO_UPDATE_ATTEMPT_ACTION, outcome, source: "policy",
       detail: `${attempt.from} → ${attempt.version}: ${clean}` });
+    // Anything but a completed update turns automatic updates off: the yes this attempt stood on is spent, and only a
+    // person's browser step-up turns them on again. Correctness never rests on this history surviving a restore.
+    if (outcome !== "complete") turnOffAfterAttempt(store, attempt, outcome, now);
     notifyAutoUpdate(store, { ...attempt, outcome, outcomeAt: now.toISOString(), detail: clean }, null, now);
     return true;
   });
@@ -288,22 +285,16 @@ export async function autoUpdatePass(store: AutoUpdateStore, o: AutoUpdatePassOp
     if (open !== undefined) { try { notifyAutoUpdate(store, open, "needs-attention", o.now()); } catch { /* shown on Settings → Updates */ } }
   }
   const decided = autoUpdateDecision({ policy, enablerStands: policy?.by != null && store.isInstanceOperator(policy.by), kind: o.kind, current: o.current.version, latest: o.latest,
-    attempted: o.latest === null ? false : attemptedAnywhere(store, o.stateDir, o.latest), journal });
+    attempted: o.latest === null ? false : autoUpdateAttempted(store, o.latest), journal });
   if (!decided.go) return { held: decided.why };
   const version = decided.version;
   let attempt: AutoUpdateAttempt | null = null, held: AutoUpdateHold | null = null;
   // Reserved inside the prepare lock, once nothing is under way, and bound to its journal before the lock is let go.
   const prepared = prepareRuntimeUpdate({ stateDir: o.stateDir, databaseFile: o.databaseFile, current: o.current, actor: autoUpdateActor(policy!.by!), version, when: "when-idle", at: null }, o.now(), {
     reserve: () => {
-      // The list beside the journal first: a restored or rolled-back database may no longer hold this version's row.
-      const listed = neverAutomaticListed(o.stateDir, version);
-      if (listed !== false) { held = listed === null ? "history-unreadable" : "attempted"; return `Not reserved: ${held}.`; }
       const reserved = reserveAutoUpdate(store, { version, from: o.current.version, now: o.now() });
       if (!reserved.ok) { held = reserved.why; return `Not reserved: ${reserved.why}.`; }
       attempt = reserved.attempt;
-      // Written before the journal: from here on, no database a restore puts back can make this version eligible again.
-      try { addNeverAutomatic(o.stateDir, { version, why: "automatic-attempt", at: o.now().toISOString(), journal: null }); }
-      catch (error) { return `The list of versions never installed automatically can't be written (${(error as Error).message}).`; }
       return null;
     },
     prepared: j => { if (attempt === null || !linkAutoUpdateJournal(store, attempt.id, j.id)) throw new Error("its attempt record could not be written"); },
@@ -363,15 +354,15 @@ export const whatsNewUrl = (version: string) => `${RELEASES_PAGE}v${version}`;
  */
 export function autoUpdateLine(attempt: AutoUpdateAttempt, phase: string | null = null): { line: string; failed: boolean } {
   const { version, from } = attempt;
-  const later = " It won't be tried again by itself; you can still update by hand.";
+  const later = AUTO_UPDATE_OFF_WORDS;
   switch (attempt.outcome) {
     case null: return phase === "needs-attention" ? { line: `The automatic update to ${version} needs attention: Toolroll couldn't put ${from} back on its own.`, failed: true }
       : { line: `Updating to ${version} by itself.`, failed: false };
     case "complete": return { line: `Updated to ${version} at ${clockOf(attempt.outcomeAt ?? attempt.reservedAt)}.`, failed: false };
-    case "restored": return { line: `Couldn't update to ${version}: ${reasonOf(attempt.detail)}. Still on ${from}; its database was put back from the backup, so automatic updates are off until you turn them on again.${later}`, failed: true };
+    case "restored": return { line: `Couldn't update to ${version}: ${reasonOf(attempt.detail)}. Still on ${from}; its database was put back from the backup.${later}`, failed: true };
     case "refused": case "not-started": return { line: `Couldn't update to ${version}: ${reasonOf(attempt.detail)}. Still on ${from}.${later}`, failed: true };
-    case "cancelled": return { line: `The automatic update to ${version} was cancelled. Still on ${from}.`, failed: false };
-    case "rolled-back": return { line: `Updated to ${version}, then rolled back to ${from}; automatic updates are off until you turn them on again.${later}`, failed: false };
+    case "cancelled": return { line: `The automatic update to ${version} was cancelled. Still on ${from}.${later}`, failed: false };
+    case "rolled-back": return { line: `Updated to ${version}, then rolled back to ${from}.${later}`, failed: false };
     case "unknown": return { line: `Couldn't tell how the automatic update to ${version} ended: ${reasonOf(attempt.detail)}.${later}`, failed: true };
   }
 }
@@ -393,8 +384,15 @@ export function notifyAutoUpdate(store: Pick<Store, "accountFacts" | "isInstance
   return queued;
 }
 
-/** Tried before: a row in this database, or on the list beside the journal; null when either can't be read. */
-function attemptedAnywhere(store: Pick<Store, "handle">, stateDir: string, version: string): boolean | null {
-  const here = autoUpdateAttempted(store, version), listed = neverAutomaticListed(stateDir, version);
-  return here === null || listed === null ? null : here || listed;
+/** Every line about an automatic update that didn't complete ends with this (the switch was turned off with it). */
+export const AUTO_UPDATE_OFF_WORDS = " Automatic updates were turned off until you turn them on again.";
+
+/** Turn automatic updates off after an attempt that didn't complete, in the caller's transaction, with a ledger row; only
+ * the yes it stood on (the same revision): a person who turned them on again since is not overruled. */
+function turnOffAfterAttempt(store: Pick<Store, "handle" | "recordAction">, attempt: AutoUpdateAttempt, outcome: AutoUpdateOutcome, now: Date): boolean {
+  const changed = store.handle.prepare("UPDATE auto_update_policy SET enabled = 0, revision = revision + 1, updated_by = ?, updated_at = ? WHERE id = 1 AND enabled = 1 AND revision = ?")
+    .run("automatic update", now.toISOString(), attempt.policyRevision).changes === 1;
+  if (changed) store.recordAction({ at: now.toISOString(), actor: "automatic update", repo: null, taskId: null, runId: null, action: AUTO_UPDATE_ACTION, outcome: "off", source: "policy",
+    detail: `the automatic update to ${attempt.version} didn't complete (${outcome}): off until a person turns it on again` });
+  return changed;
 }

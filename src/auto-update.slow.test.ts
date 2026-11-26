@@ -74,6 +74,9 @@ test("a release built by another repository is refused before anything changes, 
     for (const link of f.links) expect(readlinkSync(link)).toBe(join(f.oldDist, "bin.js"));
     store.close(); store = openStore(f.databaseFile);
     expect(reconcileAutoUpdates(store, { stateDir: f.stateDir, current: "0.6.0", now: f.system.now() })).toMatchObject([{ outcome: "refused", detail: expect.stringContaining("not ap9000/toolroll") }]);
+    // …which turned automatic updates off; turned on again, 0.7.0 stays tried.
+    expect(await passOnce(f, store, system)).toEqual({ held: "off" });
+    setAutoUpdatePolicy(store, true, "alex", f.system.now());
     expect(await passOnce(f, store, system)).toEqual({ held: "attempted" });
   } finally { store.close(); f.close(); }
 });
@@ -116,17 +119,19 @@ test("a rollback puts back a backup taken while automatic updates were on: they 
   } finally { store.close(); f.close(); }
 });
 
-test("a version a person installed by hand and then rolled back is never installed again automatically", async () => {
+test("a rollback of a version a person installed by hand turns automatic updates off: it isn't reinstalled behind their back", async () => {
   const f = fixture();
-  let store: Store | null = null;
+  let store = turnedOn(f);
   try {
+    store.close();
     const update = await f.start();
     expect(update).toMatchObject({ ok: true, phase: "complete" });
     expect(await startRuntimeRollback({ stateDir: f.stateDir, databaseFile: f.databaseFile, current: update.journal!.to, actor: "ada", when: "when-idle" }, f.system)).toMatchObject({ ok: true, phase: "complete" });
-    store = turnedOn(f);
-    expect(await passOnce(f, store)).toEqual({ held: "attempted" });
+    store = openStore(f.databaseFile);
+    expect(autoUpdatePolicy(store)?.on).toBe(false);
+    expect(await passOnce(f, store)).toEqual({ held: "off" });
     expect(readRuntimeUpdate(f.stateDir)).toMatchObject({ kind: "rollback", phase: "complete" });
-  } finally { store?.close(); f.close(); }
+  } finally { store.close(); f.close(); }
 });
 
 test("the person who turned automatic updates on is revoked while the job is starting: the updater refuses before it starts", async () => {
