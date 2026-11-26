@@ -41,11 +41,12 @@ export async function openApprovalWorld() {
   }
 
   /** A Ready result sent back from the workbench (its own road), and the revision planned with the terms kept. */
-  async function sentBack(session: Awaited<ReturnType<typeof terminal>>): Promise<string> {
+  /** `context`: what a page fills in ahead of the person's note (a quoted requirement), sent as the form's own field. */
+  async function sentBack(session: Awaited<ReturnType<typeof terminal>>, note = "Round the tax to cents.", context?: string): Promise<string> {
     const result = fx.ready("ordinary");
     const steps = stepCardsSchema.parse(JSON.parse((await session.get(`/t/${result.id}/steps`)).body));
     expect(steps.review?.run).toBe(result.runId);
-    const sent = await session.act(`/r/${result.runId}/comment`, { intent: "revise", note: "Round the tax to cents.", request: randomBytes(16).toString("hex"), batch: "", source: steps.review!.source });
+    const sent = await session.act(`/r/${result.runId}/comment`, { intent: "revise", note, ...(context === undefined ? {} : { context }), request: randomBytes(16).toString("hex"), batch: "", source: steps.review!.source });
     expect(sent.body).toEqual({ outcome: "done", words: "Sent back. The revision is filed." });
     const revision = world.store.handle.prepare("SELECT consumed_by AS id FROM diff_comment WHERE run = ?").get(result.runId)?.["id"] as string;
     plannerKeptTerms(world.store, revision);

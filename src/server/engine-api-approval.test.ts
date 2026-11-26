@@ -57,6 +57,13 @@ test("send back, the revision waits, the workbench reads its exact terms and app
   expect(acquire(world.store, ref, "worker-1", { token: "tok-worker-1", now: new Date(), ttlMs: 60_000 })).toMatchObject({ ok: true });
 });
 
+test("a note sent back with a quoted requirement ahead of it: the card's Sent back row says what the person typed (stranger 17)", async () => {
+  const session = await terminal();
+  const revision = await sentBack(session, "Rebuild on the current main.", "Not right: “Add a double function to math.js”");
+  const read = await card(session, revision);
+  expect(read.terms.at(-1)).toEqual({ label: "Sent back", words: "Rebuild on the current main. (alex)" });
+});
+
 test("a stale or changed digest refuses and approves nothing", async () => {
   const session = await terminal();
   const revision = await sentBack(session);
