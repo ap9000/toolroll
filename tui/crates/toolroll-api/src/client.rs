@@ -84,6 +84,12 @@ pub enum ActOutcome {
         laptop: bool,
         command: Option<String>,
     },
+    /// What landing a task's accepted work does (POST /t/<task>/land without a key, everyday-9 A4): the lines the
+    /// person reads and the key their yes posts back, so what lands is what they read.
+    LandTerms {
+        key: String,
+        lines: Vec<String>,
+    },
     /// A new thread started (POST /agents/live/thread with its card's key): the words, and the thread, so it is selected.
     ThreadStarted {
         words: String,
@@ -1446,6 +1452,26 @@ impl Client {
                         laptop: v["laptop"] == true,
                         command: v["command"].as_str().map(str::to_string),
                     });
+                }
+                if v["outcome"] == "land-terms" && status == 200 {
+                    let key = v["key"].as_str().unwrap_or("").to_string();
+                    let lines: Vec<String> = v["lines"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .map(|l| l.as_str().unwrap_or("").to_string())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if key.len() != 16
+                        || !key.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+                        || lines.is_empty()
+                    {
+                        return Err(ApiError::Contract(
+                            "Land's terms aren't what this version expects.".into(),
+                        ));
+                    }
+                    return Ok(ActOutcome::LandTerms { key, lines });
                 }
                 if v["outcome"] == "done" && path == "/agents/live/thread" {
                     if let Some(thread) = v["thread"]

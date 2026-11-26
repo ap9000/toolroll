@@ -29,7 +29,8 @@ import { flexibleAvailable } from "../flexible-available.js";
 import { laptopShipProblem } from "../flexible-laptop.js";
 import { threadsStatusNote, tidyFlexibleSignIns } from "../flexible-sign-in.js";
 import { FLEXIBLE_UNAVAILABLE } from "../flexible.js";
-import { admitFlexibleThreadOwner, answerFlexibleRequest, cancelFlexibleThreadShip, closeFlexibleSessions, closeFlexibleThread, continueFlexibleThread, flexibleThreadShipTerms, latestFlexibleShip, sendBackFlexibleThread, shipFlexibleThread, tidyEndedFlexibleThreads, flexibleThreadChangeOf, flexibleThreadLiveOf, flexibleThreadsOf, FLEXIBLE_WAIT_MS, flexibleThreadsExist, flexibleWorkOpen, openFlexibleSessions,
+import { saveFlexibleBranch } from "../flexible-save.js";
+import { admitFlexibleThreadOwner, answerFlexibleRequest, cancelFlexibleThreadShip, closeFlexibleSessions, closeFlexibleThread, continueFlexibleThread, flexibleThreadShipTerms, latestFlexibleShip, sendBackFlexibleThread, shipFlexibleThread, tidyEndedFlexibleThreads, flexibleThreadChangeOf, flexibleThreadEdited, flexibleThreadLiveOf, flexibleThreadsOf, FLEXIBLE_WAIT_MS, flexibleThreadsExist, flexibleWorkOpen, openFlexibleSessions,
   recoverFlexibleHolders, startFlexibleThread, settleFlexibleStops, tickFlexibleSessions, waitFlexibleThreadChange, flexibleThreadChanges, flexibleThreadTipOf, type FlexibleChoice, type FlexibleSessions } from "../flexible-session.js";
 import { createFlexibleLauncher, type FlexibleLauncher } from "../flexible-launcher.js";
 import { FLEXIBLE_NEXT_WORDS, flexibleReadiness, flexibleStartCard } from "../flexible-start.js";
@@ -295,7 +296,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const changes = await threadChanges(id);
     const turn = Number(store.handle.prepare("SELECT max(seq) AS seq FROM thread_turn WHERE thread = ? AND status <> 'withdrawn'").get(id)?.["seq"] ?? 0);
     if (ownedThread(request, who, flexible, id) === null) return refusal(response, 404, "thread");
-    if (fileParam === null) return sendChecked(response, 200, "resultDiff", threadDiffOf(id, turn, changes));
+    if (fileParam === null) return sendChecked(response, 200, "resultDiff", threadDiffOf(id, turn, changes, { edited: flexibleThreadEdited(flexible, { thread: id }) }));
     const one = threadDiffFileOf(id, turn, changes, Number(fileParam));
     return one === null ? refusal(response, 404, "file") : sendChecked(response, 200, "resultDiffFile", one);
   }
@@ -728,6 +729,28 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     return acted(response, 200, "done", `Sent back. Turn ${sent.seq} started; the agent has the conversation so far.`);
   }
 
+  /**
+   * POST /agents/live/thread/<id>/save: Save as branch (everyday 9, B1). The thread's owner puts its committed work into
+   * the project's own repository as `toolroll/code-<id>` through the controlled import (flexible-save.ts), with no pull
+   * request, task or merge; the words say the exact `git merge` that puts it on their branch. Their own session
+   * (re-read, and asked again inside the save's own transaction) and a local owner's own act `save-thread`; no password:
+   * it grants nothing. Answered while interactive agent threads are off too, and after End.
+   */
+  async function threadSave(ctx: HandlerContext): Promise<void> {
+    const { url, who, request, response } = ctx;
+    const flexible = threadsRead();
+    if (flexible === null) return acted(response, 404, "refused", "There's no such thread.");
+    if (who.via !== "cookie" || rereadBrowser(runtime, request, who) === null) return acted(response, 403, "refused", "Only a person signed in here can save a thread's work.");
+    const id = url.pathname.slice("/agents/live/thread/".length, -"/save".length);
+    if (ownedThread(request, who, flexible, id) === null) return acted(response, 404, "refused", "There's no such thread.");
+    if (who.authority === "local-owner" && localActNow(store, "save-thread") === null) return acted(response, 403, "refused", "Sign in with your password to do this.");
+    const held = sessionHeld(who, flexible, id);
+    if (held === null || !held()) return acted(response, 403, "refused", "Only a person signed in here can save a thread's work.");
+    const saved = await saveFlexibleBranch(store, { thread: id, by: { name: who.name, generation: who.session.generation }, now: new Date(), prove: held });
+    if (!saved.ok) return acted(response, 409, "refused", saved.message);
+    return acted(response, 200, "done", `${saved.already ? `Already saved as ${saved.branch}.` : `Saved as ${saved.branch} (commit ${saved.candidate.slice(0, 12)}).`} ${saved.next}`);
+  }
+
   /** GET /engine/chat[?project=]: the person's central Lead conversation as structured data (never HTML), admitted as
    * `/chat` is (or for an admitted `terminal-remote` approver API token) and re-proved before and after reading. */
   async function leadChat(ctx: HandlerContext): Promise<void> {
@@ -856,7 +879,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     },
     registrations: [
       ...handlersOf("pages", { "engine.hello": hello, "engine.agents": agents, "engine.agents-check": agentsCheck, "engine.chat": leadChat, "agents.live.run": liveRun, "agents.live.thread": liveThread, "agents.live.thread.diff": liveThreadDiff, "agents.live.threads": liveThreads,
-        "agents.live.thread.answer": threadAnswer, "agents.live.thread.start": threadStart, "agents.live.thread.turn": threadTurn, "agents.live.thread.stop": threadClose("stop"), "agents.live.thread.end": threadClose("end"), "agents.live.thread.ship": threadShip, "agents.live.thread.ship-cancel": threadShipCancel, "agents.live.thread.ship-send-back": threadShipSendBack }),
+        "agents.live.thread.answer": threadAnswer, "agents.live.thread.start": threadStart, "agents.live.thread.turn": threadTurn, "agents.live.thread.stop": threadClose("stop"), "agents.live.thread.end": threadClose("end"), "agents.live.thread.ship": threadShip, "agents.live.thread.ship-cancel": threadShipCancel, "agents.live.thread.ship-send-back": threadShipSendBack, "agents.live.thread.save": threadSave }),
       ...handlersOf("tasks", { "task.steps": taskSteps, "task.approval": taskApproval, "task.diff": taskDiff, "task.result": taskResult }),
       ...handlersOf("people", {}, { "edge.login-link-json": redeemLink }),
     ],

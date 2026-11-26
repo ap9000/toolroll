@@ -31,6 +31,8 @@ test("every route row is marked for the local owner; an allow names one of its a
     "agents.live.thread.answer=answer-question",
     // Ending one's own thread (final; it only narrows: engine-api.ts threadClose checks the act).
     "agents.live.thread.end=end-thread",
+    // Saving one's own thread's work as a branch (everyday 9 B1: engine-api.ts threadSave checks the act; it grants nothing).
+    "agents.live.thread.save=save-thread",
     // Ship on a password-free laptop (the owner's D1: engine-api.ts threadShip checks this exact act and the laptop
     // predicate); cancelling a Ship only narrows; sending one back is a reply.
     "agents.live.thread.ship-cancel=cancel-ship", "agents.live.thread.ship-send-back=reply-thread", "agents.live.thread.ship=ship-thread",
@@ -45,7 +47,7 @@ test("every route row is marked for the local owner; an allow names one of its a
     "decision.answer=answer-question",
     // Direct Chat (server-backed local-clone agent chats, loopback + solo only; src/server/direct-chat.ts re-checks each act).
     "direct-chat.apply-main=direct-chat-manage", "direct-chat.attach=direct-chat-send", "direct-chat.delete=direct-chat-manage",
-    "direct-chat.model=direct-chat-manage", "direct-chat.page-ship-review=read", "direct-chat.page-ship=direct-chat-ship", "direct-chat.repair=direct-chat-manage", "direct-chat.send=direct-chat-send", "direct-chat.ship-cancel=direct-chat-manage",
+    "direct-chat.model=direct-chat-manage", "direct-chat.page-reply=direct-chat-send", "direct-chat.page-ship-review=read", "direct-chat.page-ship=direct-chat-ship", "direct-chat.repair=direct-chat-manage", "direct-chat.send=direct-chat-send", "direct-chat.ship-cancel=direct-chat-manage",
     "direct-chat.ship-preview=read", "direct-chat.ship=direct-chat-ship", "direct-chat.start=direct-chat-start", "direct-chat.stop=direct-chat-stop",
     // The Agents screen (terminal workbench): looking for agents again, an agent's own sign-in or install in a pane, and
     // the installation's models on a solo install (model-choices.ts re-checks `change-models` and solo).
@@ -54,7 +56,7 @@ test("every route row is marked for the local owner; an allow names one of its a
     // (flows.ts triggerAct re-checks it); share, renew, secret, setup, sender, scope, remove, unshare and dropped stay denied.
     "flow.trigger.check=trigger-run", "flow.trigger.pause=trigger-pause", "flow.trigger.press=trigger-run", "flow.trigger.resume=trigger-resume",
     "projects.github-list=add-project", "projects.onboard-confirm=add-project", "projects.onboard-preview=add-project",
-    "projects.open=add-project", "projects.select=read", "run.act.comment=request-revision", "run.act.note=request-revision", "run.act.revise=request-revision", "settings.advanced=view-preference", "settings.code-map=code-map-switch",
+    "projects.open=add-project", "projects.select=read", "run.act.checks=run-checks", "run.act.comment=request-revision", "run.act.note=request-revision", "run.act.revise=request-revision", "settings.advanced=view-preference", "settings.code-map=code-map-switch",
     // Threads' setup from the workbench's `w` link (threads-everyday S6): saving, checking and turning terms on take a
     // password typed into the form (local-owner.ts LOCAL_PASSWORD_ACTS); removing your own sign-in only narrows.
     "settings.flexible-sign-in-check=flexible-sign-in-check", "settings.flexible-sign-in-clear=flexible-sign-in-clear", "settings.flexible-sign-in=flexible-sign-in-save",

@@ -65,6 +65,10 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   // Local-owner slice 3 (§2): retry the owner's own approved build after it stopped. Only the owner's own person yes,
   // on work it could approve again now, three times per seal; the writer (local-owner-acts.ts retryAsLocalOwner) checks it.
   "retry-build",
+  // Everyday 9 A6: run a result's checks again from the local owner's session, on a solo install: the already-approved
+  // command only (changing a check still takes the password), on work the owner could approve again now, never wider
+  // than sign-ins at launch (local-checks.ts). The handler (server/tasks.ts runFollowUp) checks this exact act.
+  "run-checks",
   // Settings → Advanced (the eight plan, W4): this person's own "Show advanced features". It hides or shows entry points
   // on their own pages and grants nothing; the writer (advanced.ts setAdvancedPreference) checks this exact act.
   "view-preference",
@@ -113,6 +117,10 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   "ship-thread",
   // Cancel one's own thread's armed Ship for good (it only narrows).
   "cancel-ship",
+  // Save one's own thread's committed work as a branch in its project (everyday 9, B1, flexible-save.ts): the controlled
+  // import into `toolroll/code-<thread>`, with no pull request, task or merge. It grants nothing; the person's own git
+  // merge lands it. The handler (engine-api.ts threadSave) checks this exact act.
+  "save-thread",
   "flexible-sign-in-save",
   "flexible-sign-in-check",
   "flexible-sign-in-clear",

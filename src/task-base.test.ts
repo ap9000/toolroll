@@ -1,7 +1,7 @@
 import { describe, test, expect } from "vitest";
 import { openStore } from "./store.js";
 import { register } from "./runner.js";
-import { freshBaseFor, taskBaseOf, type GitRead } from "./task-base.js";
+import { familyStartOf, freshBaseFor, taskBaseOf, wholeChangeBaseOf, type GitRead } from "./task-base.js";
 
 const T0 = new Date("2026-10-12T16:00:00.000Z");
 const OLD = "55caab73".padEnd(40, "0");
@@ -48,6 +48,28 @@ describe("fresh base, the task's view", () => {
     store.handle.prepare("UPDATE task_ref SET revision_of = 't-1' WHERE external_id = 't-rev'").run();
     expect(freshBaseFor(store, "t-rev", "toolroll/t-rev", "main")).toEqual({});
     expect(freshBaseFor(store, "t-rev", "toolroll-plan/t-rev", "main")).toEqual({});
+    store.close();
+  });
+
+  test("a revision's base is its family's original start on main, never the rejected head it builds on (everyday-9 A1)", () => {
+    const store = seeded();
+    const ref = store.refFor("built-in", "t-1").id, rev = store.refFor("built-in", "t-rev").id;
+    const HEAD1 = "aaaaaaaa".padEnd(40, "2");
+    const first = store.startRun({ taskRef: ref, leaseId: "l-1", runner: "builder-1", branch: "toolroll/t-1", worktree: "/pool/t-1", ...legacy, now: T0 });
+    store.stampRun(first, { baseRevision: OLD });
+    store.handle.prepare("UPDATE task_ref SET revision_of = 't-1' WHERE external_id = 't-rev'").run();
+    const second = store.startRun({ taskRef: rev, leaseId: "l-2", runner: "builder-1", branch: "toolroll/t-rev", worktree: "/pool/t-rev", ...legacy, now: T0 });
+    store.stampRun(second, { baseRevision: HEAD1 });
+    expect(familyStartOf(store, ref)).toBeNull();
+    expect(wholeChangeBaseOf(store, ref, "toolroll/t-1")).toBe(OLD);
+    expect(familyStartOf(store, rev)).toBe(OLD);
+    expect(wholeChangeBaseOf(store, rev, "toolroll/t-rev")).toBe(OLD);
+    const git: GitRead = (_cwd, args) => args[0] === "symbolic-ref" ? "main" : args[2] === `${OLD}..refs/heads/main` ? "1" : "0";
+    expect(taskBaseOf(store, "t-rev", git)).toMatchObject({ base: OLD, family: true, behind: 1,
+      words: "Whole change since 55caab73 (includes earlier attempts' work that's still in it) · Behind main by 1 commit" });
+    // Another project's task never lends its start.
+    store.handle.prepare("UPDATE task_ref SET repo = '/elsewhere' WHERE external_id = 't-1'").run();
+    expect(familyStartOf(store, rev)).toBeNull();
     store.close();
   });
 });

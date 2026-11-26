@@ -206,6 +206,17 @@ fn every_palette_action_runs_the_same_path_as_its_key() {
             let mut by_key = on(select);
             let mut by_palette = on(select);
             let chord = toolroll_tui::keys::parse_chord(spec.keys[0]).unwrap();
+            // An action the palette offers only where it applies (Land, on finished work): where it's hidden, its key
+            // changes nothing and runs nothing; it only says why.
+            if !palette::entries(&by_palette)
+                .iter()
+                .any(|e| e.pick == Pick::Action(spec.action))
+            {
+                let pressed = by_key.key(KeyEvent::new(chord.code, chord.mods));
+                assert_eq!(pressed, vec![], "{} on {select}", spec.id);
+                assert_eq!(by_key.mode, Mode::Normal, "{} on {select}", spec.id);
+                continue;
+            }
             let pressed = by_key.key(KeyEvent::new(chord.code, chord.mods));
             let picked = through_palette(&mut by_palette, spec.action);
             assert_eq!(shape(&pressed), shape(&picked), "{} on {select}", spec.id);

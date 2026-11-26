@@ -19,6 +19,7 @@ import { sealedInventorySchema } from "./contracts/release-check.js";
 import { purposeCheckMode } from "./contracts/release-terms.js";
 import { provedComposition, type ComposedLinks, type Coverage } from "./release-recheck.js";
 import { checkAttemptOf, verifyCommandAt } from "./store.js";
+import { familyStartOf } from "./task-base.js";
 
 export const VERIFICATION_RECEIPT_CAPTURE = "machine verification receipt v1";
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -257,7 +258,9 @@ export function assessmentFromSavedEvidence(store: Store, root: string, runId: n
   try {
     const view = readVerificationView(gate.bytes);
     const base = source.branch ? store.firstBuilderBase(source.taskRef, source.branch) ?? source.baseRevision : source.baseRevision;
-    const paths = savedInventoryPaths(stat, source.headRevision, base);
+    // A revision's diff runs from its family's start (everyday-9 A1); one sealed before that, from its own base.
+    const family = familyStartOf(store, source.taskRef);
+    const paths = (family === null ? null : savedInventoryPaths(stat, source.headRevision, family)) ?? savedInventoryPaths(stat, source.headRevision, base);
     if (!view.ok || paths === null) return null;
     const receipt = view.value;
     return adjudicate({ directAssessment: true, proofArtifactPresent: false, proofParse: null,

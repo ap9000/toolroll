@@ -5,7 +5,7 @@ expression: shown
 " Toolroll  · shop  $1.84 today · plan 62%                                                     ◐ 2 working   2 need you  "
 "  ╭ Keys ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮   "
 " ╭│ j/k            Move in list / scroll panel              x/X            Stop build or retries / cancel task      │─╮ "
-" ││ Left/Right     Focus list / panel                       a              Accept the result, or approve a plan     │ │ "
+" ││ Left/Right     Focus list / panel                       a/B            Accept or approve / land on your branch  │ │ "
 " ││ Tab/Shift-Tab  Next / previous tab                      r              Send back with a note; retry if failed   │ │ "
 " ││ !/@            Next / previous that needs you           t/i            Open build shell / live agent            │ │ "
 " ││ '              Jump back (again: forward)               n              New task                                 │ │ "

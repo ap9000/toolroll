@@ -4,13 +4,15 @@
  * stopped when the page goes), and hears its own room. Tiles keep their order; nothing leaves while the grid is being
  * looked at (pointer over it or focus in it) — changes wait, and the header says so. */
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
+import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
 import { Badge, cn } from "../components/ui/index.js";
 import { useLiveRoom } from "../live.js";
 import { useNow } from "../live-task.js";
 import { elapsedWords } from "./agents-view.js";
 import { applyWindow as applyWorkWindow, emptyConversation, KButton, KWorkRecords, type Conversation, type ConversationNote, type WindowAnswer } from "../kit/index.js";
 import { Excerpt } from "./result-view.js";
+import { FormToken } from "../ui/post-form.js";
+import { keyed } from "../mutation-key.js";
 
 type Tile = { runId: number; role: string; taskId: string; title: string; project: string | null; agent: string; model: string | null; startedAt: string; endedAt: string | null;
   state: "working" | "needs-you" | "done" | "failed" | "stopped" | "parked"; why: "quiet" | "question" | null; quietSince: string | null; local: boolean; parentRun: number | null;
@@ -479,8 +481,29 @@ function ThreadDiffFileView({ thread, file }: { thread: string; file: ThreadDiff
     lines: lines.map(line => ({ kind: line.kind === "meta" ? "context" : line.kind, line: line.newLine ?? line.oldLine, text: line.text })) }} changesHref={null} />;
 }
 
+/** Save as branch (everyday 9, B1): the thread's committed work into the project's repository as toolroll/code-<id>,
+ * and the console's words (the git merge to run, or why not). */
+function SaveBranch({ id }: { id: string }) {
+  const csrf = useContext(FormToken);
+  const [said, setSaid] = useState<{ ok: boolean; words: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const save = () => {
+    if (busy || csrf === "") return;
+    setBusy(true);
+    fetch(`/agents/live/thread/${id}/save`, { method: "POST", credentials: "same-origin", headers: keyed({ accept: "application/json" }), body: new URLSearchParams({ csrf }) })
+      .then(async response => { const answer = await response.json().catch(() => null) as { outcome?: string; words?: string } | null;
+        setSaid({ ok: answer?.outcome === "done", words: typeof answer?.words === "string" ? answer.words : "That didn't go through." }); })
+      .catch(() => setSaid({ ok: false, words: "That didn't go through. Check your connection and try again." }))
+      .finally(() => setBusy(false));
+  };
+  return <div className="flex flex-col gap-1" data-live-thread-save>
+    <span><KButton variant="outline" sm label={busy ? "Saving…" : "Save as branch"} disabled={busy} onClick={save} /></span>
+    {said !== null && <p className={`text-caption ${said.ok ? "text-foreground" : "text-destructive"}`} role="status">{said.words}</p>}
+  </div>;
+}
+
 /** A thread opened from the list: what was said (yours marked You), and what it changed since it started (its committed
- * work, file by file). Read-only: replies, Ship and End are the terminal's. */
+ * work, file by file), with Save as branch. Replies, Ship and End are the terminal's. */
 function ThreadDetail({ id }: { id: string }) {
   const [records, setRecords] = useState<ThreadRecord[] | null>(null);
   const [live, setLive] = useState(false);
@@ -519,6 +542,7 @@ function ThreadDetail({ id }: { id: string }) {
           </li>)}</ul>}
       {diff?.patchTruncated === true && <p className="text-caption text-muted-foreground">Some files are left out: the change is too large to show here.</p>}
     </section>
+    {diff !== null && diff.problem === null && diff.files.length > 0 && <SaveBranch id={id} />}
   </div>;
 }
 

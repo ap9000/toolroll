@@ -9,6 +9,7 @@ import { readCodexLimits } from "./codex-limits.js";
 import { claudeLimitsOf, type LimitReading } from "./provider-limits.js";
 import { billingOf } from "./spend.js";
 import type { Store } from "./store.js";
+import { directChatRunning } from "./plan-limits-demand.js";
 
 export type GeminiSubscriptionStatus = {
   connected: boolean;
@@ -24,6 +25,13 @@ export type SubscriptionRefreshResult = {
   codex: LimitReading | null;
   gemini: GeminiSubscriptionStatus;
   refreshedAt: string;
+};
+
+/** The provider reads, replaceable in tests (each one starts a provider's own command; Claude's is a model turn). */
+export type SubscriptionReaders = {
+  claude?: () => Promise<LimitReading | null>;
+  codex?: () => Promise<LimitReading | null>;
+  gemini?: (now: Date) => Promise<GeminiSubscriptionStatus>;
 };
 
 const CLAUDE_STALE_MS = 30 * 60_000;
@@ -198,6 +206,8 @@ function claudeNeedsRefresh(store: Store, now: Date): boolean {
   if (store.handle.prepare("SELECT 1 AS live FROM run WHERE provider = 'claude' AND outcome IS NULL AND started_at > ? LIMIT 1").get(recent) !== undefined) {
     return false;
   }
+  // A Direct Chat on Claude uses the same sign-in: a probe beside it would refresh the same credential.
+  if (directChatRunning(store, "claude", now)) return false;
   const rows = store.providerLimits().filter(one => one.provider === "claude");
   if (rows.length === 0) return true;
   return rows.some(one => {
@@ -217,18 +227,23 @@ function geminiNeedsRefresh(databaseFile: string | null, now: Date): boolean {
 export async function refreshSubscriptions(
   store: Store,
   databaseFile: string | null,
-  options: { forceClaude?: boolean; forceGemini?: boolean; skipCodex?: boolean; now?: Date } = {},
+  options: { forceClaude?: boolean; forceGemini?: boolean; skipCodex?: boolean; now?: Date; readers?: SubscriptionReaders;
+    /** The limits loop's demand, asked right before each provider starts: false starts nothing (plan-limits-demand.ts). */
+    stillWanted?: () => boolean } = {},
 ): Promise<SubscriptionRefreshResult> {
+  const readers = options.readers ?? {};
+  const gate = <T>(read: () => Promise<T>, otherwise: () => Promise<T>): Promise<T> => options.stillWanted?.() === false ? otherwise() : read();
   const now = options.now ?? new Date();
   const shouldCodex = options.skipCodex !== true && billingOf("codex") === "subscription";
   const shouldClaude = options.forceClaude === true || claudeNeedsRefresh(store, now);
   const shouldGemini = options.forceGemini === true || geminiNeedsRefresh(databaseFile, now);
+  const readGemini = shouldGemini && options.stillWanted?.() !== false;
 
   const [codex, claude, gemini] = await Promise.all([
-    shouldCodex ? readCodexLimits() : Promise.resolve(null),
-    shouldClaude ? readClaudeLimits() : Promise.resolve(null),
-    shouldGemini
-      ? readGeminiSubscription({ now })
+    shouldCodex ? gate(() => (readers.codex ?? (() => readCodexLimits()))(), () => Promise.resolve(null)) : Promise.resolve(null),
+    shouldClaude ? gate(() => (readers.claude ?? (() => readClaudeLimits()))(), () => Promise.resolve(null)) : Promise.resolve(null),
+    readGemini
+      ? (readers.gemini ?? (at => readGeminiSubscription({ now: at })))(now)
       : Promise.resolve(
           (databaseFile !== null ? readStoredGeminiStatus(databaseFile) : null) ?? {
             connected: false,
@@ -243,7 +258,7 @@ export async function refreshSubscriptions(
 
   if (codex !== null) store.recordProviderLimits(codex, now);
   if (claude !== null) store.recordProviderLimits(claude, now);
-  if (databaseFile !== null && shouldGemini) writeStoredGeminiStatus(databaseFile, gemini);
+  if (databaseFile !== null && readGemini) writeStoredGeminiStatus(databaseFile, gemini);
 
   return { claude, codex, gemini, refreshedAt: now.toISOString() };
 }

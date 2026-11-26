@@ -420,6 +420,13 @@ pub enum Mode {
         version: String,
         hold: i64,
     },
+    /// Land a task's accepted work (everyday-9 A4): the console's own lines for what lands where, and the key its Enter
+    /// posts back (POST /t/<task>/land `key`), so what lands is exactly what was read.
+    ConfirmLand {
+        task: String,
+        key: String,
+        lines: Vec<String>,
+    },
     /// Cancel a task: the state and latest build shown (`run`: None for no build), posted as pins the cancel proves.
     ConfirmCancel {
         task: String,
@@ -1776,6 +1783,14 @@ impl App {
     }
 
     /// The person's hold on the selected task (Stop retrying, or the task page's hold), when one stands.
+    /// The selected task when Land can be offered (everyday-9 A4): a finished task (Recent), never a thread or an ask.
+    /// The console decides the rest (accepted, a project with no pull requests, not landed yet) and says why not.
+    pub fn land_here(&self) -> Option<String> {
+        self.selected_item()
+            .filter(|i| i.is_task && !i.thread && i.section == Section::Recent && i.tone == "done")
+            .map(|i| i.id.clone())
+    }
+
     pub fn held_here(&self) -> Option<&toolroll_api::TaskHold> {
         self.steps_here()
             .filter(|s| s.live_run.is_none())
@@ -2436,6 +2451,19 @@ impl App {
                 self.mode = Mode::ThreadNext(next);
                 vec![]
             }
+            Msg::Acted(Ok(ActOutcome::LandTerms { key, lines })) => {
+                // What landing does, in the console's words: confirmed on Enter, for the task still selected.
+                let Some(task) = self.land_here() else {
+                    return vec![];
+                };
+                self.status = None;
+                self.mode = Mode::ConfirmLand {
+                    task,
+                    key,
+                    lines: lines.into_iter().map(|l| clean(&l)).collect(),
+                };
+                vec![]
+            }
             Msg::Acted(Ok(ActOutcome::ThreadTerms { key, lines })) => {
                 self.status = None;
                 self.mode = Mode::StartThread(crate::thread::StartTerms::new(
@@ -2918,11 +2946,15 @@ impl App {
                 row_moved = true;
             }
         }
+        // New facts (a turn ended, a commit, a Ship moved): a Diff already read for this thread is read again, so it
+        // never stays on what it said before the turn (stranger 13: it did until the thread was left and reopened).
+        let mut facts_moved = false;
         if let Some(facts) = window.thread {
             if view.facts.as_ref().map(|f| &f.version) != Some(&facts.version) {
                 if let Some(row) = self.threads.rows.iter_mut().find(|t| t.id == id) {
                     row_moved |= crate::thread::follow_facts(row, &facts);
                 }
+                facts_moved = view.facts.is_some();
                 view.facts = Some(facts);
                 changed = true;
             }
@@ -2960,12 +2992,17 @@ impl App {
                 self.selected = at;
             }
         }
-        match more {
+        // A read already on its way for this thread is superseded too (Codex round 1, finding 4): asking again moves the
+        // wanted generation on, so the older answer, read before the turn ended, is dropped when it arrives.
+        let diff_again = facts_moved
+            && (self.diff.as_ref().is_some_and(|d| d.task == id)
+                || self.diff_wanted.as_ref().is_some_and(|w| w.task == id));
+        let mut effects = match more {
             Some(cursor) => {
                 let view = self.threads.view.as_mut().unwrap();
                 view.fetching = true;
                 vec![Effect::FetchThread {
-                    thread: id,
+                    thread: id.clone(),
                     cursor: Some(cursor),
                     known: view.facts.as_ref().map(|f| f.version.clone()),
                     wait: false,
@@ -2974,7 +3011,11 @@ impl App {
             // Something changed: wait for the next change at once (a held read), never on the tick.
             None if changed => self.poll_thread(),
             None => vec![],
+        };
+        if diff_again {
+            effects.push(self.ask_diff(id));
         }
+        effects
     }
 
     /// An act came back: the answer it carried (if any) is no longer on its way here; the read says where it stands.
@@ -3834,6 +3875,22 @@ impl App {
                     KeyCode::Enter => self.hold(task, version, retrying),
                     _ => {
                         self.say(Tone::Said, NOTHING_CHANGED);
+                        vec![]
+                    }
+                }
+            }
+            Mode::ConfirmLand {
+                task, key: landing, ..
+            } => {
+                self.mode = Mode::Normal;
+                match key.code {
+                    KeyCode::Enter => self.act(
+                        format!("/t/{}/land", toolroll_api::client::encode(&task)),
+                        vec![("key", landing)],
+                        "Landed.".into(),
+                    ),
+                    _ => {
+                        self.say(Tone::Said, "Nothing landed.");
                         vec![]
                     }
                 }
@@ -5009,7 +5066,11 @@ impl App {
                     vec![]
                 }
             }
-            Action::ThreadShip => {
+            // On a thread, `S` saves its committed work as a branch in the project (no pull request, no merge).
+            Action::ThreadSave if self.thread_selected().is_some() => {
+                crate::thread::save_branch(self)
+            }
+            Action::ThreadShip | Action::ThreadSave => {
                 self.say(Tone::Refused, crate::thread::NO_THREAD_SELECTED);
                 vec![]
             }
@@ -5212,6 +5273,20 @@ impl App {
                 }
                 vec![]
             }
+            Action::Land => match self.land_here() {
+                Some(task) => {
+                    self.say(Tone::Said, "Reading what lands…");
+                    self.act(
+                        format!("/t/{}/land", toolroll_api::client::encode(&task)),
+                        vec![],
+                        String::new(),
+                    )
+                }
+                None => {
+                    self.say(Tone::Refused, "Only finished work can land.");
+                    vec![]
+                }
+            },
             Action::NewTask => self.open_new_task(),
             Action::TakeOver => self.take_over(),
             Action::TakeOverAgent => self.take_over_agent(),
@@ -6649,6 +6724,9 @@ impl App {
                 .is_none()
                 .then_some(QUESTION_CHANGED),
             Mode::Approve { task, key, .. } => self.approval_changed(task, key),
+            Mode::ConfirmLand { task, .. } if self.selected_id().as_ref() != Some(task) => {
+                Some(TASK_CHANGED)
+            }
             // Every other dialog froze the version it opened on: a newer one (a revision filed since) closes it.
             Mode::ConfirmHold { task, version, .. }
             | Mode::ConfirmResume { task, version, .. }
@@ -6920,6 +6998,7 @@ impl App {
                 | ActOutcome::ThreadTerms { .. }
                 | ActOutcome::ThreadStarted { .. }
                 | ActOutcome::ShipTerms { .. }
+                | ActOutcome::LandTerms { .. }
                 | ActOutcome::BuilderPassword { .. }
                 | ActOutcome::NextStep { .. },
             ) => {

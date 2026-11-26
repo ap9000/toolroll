@@ -74,6 +74,7 @@ actions! {
     Accept = "accept", Global, Act, "Accept the result, or approve a plan", ["a"];
     SendBack = "send-back", Global, Act, "Send the result back, with a note (or retry, or plan again)", ["r"];
     Retry = "retry", Global, Act, "Retry a failed task (Review and retry)", [];
+    Land = "land", Global, Act, "Land accepted work on your branch (shows what lands first)", ["B"];
     TakeOver = "take-over", Global, Act, "Open build shell", ["t"];
     TakeOverAgent = "take-over-agent", Global, Act, "Open live agent (Claude / Codex / Antigravity)", ["i"];
     NewTask = "new-task", Global, Act, "New task", ["n"];
@@ -84,6 +85,7 @@ actions! {
     ThreadStop = "thread-stop", Global, Act, "Stop the thread's agent (x on a thread)", [];
     ThreadEnd = "thread-end", Global, Act, "End the thread, for good (X on a thread; asks first)", [];
     ThreadShip = "thread-ship", Global, Act, "Ship the thread's work (a on a thread; its terms first)", [];
+    ThreadSave = "thread-save", Global, Act, "Save the thread's work as a branch in your repository", ["S"];
     NextNeedsYou = "next-needs-you", Global, Move, "Next thing that needs you (oldest first)", ["!"];
     PreviousNeedsYou = "previous-needs-you", Global, Move, "Previous thing that needs you", ["@"];
     JumpBack = "jump-back", Global, Move, "Back to where each jump left from (again right away: forward)", ["'"];
@@ -231,6 +233,11 @@ const PAIRS: &[(Action, Action, &str)] = &[
         "Open build shell / live agent",
     ),
     (Action::Agents, Action::Models, "Agents / model assignments"),
+    (
+        Action::Accept,
+        Action::Land,
+        "Accept or approve / land on your branch",
+    ),
     (
         Action::LeadChat,
         Action::DockChat,

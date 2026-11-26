@@ -4,6 +4,7 @@ import { readStoredGeminiStatus, refreshSubscriptions } from "./subscription-usa
 import { liveCommandsShown } from "./live-detail.js";
 import { flexibleArmedPass } from "./flexible-ship.js";
 import { directChatArmedPass } from "./direct-chat-ship.js";
+import { saveFlexibleBranch } from "./flexible-save.js";
 import { closeFlexibleThread, flexibleShipNeedsFor, flexibleThreadRecords, flexibleThreadShipTerms, flexibleThreadTitleOf, latestFlexibleShip, removeFlexibleThreadCopy, shipFlexibleThread, stopFlexibleThreadsEverywhere, type FlexibleStopReport } from "./flexible-session.js";
 import { runCardCommand } from "./card-cli.js";
 import { mintSecret } from "./secret-mint.js";
@@ -159,7 +160,7 @@ import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { parseMachLookup, parseReadDeny, readDenyWords, type ProjectSandbox } from "./project-sandbox.js";
 import { LOCAL_POLICY } from "./surface.js";
-import { land, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding, type LandAuthority } from "./local-landing.js";
+import { handoffWords, land, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding, type LandAuthority } from "./local-landing.js";
 import { asLocalOwner, currentLocalOwner, localActNow, LOCAL_MODE_CONFINES, localModeOn, localOwnerRefusal, localOwnerRequested, type LocalOwnerAct, type LocalPrincipal } from "./local-owner.js";
 import { CHECK_ACCESS_WARNINGS, checkAccessRunsAs, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
@@ -563,6 +564,8 @@ export const OPERATE_HELP = `toolroll — operating the queue
                                         remotely, name a token with --token-name)
   toolroll task complete <id>        mark the current result complete (--digest for JSON/agents);
       [--pull-request]                  --pull-request also opens its pull request
+  toolroll task land <id>            put accepted work on the project's own branch (no pull requests): shows what lands
+                                        where, then --yes --key <key> lands it as one commit; --undo reverts it
   toolroll task merge <id> --as <you> --token <t>
                                         merge the task's pull request once checks pass
       [--anyway]                        merge without waiting for the full check
@@ -9866,7 +9869,7 @@ async function addTask(
   // the same for everyone. `task add` is unauthenticated, so nothing about accounts or passwords may change its reply.
   // Words only; who may ask is unchanged.
   const next = filedRef !== null && filedRef.repo !== null && filedRef.plan === null && !flags.has("report")
-    ? "Next: run `toolroll`, select it and press p to ask for a plan." : null;
+    ? "Next: run `toolroll`, select it and press p to ask for a plan. To build without a plan, file it with `toolroll task new` instead." : null;
   return succeed(
     write,
     json,
@@ -10275,7 +10278,9 @@ function showTask(positional: readonly string[], context: Context): number {
     `  ${task.title}`,
     ...(detail.work === null ? [] : [
       `  status: ${shared?.headline ?? detail.work.status.label}${shared === null ? "" : `${shared.headline === "On hold" ? " · " : " — "}${shared.sentence}`}`,
-      ...(primaryAction === null ? [] : [`  next: ${primaryAction.label}${primaryAction.target.decisionId === null ? "" : ` — decision #${primaryAction.target.decisionId}`}`]),
+      // Accepted work has no "open the result" step left (stranger 13): the next line says only what is still to do.
+      ...(primaryAction === null || (checkedByPerson && (primaryAction.code === "open-result" || primaryAction.code === "inspect-run")) ? []
+        : [`  next: ${primaryAction.label}${primaryAction.target.decisionId === null ? "" : ` — decision #${primaryAction.target.decisionId}`}`]),
     ]),
     // The closed machine-authored verdict (Priority 2), computed once at
     // completion — never re-derived here. Same words `verdictWords`
@@ -15664,10 +15669,10 @@ function flexibleNextStepWords(store: Store, person: string): string[] {
 }
 
 /**
- * `toolroll thread list|show|end|remove|ship <id>`: a person's own interactive agent threads, from the command line.
- * Reply stays in the workbench (`s`): the console holds the agent's input. Reads and the narrowing acts (end, remove)
- * name the person as the config commands do (a solo install's one operator with no password, re-read in each write;
- * anywhere else the ordinary step-up). Ship takes a password typed now at a hidden prompt, never --token or a
+ * `toolroll thread list|show|end|remove|ship|save <id>`: a person's own interactive agent threads, from the command line.
+ * Reply stays in the workbench (`s`): the console holds the agent's input. Reads, the narrowing acts (end, remove) and
+ * Save as branch (it grants nothing) name the person as the config commands do (a solo install's one operator with no
+ * password, re-read in each write; anywhere else the ordinary step-up). Ship takes a password typed now at a hidden prompt, never --token or a
  * remembered login; it shows the whole terms first and asks before it ships. On an install where nobody has a password,
  * Ship is the workbench's one key instead.
  */
@@ -15675,7 +15680,7 @@ async function threadCommand(positional: readonly string[], flags: Map<string, s
   const { store, write, json, clock } = context;
   const verb = positional[0] ?? "list";
   const command = `thread ${verb}`;
-  if (!["list", "show", "end", "remove", "ship"].includes(verb)) return fail(write, json, command, "usage", "`toolroll thread list|show|end|remove|ship <thread>`", EXIT.usage);
+  if (!["list", "show", "end", "remove", "ship", "save"].includes(verb)) return fail(write, json, command, "usage", "`toolroll thread list|show|end|remove|ship|save <thread>`", EXIT.usage);
   const personOnly = "Only you, as a person, work with your own threads here; never a token, the lead, a chat app or a machine.";
   if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return fail(write, json, command, "person-only", personOnly, EXIT.refused);
   // The thread, by its id or the first characters of it (8 or more), among the person's own.
@@ -15752,6 +15757,14 @@ async function threadCommand(positional: readonly string[], flags: Map<string, s
     // closes the rest); no other thread is touched.
     if (done.stopPending) await stopFlexibleThreadsEverywhere(store, { reason: "its owner ended the thread", thread, clock });
     return succeed(write, json, command, { thread, already: done.already }, () => [done.already ? "This thread had already ended." : "Ended. You can still ship its work for a week; then its copy is tidied."]);
+  }
+  // save: its committed work as the branch toolroll/code-<id> in its project (flexible-save.ts: the controlled import, no
+  // pull request, task or merge). The same proof End takes, asked again inside the save's own transaction.
+  if (verb === "save") {
+    const saved = await saveFlexibleBranch(store, { thread, by: { name: who.name, generation: account.generation }, now: clock(), prove: proveNow });
+    if (!saved.ok) return fail(write, json, command, saved.reason, saved.message, EXIT.refused);
+    return succeed(write, json, command, { thread, branch: saved.branch, commit: saved.candidate, already: saved.already, files: saved.changedPaths, next: saved.next },
+      () => [saved.already ? `Already saved as ${saved.branch} (commit ${saved.candidate.slice(0, 12)}).` : `Saved as ${saved.branch} (commit ${saved.candidate.slice(0, 12)}, ${saved.changedPaths.length} file${saved.changedPaths.length === 1 ? "" : "s"}).`, saved.next]);
   }
   // remove: the thread's own copy (its repository and keep-ref), refused while anything of its agent may run or a Ship is open.
   const removed = await removeFlexibleThreadCopy(store, { thread, by: who.name, now: clock(), prove: proveNow });
@@ -15974,8 +15987,11 @@ async function landTaskCommand(positional: readonly string[], flags: Map<string,
     if (!read.ok) return fail(write, json, command, read.reason, read.message, EXIT.refused);
     if (!("plan" in read)) return succeed(write, json, command, { landed: read.landed }, () => [`${id} · Landed on ${read.landed.ref.replace(/^refs\/heads\//, "")} (${read.landed.commit.slice(0, 7)}).`]);
     const plan = read.plan;
+    // Say up front what the yes will ask for (everyday-9 A4): this computer's local owner needs nothing more; anyone
+    // else, their name and password.
     return succeed(write, json, command, { plan }, () => [...landingWords(plan),
-      `To ${undo ? "undo it" : "land it"}: toolroll task land ${id}${into === undefined ? "" : ` --into ${into}`}${undo ? " --undo" : ""} --yes --key ${plan.key}`]);
+      `To ${undo ? "undo it" : "land it"}: toolroll task land ${id}${into === undefined ? "" : ` --into ${into}`}${undo ? " --undo" : ""} --yes --key ${plan.key}${local === null ? " --as <you>" : ""}`,
+      ...(local === null ? ["That asks for your Toolroll password."] : [])]);
   }
   if (key === undefined || !/^[0-9a-f]{16}$/.test(key)) return fail(write, json, command, "usage", "--yes needs the --key `toolroll task land` showed you, so what lands is what you read.", EXIT.usage);
   let authority: LandAuthority;
@@ -15991,8 +16007,14 @@ async function landTaskCommand(positional: readonly string[], flags: Map<string,
   const access = { repos: authority.kind === "person" ? authority.who.repos : localRepos };
   const result = await land(store, id, { key, ...(into === undefined ? {} : { into }), ...(undo ? { undo: true } : {}) }, authority, access, now, { root: context.evidenceRoot });
   if (!result.ok) return fail(write, json, command, result.reason, result.message, EXIT.refused);
+  if (result.handoff !== null) {
+    const handoff = result.handoff;
+    return succeed(write, json, command, { landing: result }, () => [
+      `${id} · Landing commit ${result.commit.slice(0, 7)} is ready (kept at ${handoff.ref}). Your project folder has ${result.branch} checked out, so Toolroll didn't touch it.`,
+      handoffWords(handoff, result.commit)]);
+  }
   return succeed(write, json, command, { landing: result }, () => [
-    `${id} · ${result.replayed ? "Already " : ""}${result.kind === "undo" ? "Undone" : "Landed"} on ${result.branch} (${result.commit.slice(0, 7)})${result.mode === "ref" ? "; no folder had it open" : ""}.`,
+    `${id} · ${result.replayed ? "Already " : ""}${result.kind === "undo" ? "Undone" : "Landed"} on ${result.branch} (${result.commit.slice(0, 7)})${result.mode === "ref" ? "; no folder had it open" : result.mode === "files" ? "; your project folder's files are updated" : ""}.`,
     ...(result.warning === null ? [] : [result.warning])]);
 }
 

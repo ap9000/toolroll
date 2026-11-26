@@ -27,7 +27,7 @@ const COOKIE_ONLY_POSTS = [
   'chat.queued-remove',
   'agents.seen', 'agents.watch',
   // A Flexible thread's owner answering its agent's request, and starting a thread (refused while Flexible is off).
-  'agents.live.thread.answer', 'agents.live.thread.start', 'agents.live.thread.turn', 'agents.live.thread.stop', 'agents.live.thread.end', 'agents.live.thread.ship', 'agents.live.thread.ship-cancel', 'agents.live.thread.ship-send-back',
+  'agents.live.thread.answer', 'agents.live.thread.start', 'agents.live.thread.turn', 'agents.live.thread.stop', 'agents.live.thread.end', 'agents.live.thread.ship', 'agents.live.thread.ship-cancel', 'agents.live.thread.ship-send-back', 'agents.live.thread.save',
   // Settings → Advanced: the person's own view switch, from their own browser.
   'settings.advanced',
   'chat.send', 'chat.file', 'chat.ack-send',
@@ -75,7 +75,7 @@ const COOKIE_ONLY_POSTS = [
   'direct-chat.start', 'direct-chat.send', 'direct-chat.stop', 'direct-chat.model', 'direct-chat.delete',
   'direct-chat.attach', 'direct-chat.apply-main', 'direct-chat.repair', 'direct-chat.ship-preview', 'direct-chat.ship', 'direct-chat.ship-cancel',
   // The Direct Chat pages' Ship (everyday-8 #6): its review and its yes, from this computer's browser only.
-  'direct-chat.page-ship-review', 'direct-chat.page-ship',
+  'direct-chat.page-ship-review', 'direct-chat.page-ship', 'direct-chat.page-reply',
 ];
 
 test('cookie-only POST routes match the independent browser-only list exactly', () => {

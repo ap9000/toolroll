@@ -230,16 +230,16 @@ function shipProofNow(store: Store, by: string, proof: ShipProof, repo: string):
   return { method: "local-owner", localGeneration: local.localGeneration, accountGeneration: local.accountGeneration };
 }
 
-const turnRunning = (store: Store, thread: string): boolean =>
+export const turnRunning = (store: Store, thread: string): boolean =>
   store.handle.prepare("SELECT 1 FROM thread_turn WHERE thread = ? AND status IN ('admitted', 'running')").get(thread) !== undefined;
 
 /** What the thread's branch in the project's repository holds after the Ships so far: the latest import that wrote it
  * and still stands (a removed or interrupted one put back what it found), or null when none did. */
-function branchHeld(store: Store, thread: string): string | null {
+export function branchHeld(store: Store, thread: string): string | null {
   const row = store.handle.prepare("SELECT candidate FROM flexible_ship WHERE thread = ? AND state IN ('imported', 'armed', 'completed', 'merged', 'cancelled', 'sent-back') ORDER BY seq DESC LIMIT 1").get(thread);
   return row === undefined ? null : String(row["candidate"]);
 }
-const nextSeq = (store: Store, thread: string): number => Number(store.handle.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM flexible_ship WHERE thread = ?").get(thread)!["n"]);
+export const nextSeq = (store: Store, thread: string): number => Number(store.handle.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM flexible_ship WHERE thread = ?").get(thread)!["n"]);
 
 /** Where the project's pull requests go and what Toolroll may do there, from its live publication grant; null when it
  * can't push and open pull requests. */

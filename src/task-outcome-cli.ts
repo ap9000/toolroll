@@ -18,6 +18,7 @@ import { proveRunStopped } from './stop-proof.js';
 import { familyChangedFiles } from './result-completion.js';
 import { activeRemote } from './remote-run.js';
 import { underAgent } from './prompt.js';
+import { landingOf, publishesThroughPullRequests } from './local-landing.js';
 
 export async function runTaskOutcomeCommand(action: 'complete' | 'revise', positional: readonly string[], flags: Map<string, string | true>, context: {
   store: Store; evidenceRoot: string; json: boolean; write: (line: string) => void; now: Date;
@@ -94,7 +95,7 @@ export async function runTaskOutcomeCommand(action: 'complete' | 'revise', posit
       const assignment = 'body' in changed ? changed.body : changed.assignment;
       // Checks deliberately Off: nothing to say about them here.
       return emit({ ok: true, result: assignment }, [`${current.rootId} · Accepted`, `Result: ${current.activeTaskId} · build #${current.receipt!.runId} · ${current.receipt!.head?.slice(0, 7) ?? 'no commit'}`,
-        ...(current.readiness?.checksOff ? [] : [current.receipt!.checks.detail])]);
+        ...(current.readiness?.checksOff ? [] : [current.receipt!.checks.detail]), ...landNext(store, current.rootId, current.receipt!.head)]);
     }
     const feedback = flags.get('feedback'), runFlag = flags.get('run'), sourceFlag = flags.get('source'), keyFlag = flags.get('key');
     if (typeof feedback !== 'string' || !feedback.trim()) return fail('usage', 'Describe the requested change with --feedback.');
@@ -228,7 +229,17 @@ export async function runLocalCompletion(positional: readonly string[], flags: M
     `${assignment.rootId} · ${done.replayed ? 'Already accepted' : 'Accepted'}`,
     `Result: ${receipt.taskId} · build #${receipt.runId} · ${receipt.head?.slice(0, 7) ?? 'no commit'}`,
     ...(assignment.readiness?.checksOff ? [] : [receipt.checks.detail]),
+    ...landNext(store, assignment.rootId, receipt.head),
   ]);
+}
+
+/** What comes after Accept on a project with no pull requests (everyday-9 A4): landing it, by its command. Nothing for a
+ * project that publishes through pull requests, a result with no commit, or work already landed. */
+function landNext(store: Store, rootId: string, head: string | null): string[] {
+  const repo = store.lookupRef(rootId)?.repo ?? null;
+  if (repo === null || head === null || publishesThroughPullRequests(store, repo)) return [];
+  const landed = landingOf(store, rootId);
+  return landed !== null && !landed.undone ? [] : [`Next: toolroll task land ${rootId}`];
 }
 
 /** A send back by the local owner, as its writer answers: the revision made (or the one this same note already made), or

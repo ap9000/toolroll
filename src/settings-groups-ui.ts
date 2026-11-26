@@ -473,7 +473,7 @@ export function accessGroup(facts: SettingsFacts, flags: Record<string, boolean>
   const people = facts.people;
   const links = [
     settingsLink({ href: "/people", title: "People", status: people === null ? "Your own access" : [accessWords({ ...facts, passwordless: null }), people.invites === 0 ? "no open invites" : plural(people.invites, "open invite", "open invites")].join(" · ") }),
-    settingsLink({ href: "/settings/sessions", title: "Sessions and tokens", status: `Signed in on ${plural(facts.access.sessions, "device", "devices")} · ${plural(facts.access.tokens, "API token", "API tokens")}` }),
+    settingsLink({ href: "/settings/sessions", title: "Sessions and tokens", status: `${plural(facts.access.sessions, "session", "sessions")} signed in · ${plural(facts.access.tokens, "API token", "API tokens")}` }),
     // Settings → Advanced off: each stays while it is set up or on (its state and its off switch), and goes otherwise.
     ...(facts.operator && (advancedOn(facts) || facts.sso !== null) ? [
       settingsLink({ href: "/settings/sign-in", title: "Sign-in with a provider", status: facts.sso === null ? "Not set up: everyone uses a password" : `People sign in with ${facts.sso}` })] : []),

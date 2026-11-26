@@ -21,7 +21,7 @@ import { historicalAssessmentReason } from "./assignment-presentation.js";
 import { manualReviewOnly, shownVerdictOf, type ProofVerdict } from "./proof.js";
 import { ACCEPT_NEEDS_REASON, cantAcceptYetOf } from "./result-acts.js";
 import { requiredCheckCommandFor, runCheckLevel, type CheckLevel } from "./check-levels.js";
-import { followUpChecksOf, withFollowUps } from "./result-follow-ups.js";
+import { FOLLOW_UP_LOG, FOLLOW_UP_RECEIPT, followUpChecksOf, withFollowUps } from "./result-follow-ups.js";
 import { buildReviewOf, findingWords, type BuildReviewView } from "./review-switch.js";
 import { NEEDS, WAITS, processNeedOf, resultHoldUpSentence, type NeedKey, type WaitKey } from "./needs-you.js";
 import { assignmentStageOf, checkBackingOf, completionBlockersOf, receiptChecksOf, requirementWordOf, type ChecksBatch, type CompletionBlocker } from "./task-status.js";
@@ -252,7 +252,12 @@ export function assignmentOf(given: Store, taskId: string, now: Date, access: As
     result.finishedAt !== null && /^[a-f0-9]{40}$/.test(result.headRevision ?? "");
   // The receipt for one reading of the checks: now's (the live one), or as they read when a completion was recorded
   // (historical completion below). Everything else in it — result, scope, evidence, family — is always read now.
-  const sealFor = (ownChecks: AssignmentChecks | null) => {
+  // `asOf` (historical completion below): the receipt as it read then, so a follow-up check's own log and receipt saved
+  // after that moment (Run checks on a completed task, everyday-9 A2) stay out of it, as its outcome stays out of the
+  // checks read then. Every other artifact, and anything else of the result, is read now.
+  const sealFor = (ownChecks: AssignmentChecks | null, asOf?: Date) => {
+  const sealed = asOf === undefined ? artifacts : artifacts.filter(a => !(a.kind === "structured-output" && (a.capture === FOLLOW_UP_LOG || a.capture === FOLLOW_UP_RECEIPT)
+    && Date.parse(a.createdAt) > asOf.getTime()));
   // Checks Off: a passing full release check that contains this commit covers it, read now from the existing receipts.
   const checks = ownChecks === null || ownChecks.level !== "off" || ownChecks.status === "passed" || ownChecks.status === "failed" ? ownChecks
     : { ...ownChecks, release: releaseCoverageOf(store, root, current.repo, result!.headRevision, memo === undefined ? {} : { memo }) };
@@ -264,14 +269,14 @@ export function assignmentOf(given: Store, taskId: string, now: Date, access: As
   const receiptBody = result === null ? null : {
     rootId: family.root.id, taskId: current.id, runId: result.id, base: result.baseRevision,
     head: result.headRevision, scopeDigest: result.scopeDigest ?? null, proof, completionKind, proofAcceptance: acceptance, checks: checks!,
-    artifacts: artifacts.map(a => ({ id: a.id, kind: a.kind, sha256: a.sha256, bytes: a.bytesStored,
+    artifacts: sealed.map(a => ({ id: a.id, kind: a.kind, sha256: a.sha256, bytes: a.bytesStored,
       complete: !a.truncated && a.captureStatus !== "failed" })),
     // Stored verdict limitations are separate from the agent's outcome.
     // Full agent caveats remain in the referenced proof artifact.
     caveats: [...(proof?.reasons ?? []), ...unavailable,
-      ...(completionKind === "research-report" && reports.length !== 1 ? ["The report artifact is missing or ambiguous."] : []), ...(completionKind === "accepted-exception" && !artifacts.some(a => a.kind === "proof") ? ["No builder proof artifact is recorded."] : []),
-      ...(artifacts.some(a => a.kind === "check-log" && a.truncated) ? ["The check log was shortened when stored; only the retained output is available."] : []),
-      ...artifacts.filter(a => a.kind !== "check-log" && (a.truncated || a.captureStatus === "failed")).map(a => `Saved ${a.kind} #${a.id} is ${a.captureStatus === "failed" ? "a failed capture" : "incomplete"}.`)],
+      ...(completionKind === "research-report" && reports.length !== 1 ? ["The report artifact is missing or ambiguous."] : []), ...(completionKind === "accepted-exception" && !sealed.some(a => a.kind === "proof") ? ["No builder proof artifact is recorded."] : []),
+      ...(sealed.some(a => a.kind === "check-log" && a.truncated) ? ["The check log was shortened when stored; only the retained output is available."] : []),
+      ...sealed.filter(a => a.kind !== "check-log" && (a.truncated || a.captureStatus === "failed")).map(a => `Saved ${a.kind} #${a.id} is ${a.captureStatus === "failed" ? "a failed capture" : "incomplete"}.`)],
     agentReport: result.handoff, evidence: "recorded" as const,
   };
   // The digest seals the proof, not how it is shown: the check's `level` (read from its sealed command) and `running`
@@ -357,7 +362,7 @@ export function assignmentOf(given: Store, taskId: string, now: Date, access: As
     // digest stays the historical one: publishing, release and deployment, which need this exact receipt, still refuse.
     const historical = exact !== undefined ? undefined : store.handle.prepare("SELECT actor,at,detail,outcome FROM action_ledger WHERE task_id = ? AND run_id = ? AND action = ? AND source = 'work' ORDER BY id DESC LIMIT 3")
       .all(family.root.id, result!.id, CHECK_ACTION).filter(row => COMPLETER_ACTOR.test(String(row["actor"])) && !Number.isNaN(Date.parse(String(row["at"]))))
-      .find(row => sealFor(assignmentChecksForRun(store, root, result!.id, now, new Date(String(row["at"])))).receipt?.digest === String(row["outcome"]));
+      .find(row => sealFor(assignmentChecksForRun(store, root, result!.id, now, new Date(String(row["at"]))), new Date(String(row["at"]))).receipt?.digest === String(row["outcome"]));
     const checked = exact ?? historical;
     // This ledger fact was authorized when written. Credential rotation,
     // membership changes and ownership transfer cannot revoke past completion.

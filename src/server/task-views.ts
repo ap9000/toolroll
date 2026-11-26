@@ -1,5 +1,5 @@
 import { localOwnerRefusal } from "../local-owner.js";
-import { landedWords, landingOf, publishesThroughPullRequests } from "../local-landing.js";
+import { broughtInOnBranch, landedWords, landingOf, publishesThroughPullRequests, recognisedOnBranch } from "../local-landing.js";
 import type { TaskLanding } from "./render-tasks.js";
 import { requestContext } from "./request-context.js";
 import { heldFindingCount } from "../findings.js";
@@ -16,6 +16,7 @@ import type { TimingRow } from "../design/kit.js";
 import { releaseCiRunningOf } from "../release-ci-hold.js";
 import { releaseObligationsOf } from "../release-recheck.js";
 import { approvalProofOf, freshnessFor, withFreshness } from "../scope.js";
+import { sessionYesPossible } from "./send-back-build.js";
 import { approvalPasswordField } from "../approval-password.js";
 import { fastChangeProblem, fastStarted } from "../fast-start.js";
 import { routeChangeOf } from "../route-change.js";
@@ -771,9 +772,14 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     if (repo === null || publishesThroughPullRequests(runtime.store, repo)) return null;
     const rootId = runtime.familyOf(taskId)?.root.id ?? taskId;
     const record = landingOf(runtime.store, rootId);
-    const complete = assignmentOf(runtime.store, taskId, runtime.clock(), runtime.workAccess(), runtime.evidenceRoot)?.state === "complete";
+    const assignment = assignmentOf(runtime.store, taskId, runtime.clock(), runtime.workAccess(), runtime.evidenceRoot);
+    const complete = assignment?.state === "complete";
     if (!complete && record === null) return null;
     const person = who.via === "cookie" && who.role === "approver";
+    // Already on the branch though Toolroll didn't land it (merged by hand, or its handed-off commit brought in): said,
+    // with no Land. Display only (everyday-9 A3): it grants nothing.
+    const onBranch = record === null || record.undone ? recognisedOnBranch(runtime.store, repo, rootId, complete ? assignment?.receipt?.head ?? null : null, baseGit) : null;
+    if (onBranch !== null) return { taskId: rootId, landed: onBranch, canLand: false, canUndo: person && broughtInOnBranch(runtime.store, repo, rootId, baseGit) };
     return { taskId: rootId, landed: landedWords(runtime.store, rootId), canLand: person && complete && (record === null || record.undone), canUndo: person && record !== null && !record.undone };
   }
 
@@ -1277,7 +1283,9 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
       terminal,
       publication,
       pullRequestTo: pullRequestTargetOf(run.id),
-      buildNowOnSendBack: who.via === "cookie" && who.authority === "local-owner" && who.role === "approver",
+      // Offered where the send-back's own yes can succeed (tasks.ts runComment): the local owner, or a signed-in approver
+      // the Approve button would take with an empty field (send-back-build.ts). approve() still decides at the press.
+      buildNowOnSendBack: who.via === "cookie" && who.role === "approver" && (who.authority === "local-owner" || sessionYesPossible(runtime.store, who.name, true)),
       publishing: pullRequestTargetOf(run.id) !== null ? "pull-request" : publishingOf(runtime.store, runtime.store.refById(run.taskRef)?.repo ?? null).on ? "other" : "off",
       ciFailing: publication !== null && publication.prNumber !== null && runtime.store.hasOpenCiEpisode(publication.githubRepo, publication.prNumber),
       files,

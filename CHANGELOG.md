@@ -4,6 +4,37 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.120 — 2026-11-25
+
+Landing puts exactly the change you reviewed on your branch, thread work can reach a local project, and Toolroll
+stops spending plan usage while it sits idle.
+
+### New
+
+- **Save a thread's work as a branch** in your project: `S` on a thread in the workbench, **Save as branch** in the
+  browser, or `toolroll thread save <id>`. It works after the thread ends and shows the `git merge` to run.
+- **Land from the workbench:** **B** on a finished task (and "Land" in the palette). `task land` is listed in
+  `toolroll task --help`, and accepting a task says how to land it.
+- **Reply to a Direct Chat** from its page in the browser.
+
+### Changed
+
+- **Land puts one commit on your branch:** exactly the files that were checked, never the attempts you sent back.
+  With the branch checked out in your project folder, Toolroll never touches it: it gives you one `git merge` to run.
+- **A sent-back revision shows its whole change since main,** not only what changed since the rejected attempt.
+- **No plan-usage checks while Toolroll is idle:** it reads plan limits only while work runs, or for a few minutes
+  after you open Spend.
+- **Build again right away** is offered wherever Approve would work with an empty password field.
+- **Run checks** works from the browser session `toolroll` opens on a solo install, for the check command you approved.
+
+### Fixed
+
+- **Running checks again no longer reopens accepted work;** a failing re-check blocks Land and says why.
+- **"Looks right" accepts a passed result** in the browser without asking for a reason.
+- **The task page says "On main"** after you merge the work yourself, and Undo still works.
+- **A thread's Diff refreshes when a turn ends** and says when the agent has edits it hasn't committed.
+- **Settings shows signed-in sessions,** not "devices", and the README's links work from npm.
+
 ## 0.9.119 — 2026-11-25
 
 Thread agents remember the conversation, accepted work can land on your branch, and releases stop re-running the

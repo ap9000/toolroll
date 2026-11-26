@@ -798,6 +798,38 @@ export async function flexibleTaskBranch(store: Store, input: { thread: string; 
   return done.code === 0;
 }
 
+/** What the thread's branch toolroll/code-<thread> holds in its project right now, read through the hardened runner from
+ * Toolroll's record of the thread (never the thread's folder): its commit, null when it doesn't exist, "unreadable". */
+export async function projectThreadBranch(store: Store, input: { thread: string; runner?: Runner }): Promise<string | null | "unreadable"> {
+  const thread = flexibleThread(store, input.thread);
+  if (thread === null) return "unreadable";
+  let project: string;
+  try { project = realpathSync(thread.repo); recordedCommonDir(project); } catch { return "unreadable"; }
+  const read = gitIn(input.runner ?? run, "read");
+  const held = await read(project, ["rev-parse", "--verify", "--quiet", "--end-of-options", `refs/heads/${flexibleThreadBranch(thread.id)}`]);
+  if (held.code === 0 && SHA.test(held.stdout.trim())) return held.stdout.trim();
+  return held.code === 1 ? null : "unreadable";
+}
+
+/**
+ * Where a saved thread branch would go in its project (Save as branch, flexible-save.ts): the project's checked-out branch
+ * (null when HEAD is detached or unreadable) and whether that branch is an ancestor of `candidate` (a fast-forward merges
+ * it). Reads the project's own repository only, from Toolroll's record of the thread, through the hardened runner; never
+ * the thread's folder. It decides nothing: the words a person copies.
+ */
+export async function projectMergeHint(store: Store, input: { thread: string; candidate: string; runner?: Runner }): Promise<{ repo: string; branch: string | null; fastForward: boolean } | null> {
+  const thread = flexibleThread(store, input.thread);
+  if (thread === null || !SHA.test(input.candidate)) return null;
+  let project: string;
+  try { project = realpathSync(thread.repo); recordedCommonDir(project); } catch { return null; }
+  const read = gitIn(input.runner ?? run, "read");
+  const head = await read(project, ["symbolic-ref", "-q", "HEAD"]);
+  const ref = head.code === 0 ? head.stdout.trim() : "";
+  if (!ref.startsWith("refs/heads/")) return { repo: project, branch: null, fastForward: false };
+  const ancestor = await read(project, ["merge-base", "--is-ancestor", "--end-of-options", ref, input.candidate]);
+  return { repo: project, branch: ref.slice("refs/heads/".length), fastForward: ancestor.code === 0 };
+}
+
 /**
  * Settle an import a crash interrupted (the Ship's reconciler, under the thread's lock, for a send left `approved`): its
  * import ref goes when it holds exactly this import's candidate, and the thread's branch goes back to what it held
