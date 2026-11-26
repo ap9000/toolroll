@@ -118,7 +118,8 @@ pub fn copyable_command(command: &str) -> bool {
 }
 
 /// A character a terminal could act on or hide: C0, DEL and C1 controls, line and paragraph separators, bidi marks,
-/// overrides and isolates, and zero-width characters.
+/// overrides and isolates, and zero-width and invisible characters. Exactly the console's set (local-landing.ts
+/// UNSAFE_IN_COMMAND; test/attacks/local-landing.slow.test.ts holds the two together).
 fn hidden_or_control(c: char) -> bool {
     matches!(
         c,
@@ -129,7 +130,7 @@ fn hidden_or_control(c: char) -> bool {
             | '\u{061c}'
             | '\u{200b}'..='\u{200f}'
             | '\u{202a}'..='\u{202e}'
-            | '\u{2060}'
+            | '\u{2060}'..='\u{2064}'
             | '\u{2066}'..='\u{2069}'
             | '\u{feff}'
     )

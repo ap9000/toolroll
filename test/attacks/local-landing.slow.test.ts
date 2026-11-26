@@ -22,7 +22,7 @@ import { sealVerificationReceipt } from "../../src/verification-evidence.js";
 import { recordRunCheckLevel } from "../../src/check-levels.js";
 import { acceptAndCompleteAsOperator, assignmentOf } from "../../src/assignment.js";
 import { verifyApproverByPassword, type VerifiedApprover } from "../../src/principal.js";
-import { broughtInOnBranch, handoffsOf, handoffWords, land, landableBranch, landedStanding, landingOf, landingWords, LAND_INTENT, LAND_SETTLED, readLanding, recognisedOnBranch, shownName, type LandAuthority } from "../../src/local-landing.js";
+import { broughtInOnBranch, gitCommand, handoffsOf, handoffWords, land, landableBranch, landedStanding, landingOf, landingWords, LAND_INTENT, LAND_SETTLED, readLanding, recognisedOnBranch, shownName, unsafeInCommand, type LandAuthority } from "../../src/local-landing.js";
 import { readGit } from "../../src/task-base.js";
 import { recordActionWhole } from "../../src/action-ledger.js";
 import { run as execRun } from "../../src/exec.js";
@@ -924,5 +924,24 @@ describe("the command", () => {
     expect(lines.join("\n")).toContain(words);
     expect(git(repo, "rev-parse", "main")).toBe(base);
     store = openStore(join(scratch(), "orders.db"));
+  });
+});
+
+describe("one set of characters no copyable command holds (everyday-9 C2)", () => {
+  test("the console and the workbench refuse exactly the same characters, so a written command always shows whole", () => {
+    // The workbench's own list, read from its source (tui/crates/toolroll-api/src/client.rs hidden_or_control).
+    const rust = readFileSync("tui/crates/toolroll-api/src/client.rs", "utf8");
+    const body = /fn hidden_or_control\(c: char\) -> bool \{([\s\S]*?)\n\}/.exec(rust)?.[1] ?? "";
+    const ranges = [...body.matchAll(/'\\u\{([0-9a-f]+)\}'(?:\.\.='\\u\{([0-9a-f]+)\}')?/g)]
+      .map(m => [parseInt(m[1]!, 16), parseInt(m[2] ?? m[1]!, 16)] as const);
+    expect(ranges.length).toBeGreaterThan(5);
+    const refusedByWorkbench = (code: number) => ranges.some(([from, to]) => code >= from && code <= to);
+    for (let code = 0; code <= 0x3000; code++) {
+      expect(unsafeInCommand(String.fromCodePoint(code)), `U+${code.toString(16)}`).toBe(refusedByWorkbench(code));
+    }
+    expect(unsafeInCommand("\ufeff")).toBe(refusedByWorkbench(0xfeff));
+    // Save as branch and Land write no command for such a folder (words say what to run instead): U+2060 among them.
+    for (const hidden of ["\u2060", "\u2064", "\u200b", "\u202e", "\u001b"]) expect(gitCommand(`/home/me/a${hidden}b`, ["merge", "--ff-only", "x"])).toBeNull();
+    expect(gitCommand("/home/me/café", ["merge"])).toBe("git -C '/home/me/café' merge");
   });
 });

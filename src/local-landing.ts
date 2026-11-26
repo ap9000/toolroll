@@ -740,8 +740,14 @@ function oidOrThrow(oid: string): string {
   if (!OID.test(oid)) throw new Error("not a commit id");
   return oid;
 }
+// The one set of characters no copyable command may hold: C0 and C1 controls and DEL, line and paragraph separators,
+// bidi marks, overrides and isolates, and zero-width and invisible characters. The workbench refuses exactly the same
+// set (tui/crates/toolroll-api/src/client.rs hidden_or_control; test/attacks/local-landing.slow.test.ts holds the two
+// together), so a command Toolroll writes is always one the workbench shows whole (everyday-9 C2).
 // eslint-disable-next-line no-control-regex
-const UNSAFE_IN_COMMAND = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/;
+const UNSAFE_IN_COMMAND = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/;
+/** Whether `text` holds a character no command a person copies may hold (UNSAFE_IN_COMMAND). */
+export const unsafeInCommand = (text: string): boolean => UNSAFE_IN_COMMAND.test(text);
 export function gitCommand(folder: string, args: readonly string[]): string | null {
   if (UNSAFE_IN_COMMAND.test(folder)) return null;
   return ["git", "-C", `'${folder.replace(/'/g, "'\\''")}'`, ...args].join(" ");

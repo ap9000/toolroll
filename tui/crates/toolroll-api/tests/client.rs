@@ -267,6 +267,8 @@ fn a_command_is_kept_to_copy_only_when_a_terminal_could_neither_hide_nor_act_on_
         "git -C '/home/me/a\u{202e}b' merge",
         "git -C '/home/me/a\u{200b}b' merge",
         "git -C '/home/me/a\u{2066}b' merge",
+        "git -C '/home/me/a\u{2060}b' merge",
+        "git -C '/home/me/a\u{2064}b' merge",
         "git merge\nrm -rf ~",
         "git -C '/home/me/a\u{9b}b' merge",
     ] {
