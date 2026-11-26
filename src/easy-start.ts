@@ -438,7 +438,7 @@ export function defaultEasyStartSeams(options: {
       const { missingLinuxSandboxTools, sandboxAdviceLines, sandboxRuntimeDiagnosis } = await import("./sandbox-runtime.js");
       const missing = process.platform === "linux" ? missingLinuxSandboxTools() : [];
       if (missing.length > 0) return { missing, problem: null };
-      // Why, by kind: a trust failure's exact repair, or what the probe said, its evidenced cause and the remedies.
+      // Why, by kind: a trust failure's exact repair, or what the probe said, the settings that may deny it and the remedies.
       const diagnosis = sandboxRuntimeDiagnosis();
       return diagnosis.ok ? { missing, problem: null } : { missing, problem: diagnosis.why, repair: sandboxAdviceLines(diagnosis) };
     },

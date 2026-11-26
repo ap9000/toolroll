@@ -39,10 +39,12 @@ such as 32-bit Raspberry Pi OS has no sandbox for it. Until they're installed,
 ## When the sandbox can't start
 
 The sandbox needs unprivileged user namespaces. When the system denies one,
-`toolroll` and `toolroll doctor` say so, name the cause only when this
-machine shows it (Ubuntu's `kernel.apparmor_restrict_unprivileged_userns`,
-Debian's `kernel.unprivileged_userns_clone`, `user.max_user_namespaces`),
-and show what bubblewrap said. The fix belongs to whoever runs the
+`toolroll` and `toolroll doctor` say so and show what bubblewrap said. They
+don't guess the cause: settings that can deny it and that this machine shows
+(Ubuntu's `kernel.apparmor_restrict_unprivileged_userns`, Debian's
+`kernel.unprivileged_userns_clone`, `user.max_user_namespaces`) are listed as
+what may be denying it, since a container can show its host's setting while
+its own profile is what denies. The fix belongs to whoever runs the
 computer: an AppArmor profile for `/usr/bin/bwrap` that allows `userns`, or
 turning the setting on. In a container (Docker, devcontainers, Codespaces),
 its seccomp or AppArmor profile usually denies it: allow user namespaces in

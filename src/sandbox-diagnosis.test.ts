@@ -1,13 +1,13 @@
 /**
- * Why the sandbox can't start (sandbox-runtime.ts sandboxRuntimeDiagnosis and its advice): a denial names its cause
- * only from a setting this machine shows, never says "install" when the programs are there, puts an administrator's
+ * Why the sandbox can't start (sandbox-runtime.ts sandboxRuntimeDiagnosis and its advice): a denial never states a
+ * cause (a setting this machine shows is context only), never says "install" when the programs are there, puts an administrator's
  * targeted fix before weakening a container, and points at the existing opt-in without changing who may use it.
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { noConfinementWords, sandboxAdviceLines, sandboxRemedyLines, UNCONFINED_OPT_IN, userNamespaceCause, type SandboxDiagnosis, type SandboxIo } from "./sandbox-runtime.js";
+import { deniedDiagnosis, noConfinementWords, sandboxAdviceLines, sandboxRemedyLines, UNCONFINED_OPT_IN, userNamespaceSettings, type SandboxDiagnosis, type SandboxIo } from "./sandbox-runtime.js";
 import { runOperate } from "./operate.js";
 import { openStore } from "./store.js";
 
@@ -16,34 +16,41 @@ const machine = (files: Record<string, string>, markers: readonly string[] = [])
   read: file => { const one = files[file]; if (one === undefined) throw Object.assign(Error("EACCES"), { code: "EACCES" }); return one; },
   exists: file => markers.includes(file),
 });
-const denied = (io: SandboxIo): SandboxDiagnosis => {
-  const cause = userNamespaceCause(io);
-  return { ok: false, kind: "sandbox-denied", cause, detail: "bwrap: setting up uid map: Permission denied", why: cause === null ? "denied; the cause isn't visible from inside this machine" : `denied: ${cause.words}` };
-};
+const denied = (io: SandboxIo): SandboxDiagnosis => deniedDiagnosis("bwrap: setting up uid map: Permission denied", io);
+const UNKNOWN = "this system denied the user namespace the sandbox needs; the cause isn't visible from inside this machine";
+const reason = (one: SandboxDiagnosis): string => one.ok ? "" : one.why;
 
 test.each([
-  ["Ubuntu's AppArmor restriction", { "/proc/sys/kernel/apparmor_restrict_unprivileged_userns": "1\n" }, /AppArmor restricts/],
-  ["Debian's switch off", { "/proc/sys/kernel/unprivileged_userns_clone": "0\n" }, /kernel\.unprivileged_userns_clone = 0/],
-  ["no user namespaces at all", { "/proc/sys/user/max_user_namespaces": "0\n" }, /user\.max_user_namespaces = 0/],
-  ["the settings allow them (so something else denies it)", { "/proc/sys/kernel/apparmor_restrict_unprivileged_userns": "0\n", "/proc/sys/kernel/unprivileged_userns_clone": "1\n", "/proc/sys/user/max_user_namespaces": "15000\n" }, null],
-  ["nothing readable", {}, null],
-] as const)("a denial's cause comes only from a readable setting: %s", (_, files, words) => {
-  const cause = userNamespaceCause(machine(files));
-  if (words === null) expect(cause).toBeNull();
-  else expect(cause?.words).toMatch(words);
+  ["Ubuntu's AppArmor restriction", { "/proc/sys/kernel/apparmor_restrict_unprivileged_userns": "1\n" }, [/apparmor_restrict_unprivileged_userns = 1/]],
+  ["Debian's switch off", { "/proc/sys/kernel/unprivileged_userns_clone": "0\n" }, [/kernel\.unprivileged_userns_clone = 0/]],
+  ["no user namespaces at all", { "/proc/sys/user/max_user_namespaces": "0\n" }, [/user\.max_user_namespaces = 0/]],
+  ["the settings allow them (an unrelated denial)", { "/proc/sys/kernel/apparmor_restrict_unprivileged_userns": "0\n", "/proc/sys/kernel/unprivileged_userns_clone": "1\n", "/proc/sys/user/max_user_namespaces": "15000\n" }, []],
+  ["nothing readable", {}, []],
+] as const)("a denial never states a cause; settings that may deny it are context: %s", (_, files, shown) => {
+  const io = machine(files);
+  const one = denied(io);
+  expect(reason(one)).toBe(UNKNOWN);
+  const settings = userNamespaceSettings(io);
+  expect(settings.map(setting => setting.words)).toHaveLength(shown.length);
+  shown.forEach((pattern, at) => expect(settings[at]!.words).toMatch(pattern));
 });
 
-test("the advice: the evidenced fix first; in a container a targeted profile before flags that weaken it; the opt-in last", () => {
-  const evidenced = sandboxAdviceLines(denied(machine({ "/proc/sys/kernel/apparmor_restrict_unprivileged_userns": "1" })), machine({}));
-  expect(evidenced[0]).toBe("(bubblewrap said: bwrap: setting up uid map: Permission denied)");
-  expect(evidenced[1]).toMatch(/AppArmor profile that allows user namespaces/);
-  expect(evidenced.at(-1)).toBe(UNCONFINED_OPT_IN);
-  const container = machine({ "/proc/self/status": "Name:\tnode\nSeccomp:\t2\n" });
-  const contained = sandboxRemedyLines(denied(container), container);
-  expect(contained[0]).toMatch(/^In a container .* a profile for this container\. Starting it with `--security-opt seccomp=unconfined --security-opt apparmor=unconfined` also works, but weakens the container's own protection\.$/);
-  expect(contained.at(-1)).toBe(UNCONFINED_OPT_IN);
-  // Not a container, cause unknown: no guess, just the opt-in.
-  expect(sandboxRemedyLines(denied(machine({})), machine({}))).toEqual([UNCONFINED_OPT_IN]);
+test("contradictory evidence: a host's AppArmor setting seen in a container that denies by its own seccomp profile stays context", () => {
+  const io = machine({ "/proc/sys/kernel/apparmor_restrict_unprivileged_userns": "1", "/proc/self/status": "Name:\tnode\nSeccomp:\t2\n" }, ["/.dockerenv"]);
+  const one = denied(io);
+  expect(reason(one)).toBe(UNKNOWN);
+  const advice = sandboxAdviceLines(one, io);
+  expect(advice[0]).toBe("(bubblewrap said: bwrap: setting up uid map: Permission denied)");
+  expect(advice[1]).toMatch(/^This machine shows kernel\.apparmor_restrict_unprivileged_userns = 1 .*, which may be what denies it; if so, an administrator can give bubblewrap an AppArmor profile/);
+  expect(advice[2]).toMatch(/^In a container .* a profile for this container\. Starting it with `--security-opt seccomp=unconfined --security-opt apparmor=unconfined` also works, but weakens the container's own protection\.$/);
+  expect(advice.at(-1)).toBe(UNCONFINED_OPT_IN);
+  // The refusal names no cause and no setting's fix either.
+  expect(noConfinementWords("an agent", "nothing was started", one)).not.toMatch(/AppArmor/);
+});
+
+test("an unrelated denial: not a container, settings allow it: no guess, just what bubblewrap said and the opt-in", () => {
+  const io = machine({ "/proc/sys/kernel/apparmor_restrict_unprivileged_userns": "0" });
+  expect(sandboxRemedyLines(denied(io), io)).toEqual([UNCONFINED_OPT_IN]);
   // A missing program says its install line in the reason; a trust failure gets its repair (trust-repair.ts), not remedies.
   expect(sandboxRemedyLines({ ok: false, kind: "missing-tool", why: "socat is not installed" })).toEqual([]);
   expect(sandboxRemedyLines({ ok: false, kind: "trust", why: "can't be trusted" })).toEqual([]);
@@ -51,7 +58,7 @@ test("the advice: the evidenced fix first; in a container a targeted profile bef
 
 test("a refusal never says \"install\" when the programs are installed; it names the opt-in as running agents without confinement", () => {
   const words = noConfinementWords("an agent", "nothing was started", denied(machine({})));
-  expect(words).toMatch(/^This machine can't confine an agent, so nothing was started: denied; the cause isn't visible from inside this machine\. Or an instance operator can let agents run without OS confinement/);
+  expect(words).toMatch(/^This machine can't confine an agent, so nothing was started: this system denied the user namespace the sandbox needs; the cause isn't visible from inside this machine\. Or an instance operator can let agents run without OS confinement/);
   expect(words).not.toMatch(/[Ii]nstall/);
   expect(noConfinementWords("an agent", "nothing was started", { ok: false, kind: "trust", why: "the seccomp helper can't be trusted" })).toContain("`toolroll doctor` prints the exact fix.");
   expect(noConfinementWords("an agent", "nothing was started", { ok: false, kind: "missing-tool", why: "socat is not installed (sudo apt install socat)" })).toContain("socat is not installed (sudo apt install socat).");

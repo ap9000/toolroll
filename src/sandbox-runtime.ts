@@ -67,12 +67,14 @@ export const SEATBELT_PROBE = "(version 1)(deny default)(allow process-exec)(all
 /**
  * Why the runtime can't sandbox here, as a kind: a program missing, one that fails its trust check, a processor the
  * runtime ships no helper for, a probe that couldn't start or didn't finish, or a sandbox the system denied. A denial
- * names its cause only with evidence this machine shows (a readable setting); otherwise the cause is unknown. `detail`:
+ * never names a cause: a setting this machine shows (a sysctl a container may expose from its host, while its own
+ * seccomp profile is what denies; or a profile may allow bubblewrap anyway) is context, listed with what an
+ * administrator could change if it is the cause. `detail`:
  * the probe's own words, bounded.
  */
-export type SandboxDiagnosis = { ok: true } | { ok: false; kind: "unsupported-platform" | "missing-tool" | "trust" | "unsupported-arch" | "launch-error" | "timeout" | "sandbox-denied"; why: string; detail?: string; cause?: SandboxDenialCause | null };
-/** A cause shown by a setting this machine lets Toolroll read, with what an administrator can do about it. */
-export type SandboxDenialCause = { words: string; fix: string };
+export type SandboxDiagnosis = { ok: true } | { ok: false; kind: "unsupported-platform" | "missing-tool" | "trust" | "unsupported-arch" | "launch-error" | "timeout" | "sandbox-denied"; why: string; detail?: string; context?: SandboxSetting[] };
+/** A setting this machine lets Toolroll read that can deny user namespaces: context, never the stated cause. */
+export type SandboxSetting = { words: string; fix: string };
 
 /** What the probe reads besides running bubblewrap (a test's stand-in). */
 export type SandboxIo = { read?: (file: string) => string; exists?: (file: string) => boolean };
@@ -124,32 +126,39 @@ function diagnose(platform: NodeJS.Platform, io: SandboxIo): SandboxDiagnosis {
     const code = (probe.error as NodeJS.ErrnoException | undefined)?.code;
     if (code === "ETIMEDOUT") return { ok: false, kind: "timeout", why: "bubblewrap didn't finish starting a sandbox in time", detail };
     if (probe.error !== undefined) return { ok: false, kind: "launch-error", why: `bubblewrap (${tools.bwrap.real}) couldn't be started (${code ?? "error"})`, detail };
-    const cause = userNamespaceCause(io);
-    return { ok: false, kind: "sandbox-denied", cause, detail,
-      why: cause === null ? "this system denied the user namespace the sandbox needs; the cause isn't visible from inside this machine" : `this system denied the user namespace the sandbox needs: ${cause.words}` };
+    return deniedDiagnosis(detail, io);
   }
   return { ok: false, kind: "unsupported-platform", why: `the sandbox runtime has no sandbox for ${platform}` };
 }
 
+/** A user namespace the system denied: the cause unknown, whatever settings it shows (listed as context). */
+export function deniedDiagnosis(detail: string, io: SandboxIo = {}): SandboxDiagnosis {
+  return { ok: false, kind: "sandbox-denied", context: userNamespaceSettings(io), detail,
+    why: "this system denied the user namespace the sandbox needs; the cause isn't visible from inside this machine" };
+}
+
 /**
- * Why this Linux denies an unprivileged user namespace, only from a setting it lets this user read (null otherwise:
- * EPERM, a container marker or a seccomp filter alone can't tell seccomp from AppArmor from anything else).
+ * The settings this Linux lets this user read that can deny an unprivileged user namespace, each with what an
+ * administrator could change. Context only: none of them proves the cause (a container can show its host's setting
+ * while its seccomp profile denies; a profile may allow bubblewrap whatever the setting), and EPERM, a container
+ * marker or a seccomp filter can't tell one restriction from another either.
  */
-export function userNamespaceCause(io: SandboxIo = {}): SandboxDenialCause | null {
+export function userNamespaceSettings(io: SandboxIo = {}): SandboxSetting[] {
+  const found: SandboxSetting[] = [];
   const read = (file: string): string | null => { try { return (io.read ?? (one => readFileSync(one, "utf8")))(file).trim(); } catch { return null; } };
-  if (read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") === "1") return {
-    words: "AppArmor restricts unprivileged user namespaces on this computer (kernel.apparmor_restrict_unprivileged_userns = 1)",
-    fix: "An administrator can give bubblewrap an AppArmor profile that allows user namespaces (a profile for /usr/bin/bwrap with `userns,`), rather than lifting the restriction for every program.",
-  };
-  if (read("/proc/sys/kernel/unprivileged_userns_clone") === "0") return {
-    words: "unprivileged user namespaces are turned off (kernel.unprivileged_userns_clone = 0)",
-    fix: "An administrator can turn them on: `sudo sysctl -w kernel.unprivileged_userns_clone=1`, kept in a file under /etc/sysctl.d/.",
-  };
-  if (read("/proc/sys/user/max_user_namespaces") === "0") return {
-    words: "user namespaces are turned off (user.max_user_namespaces = 0)",
-    fix: "An administrator can allow them: `sudo sysctl -w user.max_user_namespaces=15000`, kept in a file under /etc/sysctl.d/.",
-  };
-  return null;
+  if (read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") === "1") found.push({
+    words: "kernel.apparmor_restrict_unprivileged_userns = 1 (AppArmor restricts unprivileged user namespaces)",
+    fix: "an administrator can give bubblewrap an AppArmor profile that allows user namespaces (a profile for /usr/bin/bwrap with `userns,`), rather than lifting the restriction for every program",
+  });
+  if (read("/proc/sys/kernel/unprivileged_userns_clone") === "0") found.push({
+    words: "kernel.unprivileged_userns_clone = 0 (unprivileged user namespaces off)",
+    fix: "an administrator can turn them on: `sudo sysctl -w kernel.unprivileged_userns_clone=1`, kept in a file under /etc/sysctl.d/",
+  });
+  if (read("/proc/sys/user/max_user_namespaces") === "0") found.push({
+    words: "user.max_user_namespaces = 0 (no user namespaces at all)",
+    fix: "an administrator can allow them: `sudo sysctl -w user.max_user_namespaces=15000`, kept in a file under /etc/sysctl.d/",
+  });
+  return found;
 }
 
 /** Whether this looks like a container (a marker file, or a seccomp filter on this process): only to word the advice. */
@@ -168,8 +177,8 @@ function looksContained(io: SandboxIo): boolean {
 export function sandboxRemedyLines(diagnosis: SandboxDiagnosis, io: SandboxIo = {}): string[] {
   if (diagnosis.ok || diagnosis.kind === "missing-tool" || diagnosis.kind === "trust") return [];
   const lines: string[] = [];
-  if (diagnosis.kind === "sandbox-denied" && diagnosis.cause != null) lines.push(diagnosis.cause.fix);
-  else if (diagnosis.kind === "sandbox-denied" && looksContained(io)) {
+  if (diagnosis.kind === "sandbox-denied") for (const setting of diagnosis.context ?? []) lines.push(`This machine shows ${setting.words}, which may be what denies it; if so, ${setting.fix}.`);
+  if (diagnosis.kind === "sandbox-denied" && looksContained(io)) {
     lines.push("In a container (Docker, a devcontainer, Codespaces) its seccomp or AppArmor profile usually denies user namespaces: an administrator can allow them with a profile for this container. Starting it with `--security-opt seccomp=unconfined --security-opt apparmor=unconfined` also works, but weakens the container's own protection.");
   }
   if (diagnosis.kind === "unsupported-arch") lines.push("This processor has no sandbox helper: Toolroll's sandbox runs on 64-bit Intel/AMD (x64) and ARM (arm64) Linux.");
@@ -195,7 +204,7 @@ export function sandboxAdviceLines(diagnosis: SandboxDiagnosis, io: SandboxIo = 
  */
 export function noConfinementWords(what: string, done: string, diagnosis: SandboxDiagnosis = sandboxRuntimeDiagnosis()): string {
   const why = diagnosis.ok ? "its sandbox isn't available to this run" : diagnosis.why;
-  const fix = diagnosis.ok || diagnosis.kind === "missing-tool" ? "" : diagnosis.kind === "trust" ? " `toolroll doctor` prints the exact fix." : diagnosis.kind === "sandbox-denied" && diagnosis.cause != null ? ` ${diagnosis.cause.fix}` : "";
+  const fix = diagnosis.ok || diagnosis.kind === "missing-tool" ? "" : diagnosis.kind === "trust" ? " `toolroll doctor` prints the exact fix." : "";
   return shownText(`This machine can't confine ${what}, so ${done}: ${why}.${fix} ${UNCONFINED_OPT_IN}`);
 }
 
