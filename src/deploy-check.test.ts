@@ -145,6 +145,24 @@ describe.skipIf(!REAL_MAC)("deploy check on this Mac (sandbox-exec)", () => {
     } finally { other.close(); }
   });
 
+  test("from a folder inside ~/.config (a plane's check), the fenced candidate reads its own folder but not the database beside it", () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "so-fence-home-real-")));
+    const plane = join(home, ".config", "standing-orders");
+    const box = join(plane, "worktrees", "rc");
+    mkdirSync(box, { recursive: true });
+    writeFileSync(join(plane, "orders.db"), "the live database");
+    writeFileSync(join(box, "own.txt"), "mine");
+    writeFileSync(join(box, "fence.sb"), fenceProfile({ root: box, home, checkout: box }));
+    const probe = `
+      const fs = require("node:fs"); const out = {};
+      try { out.own = fs.readFileSync(${JSON.stringify(join(box, "own.txt"))}, "utf8"); } catch (e) { out.own = e.code; }
+      try { fs.readFileSync(${JSON.stringify(join(plane, "orders.db"))}); out.db = "read"; } catch (e) { out.db = e.code; }
+      try { fs.readdirSync(${JSON.stringify(plane)}); out.list = "listed"; } catch (e) { out.list = e.code; }
+      console.log(JSON.stringify(out));`;
+    const ran = execFileSync("/usr/bin/sandbox-exec", ["-f", join(box, "fence.sb"), process.execPath, "-e", probe], { encoding: "utf8", timeout: 30_000 });
+    expect(JSON.parse(ran.trim().split("\n").at(-1)!)).toEqual({ own: "mine", db: "EPERM", list: "EPERM" });
+  });
+
   test("the build runs inside the fence: it writes its output, and a build that writes outside its checkout fails", () => {
     const make = (script: string) => {
       const box = realpathSync(mkdtempSync(join(tmpdir(), "so-build-fence-")));
@@ -176,6 +194,9 @@ describe.skipIf(!REAL_MAC)("deploy check on this Mac (sandbox-exec)", () => {
     writeFileSync(join(copyDir, "telegram-token"), "123456:ABCDEF\n", { mode: 0o600 });
     const said: string[] = [];
     const outcome = await rehearse({ checkout, copy }, { say: line => said.push(line) });
+    // The release check's log keeps only the assertion line, so the reason goes into it (release check 3366 failed
+    // here at step "upgrade" with the reason cut off).
+    expect(outcome.ok ? "" : `${outcome.step}: ${outcome.why}`).toBe("");
     expect(outcome, said.join("\n")).toMatchObject({ ok: true });
     expect(said.some(line => /still running/.test(line))).toBe(false);
     // The copy and the throwaway computer are gone; no console of it is left running.
