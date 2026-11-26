@@ -895,7 +895,8 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   const followUps = view.detail.followUps ?? null;
   const checksRunning = checks?.running != null || (followUps?.checks.some(one => one.state === "waiting" || one.state === "running") ?? false);
   const runChecks = canRetryReview && csrf !== "" && followUps !== null && (followUps.full || followUps.quick) && !checksRunning &&
-    (checks === undefined || ((checks.status === "not-run" || checks.status === "unavailable") && checks.release == null))
+    // A Complete result whose checks ran again and failed can run them again too (everyday-9 E3).
+    (checks === undefined || ((checks.status === "not-run" || checks.status === "unavailable" || (checks.status === "failed" && assignment?.state === "complete")) && checks.release == null))
     // Back on this result's Checks tab, where #follow-ups shows the run it started.
     ? { action: `/r/${run.id}/checks`, level: followUps.full ? "full" as const : "quick" as const, returnTo: at("checks") } : null;
   const need = panel.panel.need;

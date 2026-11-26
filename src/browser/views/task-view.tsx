@@ -695,8 +695,12 @@ function ResultPanel({ view, loaded, csrf, result }: { view: BrowserTaskView; lo
   const shown = loaded ?? null;
   const now = view.result ?? null;
   const newer = now !== null && (shown === null || now.selected.build !== shown.selected.build || now.revision !== shown.revision);
-  const notice = newer && <div role="status" className="k-acts" data-result-newer>
-    <KInfoLine>{shown === null ? "A result is ready." : now.selected.build !== shown.selected.build ? "A newer result is ready." : "This result was updated."}</KInfoLine>
+  // The same result whose checks ran again since (a pass after a failure, say): said, never left contradicting the
+  // status above; the shown evidence isn't swapped (everyday-9 E3).
+  const checkOf = (one: NonNullable<BrowserTaskView["result"]>) => one.selected.panel?.status?.check ?? null;
+  const checksChanged = !newer && now !== null && shown !== null && checkOf(now) !== checkOf(shown);
+  const notice = (newer || checksChanged) && <div role="status" className="k-acts" data-result-newer>
+    <KInfoLine>{checksChanged ? "Its checks changed since you opened this." : shown === null ? "A result is ready." : now!.selected.build !== shown.selected.build ? "A newer result is ready." : "This result was updated."}</KInfoLine>
     <KButton sm label="Reload" onClick={() => window.location.reload()} />
   </div>;
   if (shown === null || result === undefined) return <div className="k-sec" data-task-result="none">{notice || <KEmpty title="No result yet." text="It shows here once a build finishes." />}</div>;

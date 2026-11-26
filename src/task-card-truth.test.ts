@@ -96,7 +96,7 @@ const CASES: Case[] = [
 const PASSED_CLAIM = /\b(?:check|checks) passed\b|\bpassed against\b|\bPassed on\b|verified the result/i;
 /** The Project checks row's words for each answer. */
 const ROW: Record<ApprovedCheckState, RegExp> = {
-  passed: /^Passed/, failed: /^Failed/, running: /checks running$/i, "not-run": /^Didn't run$/, off: /^Checks deferred to release$/, stale: /^Check command changed since/, unreadable: /^Couldn't be read$/,
+  passed: /^Passed/, failed: /^Failed/, running: /checks running$/i, "not-run": /^Didn't run$/, off: /^Checks deferred to release$/, stale: /^Out of date: the check command changed since they ran$/, unreadable: /^Couldn't be read$/,
 };
 /** The road's Checks step for each answer. */
 const ROAD: Record<ApprovedCheckState, string> = {
@@ -232,7 +232,8 @@ describe("one answer to 'did the approved check pass', on every surface", () => 
 
     // A check command approved again since says exactly that, never that saved files are missing.
     if (one.id === "verified-command-changed") {
-      expect(row!.text).toBe("Check command changed since");
+      expect(row!.text).toBe("Out of date: the check command changed since they ran");
+      expect(row!.action?.label).toBe("Run checks");
       expect(status.sentence).toBe("The check command changed since this check. Run checks again, then accept it.");
       expect(status.details.find(detail => detail.key === "evidence")?.text, "Saved files").toBe("All kept");
     }

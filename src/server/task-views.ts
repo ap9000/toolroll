@@ -982,7 +982,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     const oneTaskView = onePage?.kind === "task" ? { ...onePage, ship: shipViewOf(shipChecksForTask(runtime.store, rootId), runtime.clock()),
       release: releaseStepsViewOf(releaseProgressFor(runtime.store, rootId), runtime.clock()),
       // "Can I merge?" (P1.6): the checklist from the same assignment this page read, each blocker with its own form.
-      mergeReady: mergeReadyViewOf(runtime.store, taskId, data.assignment, who, presentedData.runChecks ?? null, taskHref(taskId), landedOf(presentedData)) } : onePage;
+      mergeReady: mergeReadyViewOf(runtime.store, taskId, data.assignment, who, presentedData.runChecks ?? null, taskHref(taskId), landedOf(presentedData), data.base ?? null) } : onePage;
     // A check the machine runs (a prepared candidate: a release's check) is said as the check it is, with no agent's
     // activity, no notes to read, and for a release its own steps instead of the generic Plan → Build stepper.
     if (oneTaskView?.kind === "task" && machineChecked(runtime.store, taskId)) {

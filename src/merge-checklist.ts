@@ -16,7 +16,7 @@ import { approvedCheckStateOf, requirementWordOf } from "./task-status.js";
 import { projectCheckSet } from "./check-levels.js";
 import { projectName } from "./project.js";
 import { landingHistoryOf, publishesThroughPullRequests } from "./local-landing.js";
-import { recentGitReads, type GitRead } from "./task-base.js";
+import { recentGitReads, taskBaseOf, type GitRead, type TaskBaseView } from "./task-base.js";
 
 /** The bounded git reads a checklist's landing history uses (display only, answers kept for a moment). */
 const landingReads: GitRead = recentGitReads();
@@ -81,7 +81,10 @@ export function mergeChecklistOf(store: Store, taskId: string, now: Date, access
 
 /** The checklist from an assignment snapshot already read (the task page reads one). `landed`: the task's landing
  * history words when its work is already on the branch (landedNowOf): the answer is then that history, with no rows. */
-export function checklistFromAssignment(store: Store, taskId: string, assignment: AssignmentSnapshot, landed: string | null = null): MergeChecklist {
+export function checklistFromAssignment(store: Store, taskId: string, assignment: AssignmentSnapshot, landed: string | null = null,
+  /** The task's base against its project's main (task-base.ts taskBaseOf), when the caller read it already (the task page's
+   * Base line): "Up to date with main" reads the same fact. Undefined: read here, for a project without pull requests. */
+  base?: Pick<TaskBaseView, "main" | "behind"> | null): MergeChecklist {
   const active = assignment.activeTaskId;
   if (landed !== null) return { taskId, activeTaskId: active, run: assignment.receipt?.runId ?? null, head: assignment.receipt?.head ?? null, answer: "landed", sentence: landed, rows: [] };
   const scope = store.getScope(active);
@@ -166,9 +169,16 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
   }
 
   // Up to date with main and conflicts: Toolroll keeps no record of either, except a batch check's conflict. Where to
-  // look is GitHub only when this project opens pull requests there.
+  // look is GitHub only when this project opens pull requests there. A project without pull requests reads the same git
+  // fact as the task's Base line (task-base.ts), so the two never disagree (everyday-9 E3): its work lands only on top
+  // of the main it started from.
   const notRecorded = publishing.on ? NOT_RECORDED : NOT_RECORDED_LOCAL;
-  row("up-to-date", merged ? "yes" : "unknown", merged ? "Merged." : notRecorded);
+  const standing = merged || publishing.on || receipt === null ? null : base !== undefined ? base : taskBaseOf(store, taskId, landingReads);
+  if (merged) row("up-to-date", "yes", "Merged.");
+  else if (standing == null || standing.main === null || standing.behind === null) row("up-to-date", "unknown", notRecorded);
+  else if (standing.behind === 0) row("up-to-date", "yes", `Up to date with ${standing.main}.`);
+  else row("up-to-date", "no", `${standing.main} has ${standing.behind === 1 ? "1 commit" : `${standing.behind} commits`} this work doesn't. Send it back to build on the current ${standing.main}.`,
+    { kind: "fix", run: receipt!.runId, note: `${standing.main} moved on since this work started. Build it again on the current ${standing.main}.` });
   if (merged) row("conflicts", "yes", "Merged.");
   else if (receipt?.checks.batch?.state === "conflict") row("conflicts", "no", "It conflicted with another result in its batch check.", { kind: "fix", run: receipt.runId, note: "It conflicts with another change. Rebase it on main and resolve the conflict." });
   else row("conflicts", "unknown", notRecorded);
