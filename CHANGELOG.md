@@ -4,6 +4,15 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.121 — 2026-11-26
+
+A small follow-up to 0.9.120.
+
+### Fixed
+
+- **The workbench help fits again** at 30 rows: **T/S** share a row (new thread / save its work as a branch) and
+  Land's words are shorter, so the last lines ("Press s for settings…") show.
+
 ## 0.9.120 — 2026-11-25
 
 Landing puts exactly the change you reviewed on your branch, thread work can reach a local project, and Toolroll
