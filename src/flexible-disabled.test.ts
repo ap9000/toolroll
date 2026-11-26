@@ -309,15 +309,24 @@ describe("the switch can't become an override", () => {
     decided("src/flexible-session.ts", ["startFlexibleThreadSession", "attachFlexibleAgent", "beginFlexibleThreadTurn", "startFlexibleThread", "answerFlexibleRequest", "continueFlexibleThread", "sendBackFlexibleThread"],
       ["openFlexibleSessions", "closeFlexibleSessions", "flexibleWorkOpen", "flexibleThreadsExist", "settleFlexibleStops", "stopFlexibleThreadsEverywhere", "tickFlexibleSessions", "recoverFlexibleHolders", "stopFlexibleThreadSession", "endFlexibleThreadTurn",
         "lowerFlexibleThreadSession", "flexibleThreadLiveOf", "flexibleThreadsOf", "admitFlexibleThreadOwner", "flexibleThreadChangeOf", "waitFlexibleThreadChange", "flexibleThreadTitleOf", "flexibleStopPending", "flexibleThreadEnded", "closeFlexibleThread", "tidyEndedFlexibleThreads", "flexibleThreadShipTerms", "shipFlexibleThread", "latestFlexibleShip", "cancelFlexibleThreadShip", "flexibleThreadRecords", "removeFlexibleThreadCopy", "flexibleShipNeedsFor",
-        "flexibleThreadTipOf", "flexibleThreadChanges"]);
+        "flexibleThreadTipOf", "flexibleThreadChanges",
+        // Everyday 9 B2: whether the agent's records here show an edit, for the Diff's words; a read.
+        "flexibleThreadEdited"]);
     // Ending a person's threads' authority only ever stops and settles.
     decided("src/flexible-authority-end.ts", [], ["requireFlexibleStop", "settleExitedStops", "openFlexibleStops", "interruptTurnAndStop", "endThreadAuthorityFor"]);
     // Inspecting a candidate and its quarantined import are a person's recovery of past work: never gated. Reading what a
     // thread changed (its tip, its changes) is a read.
     decided("src/flexible-import.ts", [], ["readFlexibleCandidate", "importFlexibleCandidate", "foldName", "linkLeadsOut", "removeFlexibleImportRefs", "flexibleTaskBranch", "settleInterruptedImport",
-      "flexibleThreadTip", "readFlexibleChanges"]);
+      "flexibleThreadTip", "readFlexibleChanges",
+      // Everyday 9 B1: the project's own branch and where a saved branch would merge, read for Save as branch's words.
+      "projectThreadBranch", "projectMergeHint"]);
     decided("src/flexible-ship.ts", ["mergeArmedFlexible"],
-      ["flexibleShipTerms", "shipFlexible", "flexibleShipSummary", "flexibleShipsOf", "reconcileFlexibleShips", "flexibleArmedPass", "cancelFlexibleShip", "sendBackFlexible", "removeFlexibleImport", "flexibleShipNeeds"]);
+      ["flexibleShipTerms", "shipFlexible", "flexibleShipSummary", "flexibleShipsOf", "reconcileFlexibleShips", "flexibleArmedPass", "cancelFlexibleShip", "sendBackFlexible", "removeFlexibleImport", "flexibleShipNeeds",
+        // Everyday 9 B1: what the thread's branch holds after its sends (Save as branch reads it as Ship does); a read.
+        "branchHeld"]);
+    // Save as branch (everyday 9 B1) is a person's recovery of past work, like the import it runs: never gated (it grants
+    // nothing; a later Ship's arming still checks the switch). The rest are reads.
+    decided("src/flexible-save.ts", [], ["saveFlexibleBranch", "isFlexibleSave", "latestFlexibleSave"]);
     // Readiness is a read (it names what is missing, the switch first among them).
     decided("src/flexible-start.ts", ["flexibleStartCard"], ["flexibleReadiness"]);
     decided("src/flexible-launcher.ts", [], ["flexibleThreadNetwork", "flexibleNetworkDigest", "createFlexibleLauncher"]);
@@ -376,7 +385,9 @@ describe("the switch can't become an override", () => {
     for (const one of product) expect(code(one.text), one.path).not.toMatch(/from ["'][^"']*\/flexible-interactive\.js["']/);
     for (const one of product.filter(one => one.path !== join("src", "flexible.ts"))) expect(code(one.text), one.path).not.toMatch(/\brecordFlexibleRuntime\(/);
     const engine = (...names: string[]) => (file: { path: string }) => !names.map(name => join("src", name)).includes(file.path);
-    for (const one of product.filter(engine("flexible-thread.ts", "flexible-agents.ts", "flexible-session.ts", "flexible-import.ts", "flexible-ship.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-thread\.js"/);
+    // Save as branch (flexible-save.ts, everyday 9 B1) is part of the engine as Ship is: it reads the thread's record and
+    // takes its lock, and moves work only through the controlled import.
+    for (const one of product.filter(engine("flexible-thread.ts", "flexible-agents.ts", "flexible-session.ts", "flexible-import.ts", "flexible-ship.ts", "flexible-save.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-thread\.js"/);
     for (const one of product.filter(engine("flexible-agents.ts", "flexible-session.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-agents\.js"/);
     for (const one of product.filter(engine("flexible-relay.ts", "flexible-agents.ts", "flexible-session.ts", "flexible-start.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-relay\.js"/);
     for (const one of product.filter(engine("flexible-answers.ts", "flexible-session.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-answers\.js"/);
@@ -386,7 +397,7 @@ describe("the switch can't become an override", () => {
     expect([...readFileSync("src/operate.ts", "utf8").matchAll(/import \{([^}]*)\} from "\.\/flexible-session\.js"/g)].map(match => match[1]!.trim())).toEqual(["closeFlexibleThread, flexibleShipNeedsFor, flexibleThreadRecords, flexibleThreadShipTerms, flexibleThreadTitleOf, latestFlexibleShip, removeFlexibleThreadCopy, shipFlexibleThread, stopFlexibleThreadsEverywhere, type FlexibleStopReport"]);
     for (const one of product.filter(engine("flexible-launcher.ts", "flexible-session.ts", "flexible-start.ts", join("server", "engine-api.ts")))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/(?:\.\.\/)?flexible-launcher\.js"/);
     for (const one of product.filter(engine("flexible-start.ts", "flexible-interactive.ts", join("server", "engine-api.ts")))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/(?:\.\.\/)?flexible-start\.js"/);
-    for (const one of product.filter(engine("flexible-import.ts", "flexible-ship.ts", "flexible-session.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-import\.js"/);
+    for (const one of product.filter(engine("flexible-import.ts", "flexible-ship.ts", "flexible-session.ts", "flexible-save.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-import\.js"/);
     // The thread host reads what a thread changed through the import's read-only doors only (its owner's diff and a
     // turn's note of the files it changed); never the import itself.
     expect([...readFileSync("src/flexible-session.ts", "utf8").matchAll(/import \{([^}]*)\} from "\.\/flexible-import\.js"/g)].map(match => match[1]!.trim())).toEqual(["flexibleThreadTip, readFlexibleChanges"]);
@@ -397,7 +408,9 @@ describe("the switch can't become an override", () => {
       // terms and the Ship's own say before anything is asked (flexible-start.ts, flexible-session.ts).
       expect(named, one.path).toEqual(one.path === join("src", "operate.ts") ? ["flexibleArmedPass"]
         : one.path === join("src", "flexible-session.ts") ? ["cancelFlexibleShip", "flexibleShipNeeds", "flexibleShipsOf", "flexibleShipTerms", "sendBackFlexible", "shipFlexible", "type ShipProof"]
-        : one.path === join("src", "flexible-start.ts") ? ["flexibleShipNeeds"] : []);
+        : one.path === join("src", "flexible-start.ts") ? ["flexibleShipNeeds"]
+        // Save as branch follows the sends' own numbering and branch-before, and refuses while a turn runs, as Ship does.
+        : one.path === join("src", "flexible-save.ts") ? ["branchHeld", "nextSeq", "turnRunning"] : []);
     }
   });
 });

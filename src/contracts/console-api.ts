@@ -147,6 +147,8 @@ export const CONSOLE_FORMS = {
   // Send back: the armed Ship ends and its note is the thread's next reply (named by the client's key).
   threadSendBack: formContract("POST /agents/live/thread/<id>/ship/send-back", ["feedback", "key", "password"]),
   // Stop a thread's agent, End the thread, cancel its armed Ship: the thread's owner, by the address alone (no fields).
+  // Save as branch (everyday 9 B1): the thread's owner, by the address alone (no fields).
+  threadSave: formContract("POST /agents/live/thread/<id>/save", []),
   threadClose: formContract("POST /agents/live/thread/<id>/stop, /agents/live/thread/<id>/end, /agents/live/thread/<id>/ship/cancel", []),
   // T4: a take-over names its task and build (task, run) instead of a project (repo).
   term: formContract("POST /term/start, /term/<terminal>/close, /term/<terminal>/remove", ["repo", "program", "password", "task", "run"]),
@@ -324,6 +326,8 @@ export const CONSOLE_FORMS = {
   // The Direct Chat pages' Ship (everyday-8 #6): its review, then the yes with the terms digest the review showed.
   directChatPageShipReview: formContract("POST /direct-chats/<id>/ship-review", []),
   directChatPageShip: formContract("POST /direct-chats/<id>/ship", ["mode", "termsDigest", "title", "goal", "password"]),
+  // The Direct Chat page's Reply (everyday 9 B4): the next message and the page's own request key.
+  directChatPageReply: formContract("POST /direct-chats/<id>/reply", ["prompt", "request"]),
 } as const;
 
 export type ConsoleFormName = keyof typeof CONSOLE_FORMS;

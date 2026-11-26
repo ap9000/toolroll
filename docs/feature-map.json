@@ -984,6 +984,14 @@
       "reason": "Needs an accepted task on a project with no pull requests; covered by Rust tests/land.rs and the landing attack suite."
     },
     {
+      "action": "thread-save",
+      "keys": [
+        "S"
+      ],
+      "feature": "Save a thread's committed work as the branch toolroll/code-<id> in its project (S on a thread, or the palette)",
+      "reason": "Needs a thread with committed work in a real project repository; covered by src/flexible-save.slow.test.ts and the engine route test in src/server/engine-api-thread.test.ts."
+    },
+    {
       "action": "lead-chat",
       "keys": [
         "C"
