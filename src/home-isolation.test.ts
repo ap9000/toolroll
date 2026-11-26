@@ -117,8 +117,15 @@ describe("a console hands pages only to the opener its own PATH finds", () => {
     expect(await logged("browser")).toEqual(["http://127.0.0.1:4851/"]);
     if (process.platform !== "darwin" && process.platform !== "linux") return;
     delete process.env["TOOLROLL_BROWSER_COMMAND"];
-    openBrowser("http://127.0.0.1:4852/");
-    expect(await logged(process.platform === "darwin" ? "open" : "xdg-open")).toEqual(["http://127.0.0.1:4852/"]);
+    // A Linux desktop: with no display (a server, CI) Toolroll shows the address instead of starting an opener.
+    const display = process.env["DISPLAY"];
+    if (process.platform === "linux") process.env["DISPLAY"] = ":0";
+    try {
+      openBrowser("http://127.0.0.1:4852/");
+      expect(await logged(process.platform === "darwin" ? "open" : "xdg-open")).toEqual(["http://127.0.0.1:4852/"]);
+    } finally {
+      if (display === undefined) delete process.env["DISPLAY"]; else process.env["DISPLAY"] = display;
+    }
   });
 });
 
