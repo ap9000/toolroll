@@ -11,6 +11,7 @@ import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
+import { autoUpdatePolicy, reserveAutoUpdate, setAutoUpdatePolicy } from "./auto-update.js";
 import { mintApiToken } from "./api-tokens.js";
 import { createDecisionServer } from "./serve.js";
 import { runOperate } from "./operate.js";
@@ -495,4 +496,18 @@ test("restore rotates recovery_generation while preserving workspace_id, and ret
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
+});
+
+test("restore: a backup taken while automatic updates were on comes back with them off, so a later Off is never undone", async () => {
+  setAutoUpdatePolicy(store, true, "alex", NOW);
+  const backup = await aBackup();
+  setAutoUpdatePolicy(store, false, "alex", at(1));
+  store.close();
+  const done = await restoreDatabase({ databaseFile: file, file: backup, dryRun: false, now: at(2) });
+  expect(done).toMatchObject({ ok: true, retired: { autoUpdates: 1 } });
+  store = openStore(file);
+  expect(autoUpdatePolicy(store)).toMatchObject({ on: false, revision: 2 });
+  expect(reserveAutoUpdate(store, { version: "99.0.0", from: "0.0.1", now: at(2) })).toEqual({ ok: false, why: "off" });
+  expect(store.actionLedger({ repos: null, instance: true, limit: 10 }).find(one => one.action === "automatic updates")).toMatchObject({ outcome: "off" });
+  expect(store.ledgerChain({ full: true }).ok).toBe(true);
 });

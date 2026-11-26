@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { autoUpdateAttempts, autoUpdatePass, reconcileAutoUpdates, setAutoUpdatePolicy } from "./auto-update.js";
-import { prepareRuntimeUpdate, readRuntimeUpdate, resumeRuntimeUpdate, type UpdateSystem } from "./toolroll-update.js";
+import { prepareRuntimeUpdate, readRuntimeUpdate, resumeRuntimeUpdate, startRuntimeRollback, type UpdateSystem } from "./toolroll-update.js";
 import { failingHealth, fixture, provenance } from "../test/toolroll-update-kit.js";
 import { runUpdateCommand } from "./toolroll-update-cli.js";
 import { autoUpdatePolicy } from "./auto-update.js";
@@ -87,10 +87,29 @@ test("a failed health check restores the previous version and database on its ow
     // The restored database still holds the reservation (it was made before the backup).
     store.close(); store = openStore(f.databaseFile);
     expect(autoUpdateAttempts(store)?.map(one => one.version)).toEqual(["0.7.0"]);
+    // …and comes back with automatic updates off, until a person turns them on again.
+    expect(autoUpdatePolicy(store)).toMatchObject({ on: false, revision: 2 });
     expect(reconcileAutoUpdates(store, { stateDir: f.stateDir, current: "0.6.0", now: f.system.now() })).toMatchObject([{ outcome: "restored", detail: expect.stringContaining("did not pass its health check") }]);
+    expect(await passOnce(f, store)).toEqual({ held: "off" });
+    setAutoUpdatePolicy(store, true, "alex", f.system.now());
     expect(await passOnce(f, store)).toEqual({ held: "attempted" });
     expect(f.tasks()).toEqual(["T-1"]);
     // A person's manual retry is still theirs to make.
     expect("refused" in prepareRuntimeUpdate({ stateDir: f.stateDir, databaseFile: f.databaseFile, current: f.current, actor: "alex", version: "0.7.0", when: "when-idle" }, f.system.now())).toBe(false);
+  } finally { store.close(); f.close(); }
+});
+
+test("a rollback puts back a backup taken while automatic updates were on: they come back off, so a later Off is never undone", async () => {
+  const f = fixture();
+  let store = turnedOn(f);
+  try {
+    expect(await passOnce(f, store)).toMatchObject({ started: "0.7.0" });
+    store.close(); store = openStore(f.databaseFile);
+    setAutoUpdatePolicy(store, false, "alex", f.system.now());
+    store.close();
+    expect(await startRuntimeRollback({ stateDir: f.stateDir, databaseFile: f.databaseFile, current: readRuntimeUpdate(f.stateDir)!.to, actor: "alex", when: "when-idle" }, f.system)).toMatchObject({ ok: true, phase: "complete" });
+    store = openStore(f.databaseFile);
+    expect(autoUpdatePolicy(store)?.on).toBe(false);
+    expect(store.handle.prepare("SELECT actor, outcome, detail FROM action_ledger WHERE action = 'automatic updates' ORDER BY id DESC LIMIT 1").get()).toEqual({ actor: "alex", outcome: "off", detail: "a database backup was put back: off until a person turns them on again" });
   } finally { store.close(); f.close(); }
 });

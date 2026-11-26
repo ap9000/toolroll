@@ -53,6 +53,7 @@ import { V173_ADDED_COLUMNS } from "./plan-problems-schema.js";
 import { V159_ADDED_COLUMNS } from "./one-step-chat-schema.js";
 import { isNewer, REGISTRY } from "./releases.js";
 import { markNeverIndex } from "./never-index.js";
+import { retireRestoredAutoUpdates, RESTORED_AUTO_UPDATES_OFF } from "./auto-update-schema.js";
 import { readRuntimeUpdateJournal, RUNTIME_PHASES, RUNTIME_UPDATE_STEPS, stagedStartedAt, updaterStartingOf, type RuntimeUpdateJournalRecord } from "./contracts/update-journal.js";
 import { sleep } from "./sleep.js";
 
@@ -695,6 +696,8 @@ function restoreDatabase(j: RuntimeUpdateJournal, from: Backups): void {
   restoreFile(j.databaseFile, from.path, from.hash, "database");
   if (from.codingPath && from.codingHash) restoreFile(codingFile(j.databaseFile), from.codingPath, from.codingHash, "coding catalog");
   ungateCoding(j);
+  // Before anything is restarted on it: the backup's automatic updates are off until a person turns them on again.
+  retireAutoUpdatesIn(j);
 }
 
 /** SQLite's own answer for a file it cannot read as a database: corrupt, or not a database at all. Anything else
@@ -1667,4 +1670,18 @@ function withPrepareLock<T>(stateDir: string, body: () => T, waitMs = 5000): T {
   const lock = sqliteLock(prepareLockFile(stateDir), waitMs);
   if (!lock) throw new Refusal("Another update is being prepared right now. Nothing was changed.");
   try { return body(); } finally { lock.close(); }
+}
+
+/** A database just put back (an update restored, a rollback): automatic updates in it off, checked, with a ledger row.
+ * Throws when that can't be done, so nothing restarts on a restored database that could still install by itself. */
+function retireAutoUpdatesIn(j: RuntimeUpdateJournal): void {
+  const db = new (sqlite().DatabaseSync)(j.databaseFile);
+  let retired: number;
+  const now = new Date().toISOString();
+  try {
+    db.exec("PRAGMA busy_timeout=5000; BEGIN IMMEDIATE");
+    try { retired = retireRestoredAutoUpdates(db as never, j.actor, now); db.exec("COMMIT"); }
+    catch (error) { db.exec("ROLLBACK"); throw error; }
+  } finally { db.close(); }
+  if (retired > 0) ledger(j.databaseFile, new Date(now), j.actor, "automatic updates", "off", RESTORED_AUTO_UPDATES_OFF);
 }

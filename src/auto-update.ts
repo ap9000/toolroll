@@ -346,10 +346,10 @@ export function autoUpdateLine(attempt: AutoUpdateAttempt, phase: string | null 
     case null: return phase === "needs-attention" ? { line: `The automatic update to ${version} needs attention: Toolroll couldn't put ${from} back on its own.`, failed: true }
       : { line: `Updating to ${version} by itself.`, failed: false };
     case "complete": return { line: `Updated to ${version} at ${clockOf(attempt.outcomeAt ?? attempt.reservedAt)}.`, failed: false };
-    case "restored": return { line: `Couldn't update to ${version}: ${reasonOf(attempt.detail)}. Still on ${from}; its database was put back from the backup.${later}`, failed: true };
+    case "restored": return { line: `Couldn't update to ${version}: ${reasonOf(attempt.detail)}. Still on ${from}; its database was put back from the backup, so automatic updates are off until you turn them on again.${later}`, failed: true };
     case "refused": case "not-started": return { line: `Couldn't update to ${version}: ${reasonOf(attempt.detail)}. Still on ${from}.${later}`, failed: true };
     case "cancelled": return { line: `The automatic update to ${version} was cancelled. Still on ${from}.`, failed: false };
-    case "rolled-back": return { line: `Updated to ${version}, then rolled back to ${from}.${later}`, failed: false };
+    case "rolled-back": return { line: `Updated to ${version}, then rolled back to ${from}; automatic updates are off until you turn them on again.${later}`, failed: false };
     case "unknown": return { line: `Couldn't tell how the automatic update to ${version} ended: ${reasonOf(attempt.detail)}.${later}`, failed: true };
   }
 }

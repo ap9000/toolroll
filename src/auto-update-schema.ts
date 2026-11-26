@@ -60,3 +60,23 @@ export const V187_OBJECTS = Object.freeze([
   ["trigger", "auto_update_attempt_write_once"],
   ["trigger", "auto_update_attempt_no_delete"],
 ] as const);
+
+/** What the restore paths need of a database handle (node:sqlite's DatabaseSync, or a store's handle). */
+type Handle = { prepare(sql: string): { get(...values: string[]): Record<string, unknown> | undefined; run(...values: string[]): unknown } };
+const enabledCount = (db: Handle) => Number(db.prepare("SELECT count(*) AS n FROM auto_update_policy WHERE enabled = 1").get()?.["n"] ?? 0);
+
+/**
+ * A restored database never brings back a standing yes to install releases by itself: before any restored database is
+ * put in service (a backup restore, the updater putting its backup back, `toolroll update --rollback`), automatic
+ * updates are turned off in it until a person turns them on again, and that is checked. A database from before v187 has
+ * no switch, so nothing to turn off. Returns how many were on; throws when it is still on afterwards.
+ */
+export function retireRestoredAutoUpdates(db: Handle, by: string, at: string): number {
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'auto_update_policy'").get() === undefined) return 0;
+  const on = enabledCount(db);
+  if (on > 0) db.prepare("UPDATE auto_update_policy SET enabled = 0, revision = revision + 1, updated_by = ?, updated_at = ? WHERE enabled = 1").run(by, at);
+  if (enabledCount(db) !== 0) throw new Error("Automatic updates are still on in the restored database.");
+  return on;
+}
+/** The ledger's words for that retirement (action "automatic updates", outcome "off"). */
+export const RESTORED_AUTO_UPDATES_OFF = "a database backup was put back: off until a person turns them on again";

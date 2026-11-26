@@ -303,7 +303,7 @@ describe("what a person is told", () => {
     await run(w, "0.9.120");
     await run(w, "0.9.120");
     expect(notices(w.store)).toEqual([{ dedupe_key: "auto-update:0.9.121:restored:alex", push_class: "attention",
-      subject: "Couldn't update to 0.9.121: Toolroll 0.9.121 did not pass its health check. Still on 0.9.120; its database was put back from the backup. It won't be tried again by itself; you can still update by hand." }]);
+      subject: "Couldn't update to 0.9.121: Toolroll 0.9.121 did not pass its health check. Still on 0.9.120; its database was put back from the backup, so automatic updates are off until you turn them on again. It won't be tried again by itself; you can still update by hand." }]);
     const second = reserveAutoUpdate(w.store, { version: "0.9.122", from: "0.9.120", now: T0 });
     if (!second.ok) throw new Error(second.why);
     const k = journal(w, "0.9.122", "cancelled");
