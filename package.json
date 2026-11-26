@@ -14,6 +14,7 @@
     "test:perf:wire": "TZ=UTC vitest run --config test/perf/vitest.config.ts",
     "test:git": "vitest run test/attacks/checkout-git- test/attacks/fence-git-views test/attacks/repository-context-git test/attacks/discover-dirty src/teardown-git.test.ts src/worktree.slow.test.ts",
     "check:quick": "node scripts/quick-check.mjs",
+    "check:fast": "npm run typecheck && vitest run src/password-freshness.test.ts src/central-recovery-stage.test.ts src/migration-check-recovery-index.slow.test.ts src/server/adapter-inventory.test.ts src/contracts/tools.test.ts src/ci-workflow.test.ts",
     "lint:comments": "node scripts/lint-comments.mjs mac/Sources mac/Tests",
     "lint:comments:fix": "node scripts/lint-comments.mjs --fix mac/Sources mac/Tests",
     "dev": "tsx src/cli.ts",

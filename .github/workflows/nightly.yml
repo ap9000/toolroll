@@ -31,10 +31,11 @@ jobs:
   ci:
     name: nightly
     uses: ./.github/workflows/ci.yml
-    # Its waiting jobs read Actions runs; a called job can't have more than this.
+    # Its waiting and reuse-proof jobs read Actions runs and PR metadata; a called job can't have more than this.
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     with:
       macos_lane: all
   release-candidate:
