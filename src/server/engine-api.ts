@@ -228,11 +228,10 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     return admitted.ok ? admitted.repo : null;
   };
   /** An act's answer as data (`{ outcome, words }`): a thread's acts are a terminal's or an API client's, never a page's. */
-  const acted = (response: JsonResponse, status: number, outcome: "done" | "refused", words: string, next?: string): void => json(response, status, next === undefined ? { outcome, words } : { outcome, words, next });
-  /** An act's answer that carries the exact command its words name (`command`): a terminal shows it whole, on its own line,
-   * to copy (everyday-9 C2). Only commands Toolroll wrote itself, from its own records; none when none could be written. */
-  const actedWithCommand = (response: JsonResponse, status: number, outcome: "done" | "refused", words: string, command: string | null): void =>
-    json(response, status, command === null ? { outcome, words } : { outcome, words, command });
+  /** `command`: the exact command its words name, which a terminal shows whole on its own line to copy (everyday-9 C2):
+   * only commands Toolroll wrote itself, from its own records; none when none could be written. */
+  const acted = (response: JsonResponse, status: number, outcome: "done" | "refused", words: string, next?: string, command: string | null = null): void =>
+    json(response, status, { outcome, words, ...(next === undefined ? {} : { next }), ...(command === null ? {} : { command }) });
 
   /** GET /agents/live/thread/<id>[?file=&cursor=&known=]: a Flexible thread's LiveSession window and its facts, its
    * owner's only; `known` (the facts' version the client holds) leaves unchanged facts out. A read: answered while
@@ -678,7 +677,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const by = { name: who.name, generation: who.session.generation };
     const shown = await flexibleThreadShipTerms(store, { thread: id, by });
     // A project that can't take a Ship: its words offer Save as branch, whose command goes with them.
-    if (!shown.ok) return actedWithCommand(response, 409, "refused", shown.message, shown.reason === "no-check" || shown.reason === "no-publishing" ? `toolroll thread save ${id.slice(0, 8)}` : null);
+    if (!shown.ok) return acted(response, 409, "refused", shown.message, undefined, shown.reason === "no-check" || shown.reason === "no-publishing" ? `toolroll thread save ${id.slice(0, 8)}` : null);
     const laptop = who.authority === "local-owner" && who.session.localGeneration !== null
       && laptopShipProblem(store, { owner: who.name, localGeneration: who.session.localGeneration }) === null;
     const command = `toolroll thread ship ${id} --key ${shown.summary.key}`;
@@ -753,7 +752,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     if (held === null || !held()) return acted(response, 403, "refused", "Only a person signed in here can save a thread's work.");
     const saved = await saveFlexibleBranch(store, { thread: id, by: { name: who.name, generation: who.session.generation }, now: new Date(), prove: held });
     if (!saved.ok) return acted(response, 409, "refused", saved.message);
-    return actedWithCommand(response, 200, "done", `${saved.already ? `Already saved as ${saved.branch}.` : `Saved as ${saved.branch} (commit ${saved.candidate.slice(0, 12)}).`} ${saved.next}`, saved.command);
+    return acted(response, 200, "done", `${saved.already ? `Already saved as ${saved.branch}.` : `Saved as ${saved.branch} (commit ${saved.candidate.slice(0, 12)}).`} ${saved.next}`, undefined, saved.command);
   }
 
   /** GET /engine/chat[?project=]: the person's central Lead conversation as structured data (never HTML), admitted as
