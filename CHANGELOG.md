@@ -4,6 +4,26 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.124 — 2026-11-26
+
+Thread commits stop carrying your computer's name, Skills is in Settings, and saving a Direct Chat tells you how to
+bring it in.
+
+### Changed
+
+- **Skills is in Settings → Agents and models** for everyone: "Skills for <project>", one status per skill, and an
+  import that can't reach GitHub says so and keeps the address you typed.
+- **Saving a Direct Chat as a branch** shows the exact `git merge` to bring it in; the button is "Save the branch".
+- **Turning threads on from the workbench** keeps the message you typed and gives a command that explains its options.
+- **Settings → Passwordless** lists exactly which acts still ask for a password.
+
+### Fixed
+
+- **Commits an agent makes in a thread or Direct Chat** use your project's git name and email (or a neutral Toolroll
+  one), never your computer's account or host name. Commits made before this keep theirs.
+- **A thread's Diff** no longer offers Accept and Send back for a task; it offers Save as branch.
+- **Reloading a page after Ship, Save or Land** shows what happened instead of "Not found", and never does it again.
+
 ## 0.9.123 — 2026-11-26
 
 Accepted work stays accepted, every command Toolroll gives you can be copied whole, and Toolroll stays quiet while
