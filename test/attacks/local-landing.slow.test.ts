@@ -868,4 +868,25 @@ describe("the command", () => {
     expect(git(repo, "rev-parse", "main^{tree}")).toBe(git(repo, "rev-parse", `${head}^{tree}`));
     store = openStore(join(scratch(), "orders.db"));
   });
+
+  test("no password set yet (a solo install): a shell is never this computer's owner; it says where landing works and never prompts (everyday-9 C3)", async () => {
+    const { base } = built("t", { "a.txt": "two\n" });
+    const stamp = NOW.toISOString();
+    store.handle.prepare("INSERT INTO local_mode (id, owner, generation, enabled, initialized_at, changed_at) VALUES (1, 'alex', 1, 1, ?, ?)").run(stamp, stamp);
+    store.handle.prepare("UPDATE approver SET password_set = 0").run();
+    const lines: string[] = [];
+    const cli = (argv: string[]) => { lines.length = 0; return runOperate("task", argv, line => lines.push(line), { databaseFile: join(scratch(), "orders.db"), now: NOW }); };
+    store.close();
+    const words = "Land it from the workbench (B) or the task page in the browser; from a shell it needs a Toolroll password (`toolroll password set`).";
+    expect(await cli(["land", "t", "--into", "main", "--json"]), lines.join("\n")).toBe(EXIT.ok);
+    const key = (JSON.parse(lines.join("\n")) as { plan: { key: string } }).plan.key;
+    expect(await cli(["land", "t", "--into", "main"]), lines.join("\n")).toBe(EXIT.ok);
+    expect(lines.join("\n")).toContain(words);
+    expect(lines.join("\n")).not.toContain("--as <you>");
+    // Knowing the key and saying yes from a shell proves no person: refused before any prompt, and nothing lands.
+    expect(await cli(["land", "t", "--into", "main", "--yes", "--key", key, "--as", "alex", "--token", password]), lines.join("\n")).toBe(EXIT.refused);
+    expect(lines.join("\n")).toContain(words);
+    expect(git(repo, "rev-parse", "main")).toBe(base);
+    store = openStore(join(scratch(), "orders.db"));
+  });
 });

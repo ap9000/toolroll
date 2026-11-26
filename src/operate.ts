@@ -565,7 +565,7 @@ export const OPERATE_HELP = `toolroll — operating the queue
   toolroll task complete <id>        mark the current result complete (--digest for JSON/agents);
       [--pull-request]                  --pull-request also opens its pull request
   toolroll task land <id>            put accepted work on the project's own branch (no pull requests): shows what lands
-                                        where, then --yes --key <key> lands it as one commit; --undo reverts it
+                                        where, then --yes --key <preview-key> lands it as one commit; --undo reverts it
   toolroll task merge <id> --as <you> --token <t>
                                         merge the task's pull request once checks pass
       [--anyway]                        merge without waiting for the full check
@@ -15975,7 +15975,7 @@ async function landTaskCommand(positional: readonly string[], flags: Map<string,
   const allowed = new Set(["json", "db", "into", "undo", "yes", "key", "as", "token", "token-file", "token-env"]);
   for (const key of flags.keys()) if (!allowed.has(key)) return fail(write, json, command, "usage", `--${key} is not a ${command} option.`, EXIT.usage);
   const id = positional[0] === undefined ? undefined : resolveTaskId(store, positional[0]);
-  if (id === undefined || positional.length !== 1) return fail(write, json, command, "usage", "Use `toolroll task land <id>` to see what landing does, then `--yes --key <key>` to land it.", EXIT.usage);
+  if (id === undefined || positional.length !== 1) return fail(write, json, command, "usage", "Use `toolroll task land <id>` to see what landing does, then `--yes --key <preview-key>` to land it.", EXIT.usage);
   const into = text(flags, "into"), undo = flags.get("undo") === true, yes = flags.get("yes") === true, key = text(flags, "key");
   if (flags.has("into") && into === undefined) return fail(write, json, command, "usage", "--into needs a branch name.", EXIT.usage);
   if (undo && into !== undefined) return fail(write, json, command, "usage", "--undo lands on the branch the work landed on; it takes no --into.", EXIT.usage);
@@ -15991,7 +15991,9 @@ async function landTaskCommand(positional: readonly string[], flags: Map<string,
     if (!("plan" in read)) return succeed(write, json, command, { landed: read.landed }, () => [`${id} · Landed on ${read.landed.ref.replace(/^refs\/heads\//, "")} (${read.landed.commit.slice(0, 7)}).`]);
     const plan = read.plan;
     // Say up front what the yes will ask for (everyday-9 A4): this computer's local owner needs nothing more; anyone
-    // else, their name and password.
+    // else, their name and password. With no password set yet (a solo install), a shell can't prove a person typed the
+    // yes (an agent runs as the same user), so it says where landing works instead (everyday-9 C3): words only.
+    if (local === null && passwordFreeOwner(store)) return succeed(write, json, command, { plan }, () => [...landingWords(plan), LAND_NEEDS_PASSWORD]);
     return succeed(write, json, command, { plan }, () => [...landingWords(plan),
       `To ${undo ? "undo it" : "land it"}: toolroll task land ${id}${into === undefined ? "" : ` --into ${into}`}${undo ? " --undo" : ""} --yes --key ${plan.key}${local === null ? " --as <you>" : ""}`,
       ...(local === null ? ["That asks for your Toolroll password."] : [])]);
@@ -15999,6 +16001,8 @@ async function landTaskCommand(positional: readonly string[], flags: Map<string,
   if (key === undefined || !/^[0-9a-f]{16}$/.test(key)) return fail(write, json, command, "usage", "--yes needs the --key `toolroll task land` showed you, so what lands is what you read.", EXIT.usage);
   let authority: LandAuthority;
   if (local !== null) authority = { kind: "local" };
+  // No password exists to ask for: refuse before prompting, with where landing works (nothing about who may land changes).
+  else if (passwordFreeOwner(store)) return fail(write, json, command, "unauthenticated", LAND_NEEDS_PASSWORD, EXIT.refused);
   else {
     const acting = await askCredentials(flags, context);
     const ref = store.lookupRef(id);
@@ -16039,3 +16043,6 @@ function verifyRepoOf(store: Store, raw: string): string {
   }
   return absolute;
 }
+
+/** Where landing works on an install with no password yet (everyday-9 C3). */
+const LAND_NEEDS_PASSWORD = "Land it from the workbench (B) or the task page in the browser; from a shell it needs a Toolroll password (`toolroll password set`).";
