@@ -281,8 +281,8 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
       })),
       attachments: found.attachments.map(toArtifactView),
       ships,
-      // The contract's three facts (a failed read's mark is the page's to say).
-      diff: { changedFiles: responseDiff.changedFiles, diffText: responseDiff.diffText, dirty: responseDiff.dirty },
+      // `unread`: the last read of its copy failed, so the files are what an earlier read saw (or none was ever read).
+      diff: { changedFiles: responseDiff.changedFiles, diffText: responseDiff.diffText, dirty: responseDiff.dirty, ...(responseDiff.unread === true ? { unread: true as const } : {}) },
     } satisfies DirectChatDetail);
   }
 

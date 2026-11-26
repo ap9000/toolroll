@@ -1633,6 +1633,10 @@ pub struct DirectChatDiff {
     pub changed_files: Vec<String>,
     pub diff_text: String,
     pub dirty: bool,
+    /// The last read of the chat's copy failed: the files are what an earlier read saw (or none was ever read), never
+    /// "no changes". Absent after a read that worked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

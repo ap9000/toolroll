@@ -779,6 +779,9 @@ export const directChatDetailSchema = z.object({
     changedFiles: z.array(z.string()),
     diffText: z.string(),
     dirty: z.boolean(),
+    /** The last read of the chat's copy failed (direct-chat.ts refreshDiffCache): the files are what an earlier read saw,
+     * or none when none was ever read — never "no changes". Absent after a read that worked. */
+    unread: z.literal(true).optional(),
   }),
 });
 export const directChatShipPreviewSchema = z.object({
