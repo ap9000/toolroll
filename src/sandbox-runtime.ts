@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 import { wrapCommandWithSandboxMacOS } from "@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js";
 import { checkLinuxDependencies, getLinuxDependencyStatus } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 import type { FsReadRestrictionConfig, FsWriteRestrictionConfig } from "@anthropic-ai/sandbox-runtime";
-import { linuxSandboxTools, sandboxToolExclusions, seccompHelperRepair, type LinuxSandboxTools, type LinuxSandboxToolsVerdict, type ToolExclusions } from "./sandbox-tools.js";
+import { linuxSandboxTools, sandboxToolExclusions, sandboxToolsRepair, type LinuxSandboxTools, type LinuxSandboxToolsVerdict, type ToolExclusions } from "./sandbox-tools.js";
 import { trustRepairLines } from "./trust-repair.js";
 import { shownText } from "./shown-text.js";
 import { installLine, packageSystem, type PackageSystem } from "./linux-packages.js";
@@ -109,7 +109,7 @@ function diagnose(platform: NodeJS.Platform, io: SandboxIo): SandboxDiagnosis {
     // Each program the sandbox runs, by a path Toolroll trusts (never a PATH lookup): none, and no sandbox starts.
     const resolved = linuxSandboxTools();
     if (!resolved.ok) {
-      const kind = /isn't available for this processor/.test(resolved.why) ? "unsupported-arch" : /has no copy owned by root/.test(resolved.why) ? "missing-tool" : "trust";
+      const kind = resolved.failure === "unsupported-arch" ? "unsupported-arch" : resolved.failure === "missing" ? "missing-tool" : "trust";
       return { ok: false, kind, why: resolved.why };
     }
     const { tools } = resolved;
@@ -208,11 +208,11 @@ export function noConfinementWords(what: string, done: string, diagnosis: Sandbo
   return shownText(`This machine can't confine ${what}, so ${done}: ${why}.${fix} ${UNCONFINED_OPT_IN}`);
 }
 
-/** Linux: when the sandbox's own seccomp helper fails its trust check, what fails and the exact repair, as lines
+/** Linux: when an installed sandbox program or the seccomp helper fails its trust check, what fails and the exact repair, as lines
  * (sandbox-tools.ts seccompHelperRepair); none otherwise. The check is unchanged and runs again at every launch. */
 export function sandboxRuntimeRepair(platform: NodeJS.Platform = process.platform): string[] {
   if (platform !== "linux") return [];
-  const repair = seccompHelperRepair();
+  const repair = sandboxToolsRepair();
   return repair === null ? [] : trustRepairLines(repair);
 }
 

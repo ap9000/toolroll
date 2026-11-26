@@ -39,6 +39,8 @@ export type TrustRepairOptions = {
   /** The effective uid running the commands (sudo is added for a root-owned path when this isn't root). */
   euid?: number;
   platform?: NodeJS.Platform;
+  /** System programs, which must be root's own: a copy this user owns is told to come from the package manager. */
+  system?: boolean;
 };
 
 const quote = (path: string): string => `'${path.replace(/'/g, `'\\''`)}'`;
@@ -123,6 +125,7 @@ export function trustRepair(paths: string | readonly string[], options: TrustRep
     if (kinds.has("owner")) {
       const owner = rest.find(one => one.path === at && one.kind === "owner")?.owner;
       if (euid === 0 && options.owners.includes(0)) planned.push({ at, command: `chown 0 ${quote(at)}` });
+      else if (options.system === true && owner === euid) notes.push(`${shownText(at)} is yours, but the sandbox runs only programs root owns: install it from your system package manager instead.`);
       else notes.push(`${shownText(at)} belongs to another user (uid ${owner ?? "unknown"}), so only that user or an administrator can fix it; or reinstall into a folder you own.`);
     }
     if (kinds.has("acl")) planned.push({ at, command: platform === "darwin" ? `${sudo(at)}chmod -N ${quote(at)}` : `${sudo(at)}setfacl -b ${quote(at)}` });
@@ -193,4 +196,15 @@ export function protectTree(root: string): void {
     if (info.isDirectory()) for (const name of readdirSync(at)) walk(join(at, name));
   };
   walk(root);
+}
+
+/** Two repairs as one: faults, commands and notes each once, in order. */
+export function mergeRepairs(a: TrustRepair | null, b: TrustRepair | null): TrustRepair | null {
+  if (a === null || b === null) return a ?? b;
+  const once = <T>(list: T[], key: (one: T) => string): T[] => { const seen = new Set<string>(); return list.filter(one => { const k = key(one); if (seen.has(k)) return false; seen.add(k); return true; }); };
+  return {
+    faults: once([...a.faults, ...b.faults], one => `${one.kind}\0${one.path}`),
+    commands: once([...a.commands, ...b.commands], one => one),
+    notes: once([...a.notes, ...b.notes], one => one),
+  };
 }

@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { checkLinuxDependencies } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 import { LINUX_SANDBOX_TOOLS, SANDBOX_LAUNCH_SPEC, linuxSandboxInstallLine, missingLinuxSandboxTools, sandboxRuntimeProblem, srtSpawn, type SandboxLaunchSpec, type SrtTerms } from "./sandbox-runtime.js";
 import { managerLine, packageSystem } from "./linux-packages.js";
-import { checkSeccompHelper, resolveLinuxSandboxTools, sandboxToolExclusions, seccompHelperPath, verifyLinuxSandboxTools, type LinuxSandboxTools, type ToolTrust } from "./sandbox-tools.js";
+import { checkSeccompHelper, resolveLinuxSandboxTools, sandboxToolsRepair, sandboxToolExclusions, seccompHelperPath, verifyLinuxSandboxTools, type LinuxSandboxTools, type ToolTrust } from "./sandbox-tools.js";
 import { toolrollInstall } from "./agent-fence.js";
 import { outsideTempDir } from "../test/short-temp.js";
 
@@ -133,7 +133,7 @@ describe("the Linux sandbox's own programs: root's own, by exact path, checked a
   test("ripgrep only in ~/.cargo/bin (on PATH) is never used: the person is told to install it from the system's package manager", () => {
     const system = folder("system", ["rg"]);
     process.env["PATH"] = `${folder("cargo-bin")}:${system}`;
-    expect(resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp: helper(system) })).toEqual({ ok: false,
+    expect(resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp: helper(system) })).toEqual({ ok: false, failure: "missing",
       why: `ripgrep (rg) has no copy owned by root in ${system}: install ripgrep from your system package manager (${linuxSandboxInstallLine(["ripgrep"])})` });
   });
 
@@ -186,11 +186,39 @@ describe("the Linux sandbox's own programs: root's own, by exact path, checked a
     } finally { delete process.env["npm_config_prefix"]; }
   });
 
+  test("an installed program that fails its check is a trust failure with its paths, not missing; the repair covers it and every folder above, and then it passes", () => {
+    const run = (commands: readonly string[]) => { for (const one of commands) expect(spawnSync("/bin/sh", ["-c", one]).status, one).toBe(0); };
+    // A writable bwrap (the others fine).
+    const system = folder("system");
+    const seccomp = helper(system);
+    chmodSync(join(system, "bwrap"), 0o777);
+    const writable = resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp });
+    expect(writable).toMatchObject({ ok: false, failure: "untrusted", rejected: [join(system, "bwrap")] });
+    expect(!writable.ok && writable.why).toMatch(/^bubblewrap \(bwrap\) has no copy Toolroll can trust in .*fix those paths \(`toolroll doctor` prints how\), or install bubblewrap/);
+    const fileRepair = sandboxToolsRepair({ ...standIn, folders: [system], seccomp }, null)!;
+    expect(fileRepair.commands).toEqual([`chmod go-w '${join(system, "bwrap")}'`]);
+    run(fileRepair.commands);
+    expect(resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp }).ok).toBe(true);
+    // A writable folder above every program: each of them fails, and one command fixes the folder.
+    chmodSync(system, 0o775);
+    expect(resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp })).toMatchObject({ ok: false, failure: "untrusted" });
+    const folderRepair = sandboxToolsRepair({ ...standIn, folders: [system], seccomp }, null)!;
+    expect(folderRepair.commands).toEqual([`chmod go-w '${system}'`]);
+    run(folderRepair.commands);
+    expect(resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp }).ok).toBe(true);
+    expect(sandboxToolsRepair({ ...standIn, folders: [system], seccomp }, null)).toBeNull();
+    // A copy this user owns where only root's count: why, and the package manager, never a chown.
+    const users = folder("usr-local-bin");
+    const mine = sandboxToolsRepair({ folders: [users], root: [0], codeOwner: me, seccomp: helper(users) }, null)!;
+    expect(mine.commands.some(one => one.startsWith("chown"))).toBe(false);
+    expect(mine.notes.join(" ")).toContain(`${join(users, "bwrap")} is yours, but the sandbox runs only programs root owns`);
+  });
+
   test("a missing program refuses with a plain reason, and nothing falls back to a PATH lookup", () => {
     const system = folder("system", ["socat"]);
     process.env["PATH"] = folder("on-path");
     const resolved = resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp: helper(system) });
-    expect(resolved).toEqual({ ok: false, why: `socat has no copy owned by root in ${system}: install socat from your system package manager (${linuxSandboxInstallLine(["socat"])})` });
+    expect(resolved).toEqual({ ok: false, failure: "missing", why: `socat has no copy owned by root in ${system}: install socat from your system package manager (${linuxSandboxInstallLine(["socat"])})` });
     if (!resolved.ok) expect(() => srtSpawn("/bin/true", [], terms(system), system, undefined, "linux", () => resolved)).toThrow(resolved.why);
   });
 
