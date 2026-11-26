@@ -2917,6 +2917,9 @@ impl App {
             }
         }
         let mut before = self.selected_id();
+        // What was selected as this read arrived: a thread just started here is selected below, and that is a change of
+        // selection like any other (stranger 17: started from a task, the thread's Diff tab kept showing the task's diff).
+        let was = before.clone();
         // The thread being looked at now has its news seen; any other thread with news unseen takes the unread mark.
         if let Some(id) = before.as_deref() {
             self.mark_thread_seen(id);
@@ -2957,7 +2960,7 @@ impl App {
             .and_then(|id| self.items.iter().position(|i| &i.id == id))
             .unwrap_or(self.selected)
             .min(self.items.len().saturating_sub(1));
-        if self.selected_id() != before {
+        if self.selected_id() != was {
             return self.selection_changed();
         }
         self.poll_thread()

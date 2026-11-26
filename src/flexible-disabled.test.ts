@@ -319,14 +319,17 @@ describe("the switch can't become an override", () => {
     decided("src/flexible-import.ts", [], ["readFlexibleCandidate", "importFlexibleCandidate", "foldName", "linkLeadsOut", "removeFlexibleImportRefs", "flexibleTaskBranch", "settleInterruptedImport",
       "flexibleThreadTip", "readFlexibleChanges",
       // Everyday 9 B1: the project's own branch and where a saved branch would merge, read for Save as branch's words.
-      "projectThreadBranch", "projectMergeHint"]);
+      "projectThreadBranch", "projectMergeHint",
+      // Stranger 17: the edits a thread's agent left uncommitted, found, or committed onto its branch for a save (a person's
+      // recovery of past work, as the import is).
+      "flexibleLeftover"]);
     decided("src/flexible-ship.ts", ["mergeArmedFlexible"],
       ["flexibleShipTerms", "shipFlexible", "flexibleShipSummary", "flexibleShipsOf", "reconcileFlexibleShips", "flexibleArmedPass", "cancelFlexibleShip", "sendBackFlexible", "removeFlexibleImport", "flexibleShipNeeds",
         // Everyday 9 B1: what the thread's branch holds after its sends (Save as branch reads it as Ship does); a read.
         "branchHeld"]);
     // Save as branch (everyday 9 B1) is a person's recovery of past work, like the import it runs: never gated (it grants
     // nothing; a later Ship's arming still checks the switch). The rest are reads.
-    decided("src/flexible-save.ts", [], ["saveFlexibleBranch", "isFlexibleSave", "latestFlexibleSave"]);
+    decided("src/flexible-save.ts", [], ["saveFlexibleBranch", "isFlexibleSave", "latestFlexibleSave", "flexibleUncommittedFiles", "flexibleSavedWords"]);
     // Readiness is a read (it names what is missing, the switch first among them).
     decided("src/flexible-start.ts", ["flexibleStartCard"], ["flexibleReadiness"]);
     decided("src/flexible-launcher.ts", [], ["flexibleThreadNetwork", "flexibleNetworkDigest", "createFlexibleLauncher"]);

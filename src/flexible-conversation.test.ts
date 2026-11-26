@@ -6,14 +6,14 @@
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdirSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "./flexible.js";
 import { admitFlexibleTurn, beginFlexibleTurn, finishFlexibleTurn, withdrawFlexibleTurn } from "./flexible-turns.js";
 import {
-  CONVERSATION_BEGIN, CONVERSATION_END, conversationBriefLines, flexibleConversationOf, flexibleTurnMessage, recordFlexibleFiles, recordFlexibleReply, recordFlexibleSaid,
-  recordFlexibleStartTip, saidLines, type FlexibleSaidTurn,
+  CONVERSATION_BEGIN, CONVERSATION_END, conversationBriefLines, flexibleConversationOf, flexibleTurnMessage, flexibleTurnRecordsOf, keepFlexibleTurnRecords, recordFlexibleFiles,
+  recordFlexibleReply, recordFlexibleSaid, recordFlexibleStartTip, saidLines, TURN_RECORDS_BYTES, type FlexibleSaidTurn,
 } from "./flexible-conversation.js";
 import { attachFlexibleAgent, flexibleThreadLiveOf, openFlexibleSessions, startFlexibleThreadSession, type FlexibleSessions } from "./flexible-session.js";
 import { HIDDEN_LINE } from "./live-records.js";
@@ -218,5 +218,54 @@ describe("what was said, recorded per turn", () => {
     expect(flexibleConversationOf(world.store, T1).map(one => [one.seq, one.status, one.reply])).toEqual([[1, "finished", "Fixed it."], [2, "finished", "Added test/parse.test.ts."]]);
     const read = flexibleThreadLiveOf(world.store, sessions, { thread: T1, viewer: { name: "pat" }, file: "main", cursor: null });
     expect(read.ok && read.window.ok && read.window.records.slice(0, 2)).toEqual([{ k: "you", at: NOW.toISOString(), t: ["Fix the parser"] }, { k: "say", at: NOW.toISOString(), t: ["Fixed it."] }]);
+  });
+
+  // Stranger 17: after End (or a restart) the thread showed the agent's raw result line ("relay returned 200") for each
+  // turn instead of what it said, and its "Worked · Edited math.js" lines were gone.
+  test("what a turn showed live (the agent's words and its steps) is what the thread shows from Toolroll's records after its session is gone", async () => {
+    const folder = join(world.state, "threads", T1);
+    for (const one of [join(world.state, "threads"), folder]) chmodSync(one, 0o700);
+    const made = admitted();
+    recordFlexibleSaid(world.store, { turn: made.turn, thread: T1, seq: made.seq, said: "Add f2 to math.js", at: NOW.toISOString() });
+    expect(beginFlexibleTurn(world.store, { turn: made.turn, holder: sessions.holder, clock: () => NOW })).toMatchObject({ ok: true });
+    expect(await startFlexibleThreadSession(world.store, sessions, { thread: T1 })).toMatchObject({ ok: true });
+    const stdout = new PassThrough(), exit = new EventEmitter();
+    expect(attachFlexibleAgent(world.store, sessions, { thread: T1, turn: made.turn, launch: L1, stdout, stdin: new PassThrough(), exited: listener => { exit.once("exit", listener); },
+      clock: () => NOW })).toEqual({ ok: true });
+    const line = (event: Record<string, unknown>) => stdout.write(`${JSON.stringify({ parent_tool_use_id: null, ...event })}\n`);
+    line({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "Edit", input: { file_path: `${folder}/repo/math.js`, old_string: "", new_string: "f2" } }] } });
+    line({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "The file math.js has been updated." }] } });
+    line({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Added f2 to math.js." }] } });
+    line({ type: "result", subtype: "success", is_error: false, result: "(stand-in) relay returned 200" });
+    await new Promise(resolve => setImmediate(resolve));
+    const live = flexibleThreadLiveOf(world.store, sessions, { thread: T1, viewer: { name: "pat" }, file: "main", cursor: null });
+    if (!live.ok || !live.window.ok) throw new Error("no live window");
+    const shownLive = live.window.records.filter(one => one.k !== "you" && one.k !== "start");
+    expect(shownLive.map(one => one.k)).toEqual(["step", "done", "say"]);
+    expect(shownLive[0]).toMatchObject({ k: "step", kind: "edit", target: "math.js" });
+    // The reply kept for the next turn's agent is what the person saw it say, not its result line.
+    expect(flexibleConversationOf(world.store, T1).map(one => one.reply)).toEqual(["Added f2 to math.js."]);
+    // The session gone (the thread ended, or Toolroll restarted): the same records, from Toolroll's own.
+    await sessions.threads.get(T1)?.relay?.close();
+    sessions.threads.delete(T1);
+    const after = flexibleThreadLiveOf(world.store, sessions, { thread: T1, viewer: { name: "pat" }, file: "main", cursor: null });
+    if (!after.ok || !after.window.ok) throw new Error("no recorded window");
+    expect(after.window.records).toEqual([{ k: "you", at: NOW.toISOString(), t: ["Add f2 to math.js"] }, ...shownLive]);
+    expect(JSON.stringify(after.window.records)).not.toMatch(/relay returned 200/);
+  });
+
+  // Codex round 1, finding 5: the writer counts what the reader counts (UTF-8 bytes), so a long transcript in a wide
+  // script is kept cut at the cap, never written past it and then thrown away on read.
+  test("a turn's records in a wide script, far past the cap, are kept cut at it and read back", () => {
+    const folder = join(world.state, "threads", T1);
+    for (const one of [join(world.state, "threads"), folder]) chmodSync(one, 0o700);
+    const turn = "e".repeat(32);
+    const line = "你好世界".repeat(100);
+    keepFlexibleTurnRecords(folder, turn, Array.from({ length: 600 }, () => ({ k: "say" as const, at: NOW.toISOString(), t: [line] })));
+    expect(statSync(join(folder, "turns", `${turn}.jsonl`)).size).toBeLessThanOrEqual(TURN_RECORDS_BYTES);
+    const back = flexibleTurnRecordsOf(folder, turn);
+    expect(back.length).toBeGreaterThan(10);
+    expect(back.at(-1)).toEqual({ k: "cap", at: NOW.toISOString() });
+    expect(back[0]).toEqual({ k: "say", at: NOW.toISOString(), t: [line] });
   });
 });

@@ -1072,9 +1072,17 @@ function plainBranch(name: string): boolean {
  *   repository, `<path>` an absolute real folder (no link on the way, no transport prefix), into a new branch. File
  *   transport is allowed for that one fetch; every other protocol stays refused (WRITE_VIEW_FLAGS protocol.allow=never).
  * - `branch -D <branch>`.
+ * - `update-ref --no-deref refs/heads/<branch> <new> <old>`: one branch moved by compare-and-swap from exactly `<old>`
+ *   (both full commit ids of one length, never equal), with a reflog message of Toolroll's own. Never a delete, a
+ *   create from nothing, HEAD, a symbolic ref or any other namespace.
  */
 export function syncWriteArgv(args: readonly string[]): string[] | null {
   if (args.length === 3 && args[0] === "branch" && args[1] === "-D" && plainBranch(args[2]!)) return ["branch", "-D", args[2]!];
+  if (args.length === 5 && args[0] === "update-ref" && args[1] === "--no-deref" && args[2]!.startsWith("refs/heads/") && plainBranch(args[2]!.slice("refs/heads/".length))) {
+    const [ref, next, old] = [args[2]!, args[3]!, args[4]!];
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(next) || next.length !== old.length || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(old) || next === old || /^0+$/.test(old) || /^0+$/.test(next)) return null;
+    return ["update-ref", "--no-deref", "-m", "toolroll: branch moved by compare-and-swap", ref, next, old];
+  }
   if (args.length !== 5 || args[0] !== "fetch" || args[1] !== "--no-tags" || args[2] !== "--no-write-fetch-head") return null;
   const path = args[3]!, refspec = args[4]!;
   if (!path.startsWith("/") || path.includes("::") || /[\0\n\r]/.test(path)) return null;

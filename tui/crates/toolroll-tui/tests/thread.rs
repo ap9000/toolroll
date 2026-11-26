@@ -1459,7 +1459,7 @@ fn a_diff_read_still_on_its_way_when_the_turn_ends_is_superseded_by_a_fresh_one(
     app.update(Msg::Diff(old, Ok(parse(thread_diff(Some("No committed changes yet. Ask the agent to commit its work: Ship sends committed work only."))))));
     let shown = screen(&mut app, 120, 30);
     assert!(!shown.contains("No committed changes yet."), "{shown}");
-    app.update(Msg::Diff(fresh, Ok(parse(thread_diff(Some("The agent has uncommitted edits. Ask it to commit them: Ship and Save as branch take committed work only."))))));
+    app.update(Msg::Diff(fresh, Ok(parse(thread_diff(Some("The agent has uncommitted edits. Ask it to commit them, or end the thread and save it as a branch: that saves them too."))))));
     let shown = screen(&mut app, 120, 30);
     assert!(shown.contains("uncommitted edits"), "{shown}");
 }
@@ -1658,5 +1658,40 @@ fn the_copied_setup_command_quotes_the_folder_and_leaves_out_one_it_cant_write_s
     assert_eq!(
         step.command(Some("/home/me/a\u{202e}b")),
         "toolroll project flexible enable"
+    );
+}
+
+#[test]
+fn a_thread_started_with_a_task_selected_shows_its_own_diff_never_the_tasks() {
+    // Stranger 17: with a task selected on the Diff tab, T started a thread; the thread was selected, but its Diff tab
+    // still showed the task's changes until the selection moved away and back.
+    let mut app = App::new(false, Some("/home/me/shop".into()));
+    app.now = NOW;
+    app.update(Msg::Work(Ok(parse(fake::scenario_work()))));
+    let task = app.selected_item().expect("a task is selected").id.clone();
+    assert_ne!(task, fake::THREAD);
+    app.tab = toolroll_tui::app::Tab::Diff;
+    let mut d = fake::fixture("result-diff.json");
+    d["task"] = json!(task);
+    app.diff = Some(parse(d));
+    app.update(Msg::Acted(Ok(ActOutcome::ThreadStarted {
+        words: "The thread started.".into(),
+        thread: fake::THREAD.into(),
+    })));
+    let fx = app.update(Msg::Threads(Ok(parse(fake::fixture("live-threads.json")))));
+    assert_eq!(
+        app.selected_item().map(|i| i.id.as_str()),
+        Some(fake::THREAD)
+    );
+    // The task's diff is let go, and the thread's own changes are asked for.
+    assert!(app.diff.is_none(), "{:?}", app.diff);
+    assert!(
+        fx.iter()
+            .any(|e| matches!(e, Effect::FetchThreadDiff(a) if a.task == fake::THREAD)),
+        "{fx:?}"
+    );
+    assert!(
+        !fx.iter().any(|e| matches!(e, Effect::FetchDiff(_))),
+        "{fx:?}"
     );
 }

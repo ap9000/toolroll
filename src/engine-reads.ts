@@ -788,8 +788,9 @@ const HIDDEN_NAME = "[a name was hidden]";
 export function threadDiffOf(thread: string, turn: number, changes: ThreadChanges, seen: { edited?: boolean } = {}): ResultDiff {
   const empty = (problem: string): ResultDiff => ({ version: ENGINE_API_VERSION, task: thread, run: turn, totals: null, files: [], patchTruncated: false, problem });
   if (!changes.ok) return empty(`This thread's changes can't be read: ${cleanLiveText(changes.message)}`);
-  // The agent edited files but committed none of it (everyday 9, B2): said as what to do, since Ship and Save take commits.
-  if ("none" in changes && seen.edited === true) return empty("The agent has uncommitted edits. Ask it to commit them: Ship and Save as branch take committed work only.");
+  // The agent edited files but committed none of it (everyday 9, B2): said as what to do. Ship takes commits; Save as
+  // branch commits what the agent left once its agent has stopped (stranger 17).
+  if ("none" in changes && seen.edited === true) return empty("The agent has uncommitted edits. Ask it to commit them, or end the thread and save it as a branch: that saves them too.");
   if ("none" in changes) return empty("No committed changes yet. Ask the agent to commit its work: Ship sends committed work only.");
   const files = patchFiles(changes.patch).map((text, index) => {
     const parsed = parseReviewDiff(text).files[0];
