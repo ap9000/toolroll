@@ -640,12 +640,17 @@ const COMPLETION_YIELDS: ReadonlySet<string> = new Set(["waiting-decision", "fin
 export function workStatusOf(facts: WorkFacts, resultDisplay?: DisplayStatus): WorkStatus {
   const status = workStatusWordsOf(facts, resultDisplay);
   const done = facts.state === "done" && status.token !== "waiting-decision";
-  const read = done ? RESULT_NEEDS_YOU.has(status.token) ? { stage: "needs-you" as const, need: "other" as const } : stageOfCode(status.token, { needsPerson: false })
+  // Held findings wait on a person, as the assignment reads them (task-status.ts assignmentStageOf): never Ready.
+  const read = done ? RESULT_NEEDS_YOU.has(status.token) ? { stage: "needs-you" as const, need: "other" as const }
+    : status.token === "finding-held" ? { stage: "needs-you" as const, need: "finding" as const } : stageOfCode(status.token, { needsPerson: false })
     : stageOfCode(status.token, { needsPerson: status.views.includes("needs-you"), planning: facts.dispatch?.code === "running" && facts.dispatch.role === "planner", operatorHold: facts.dispatch?.action === "unhold" });
   // Complete is the saved completion's, as the Work list and the task page read it (everyday-9 C1): a result's own
   // reading (Ready, or Needs you for a check it owes) never reopens it; a question, held findings or a stop under way
   // still come first.
-  const complete = done && facts.completed === true && !COMPLETION_YIELDS.has(status.token) && (facts.control?.kind ?? "none") === "none";
+  const complete = done && facts.completed === true && !COMPLETION_YIELDS.has(status.token) && (facts.control?.kind ?? "none") === "none"
+    // Read from the facts themselves, whatever status was picked (review round 2): an open question or held findings wait
+    // on a person, completed or not.
+    && (facts.openDecision ?? null) === null && (facts.heldFindings ?? 0) === 0;
   const stage = complete ? "complete" as const : done && read.stage !== "needs-you" && read.stage !== "failed" ? "finished" as const : read.stage;
   const level = facts.result?.checkLevel ?? null;
   const shared = taskStatusOf({ stage, ...(read.need === undefined ? {} : { need: read.need }), ...(read.wait === undefined ? {} : { wait: read.wait }), reason: plainReasonOf(stage, status.token, status.detail),
@@ -694,12 +699,14 @@ function workStatusWordsOf(facts: WorkFacts, resultDisplay?: DisplayStatus): Wor
   if (facts.state === "done" && result !== null) {
     // A saved result or an ongoing review cannot answer a question. Keep
     // failures primary; the shared summary retains the answer action too.
-    if (question !== null && result.tone !== "problem") {
+    // A completed result's later check failure is a separate fact (everyday-9 C1): its question still comes first, with
+    // the failure kept beside it; an uncompleted failed result stays primary.
+    if (question !== null && (result.tone !== "problem" || facts.completed === true)) {
       return { token: "waiting-decision", label: "Waiting on your answer", detail: question.question,
         tone: "attention", action: { label: "Answer question", kind: "open-task" }, views, rank: 0,
         diagnostics: [{ token: result.token, label: result.label, detail: result.detail, tone: result.tone }] };
     }
-    if (held && result.tone !== "problem") return findingWords({ token: result.token, label: result.label, detail: result.detail, tone: result.tone });
+    if (held && (result.tone !== "problem" || facts.completed === true)) return findingWords({ token: result.token, label: result.label, detail: result.detail, tone: result.tone });
     return { ...result, views, rank: needs ? 0 : 3 };
   }
   if (facts.state === "cancelled") {
