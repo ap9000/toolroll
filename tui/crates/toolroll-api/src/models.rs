@@ -672,7 +672,23 @@ pub struct StepCards {
     /// What Run checks again posts (POST /r/<run>/checks `level`); absent when it isn't offered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_checks: Option<RunChecksOffer>,
+    /// An accepted result behind its project's main: what Send back posts (its next attempt starts with main merged in).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behind_main: Option<BehindMain>,
     pub room: String,
+}
+
+/// An accepted result behind main (StepCards.behind_main): the Send back post's run and source, the receipt it was read
+/// at, the branch, how far behind, and the feedback the task page prefills.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct BehindMain {
+    pub run: i64,
+    pub receipt: String,
+    pub source: String,
+    pub main: String,
+    pub behind: i64,
+    pub note: String,
 }
 
 /// Run checks again on a result (StepCards.run_checks): its build and the level its project has a command for.

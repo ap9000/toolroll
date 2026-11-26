@@ -5,6 +5,7 @@
  * read from Git now. Reads only.
  */
 
+import { taskBranches } from "./names.js";
 import { viewedGitSync } from "./teardown-git.js";
 import type { Store } from "./store.js";
 
@@ -50,7 +51,7 @@ export function baseStandingWords(view: Pick<TaskBaseView, "base" | "main" | "be
 
 /**
  * Where a revision's whole change starts (everyday-9 A1): its family's original start on main, the first task's pinned
- * base, never the head of the attempt it revises. A revision builds on that attempt's head, so a diff from there would
+ * base (or the main commit Toolroll last merged into the family, below), never the head of the attempt it revises. A revision builds on that attempt's head, so a diff from there would
  * show only the newest delta while landing would carry everything. Null for a task that revises nothing (its branch's
  * own pinned base applies), and when the ancestry can't be verified, crosses projects, or the first task has no base.
  */
@@ -62,6 +63,14 @@ export function familyStartOf(store: Store, taskRef: number): string | null {
   const rootId = ancestry.chain[ancestry.chain.length - 1];
   const root = ancestry.problem !== null || rootId === undefined || rootId === id ? null : store.lookupRef(rootId);
   if (root === null || root.repo !== ref.repo) return null;
+  // Brought up to date (revision-catch-up.ts): the nearest version whose start Toolroll merged main into starts the
+  // family's change at that main commit, the one its work now sits on. A revision's branch never moves to main any other
+  // way (freshBaseFor), so a move recorded on it is that merge.
+  for (const member of ancestry.chain.slice(0, -1)) {
+    const memberRef = store.lookupRef(member);
+    const moved = memberRef === null ? null : taskBranches(member).map(branch => store.latestBranchBaseMove(memberRef.id, branch)).find(one => one !== null) ?? null;
+    if (moved !== null) return moved.to;
+  }
   const first = store.runsFor(root.id).filter(one => one.role === "builder" && one.branch !== null && one.baseRevision !== null).sort((a, b) => a.id - b.id)[0];
   if (first === undefined || first.branch === null) return null;
   return store.firstBuilderBase(root.id, first.branch) ?? first.baseRevision;

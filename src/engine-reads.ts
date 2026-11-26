@@ -13,7 +13,8 @@ import { codexOfflineDependencySuggestion, failedAttemptSentence, latestFinished
 import { pendingAgentChangeOf, planSourceOf, retryPinsOf } from "./local-owner-acts.js";
 import { assignmentOf, owedAcceptance, personCompletionRefusal, type AssignmentSnapshot } from "./assignment.js";
 import { assignmentCardOf } from "./assignment-ui.js";
-import { landedNowOf } from "./merge-checklist.js";
+import { behindMainOf, landedNowOf, upToDateNote } from "./merge-checklist.js";
+import { publishesThroughPullRequests } from "./local-landing.js";
 import { liveQuickCommand } from "./check-levels.js";
 import { assignmentStageOf, stageOfCode } from "./task-status.js";
 import { taskRoad, type RoadChecks } from "./first-run.js";
@@ -178,6 +179,8 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
     // check that ran again), out of date (its command changed) or unreadable. A terminal marks only a failure as one.
     ...(card?.status.check === "failed" || card?.status.check === "stale" || card?.status.check === "unreadable" ? { check: card.status.check } : {}),
     ...(() => { const offer = runChecksOfferOf(store, assignment, card?.status.check ?? null); return offer === null ? {} : { runChecks: offer }; })(),
+    // An accepted result behind main (stranger 17): Send back brings it up to date, so a terminal's r offers it too.
+    ...(() => { const offer = assignment === null || assignment.receipt?.taskId !== current.id ? null : behindMainOfferOf(store, assignment, scope?.digest ?? null); return offer === null ? {} : { behindMain: offer }; })(),
     room: `task:${encodeURIComponent(root.id)}`,
   };
 }
@@ -192,6 +195,18 @@ function runChecksOfferOf(store: Store, assignment: AssignmentSnapshot | null, c
   if (receipt === null || receipt.head === null || receipt.completionKind === "research-report" || assignment!.repo === null || store.isDemo()) return null;
   const level = store.liveVerifyCommand(assignment!.repo) !== null ? "full" as const : liveQuickCommand(store, assignment!.repo) !== null ? "quick" as const : null;
   return level === null ? null : { run: receipt.runId, level };
+}
+
+/** What Send back posts for an accepted result behind its project's main (StepCards.behindMain): only in a project
+ * without pull requests, not landed, and not after a catch-up that conflicted with main as it is now (then sending it
+ * back can't help). Display only: the post proves everything again. Null otherwise. */
+function behindMainOfferOf(store: Store, assignment: AssignmentSnapshot, scopeDigest: string | null): NonNullable<StepCards["behindMain"]> | null {
+  const receipt = assignment.receipt;
+  if (assignment.state !== "complete" || receipt === null || receipt.head === null || receipt.completionKind === "research-report" || assignment.repo === null || store.isDemo()) return null;
+  if (publishesThroughPullRequests(store, assignment.repo) || landedNowOf(store, assignment) !== null) return null;
+  const standing = behindMainOf(store, assignment, undefined);
+  if (standing === null || standing.main === null || standing.behind === null || standing.behind === 0 || standing.conflict !== null) return null;
+  return { run: receipt.runId, receipt: receipt.digest, source: revisionSourceOf(scopeDigest), main: standing.main, behind: standing.behind, note: upToDateNote(standing.main) };
 }
 
 /** The words Open build shell is refused with when its build has nothing to open on, as the start itself says them

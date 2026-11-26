@@ -15,7 +15,8 @@ import { shipChecksForTask, type Store } from "./store.js";
 import { approvedCheckStateOf, requirementWordOf } from "./task-status.js";
 import { projectCheckSet } from "./check-levels.js";
 import { projectName } from "./project.js";
-import { landingHistoryOf, publishesThroughPullRequests } from "./local-landing.js";
+import { landingHistoryOf, publishesThroughPullRequests, shownName } from "./local-landing.js";
+import { catchUpConflictOf } from "./revision-catch-up.js";
 import { recentGitReads, type GitRead, type TaskBaseView } from "./task-base.js";
 
 /** The bounded git reads a checklist's landing history uses (display only, answers kept for a moment). */
@@ -176,12 +177,17 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
   // of main. A result that already contains main's newer commits is up to date, whatever base its review started from
   // (review round 1); the review base itself is unchanged.
   const notRecorded = publishing.on ? NOT_RECORDED : NOT_RECORDED_LOCAL;
-  const standing = merged || publishing.on || receipt === null || assignment.repo === null ? null : resultBehindMain(assignment.repo, head, base === undefined ? undefined : base?.main ?? null, read);
+  const standing = merged || publishing.on || receipt === null || assignment.repo === null ? null : behindMainOf(store, assignment, base === undefined ? undefined : base?.main ?? null, read);
   if (merged) row("up-to-date", "yes", "Merged.");
   else if (standing == null || standing.main === null || standing.behind === null) row("up-to-date", "unknown", notRecorded);
   else if (standing.behind === 0) row("up-to-date", "yes", `Up to date with ${standing.main}.`);
-  else row("up-to-date", "no", `${standing.main} has ${standing.behind === 1 ? "1 commit" : `${standing.behind} commits`} this work doesn't. Send it back to build on the current ${standing.main}.`,
-    { kind: "fix", run: receipt!.runId, note: `${standing.main} moved on since this work started. Build it again on the current ${standing.main}.` });
+  else {
+    const missing = `${standing.main} has ${standing.behind === 1 ? "1 commit" : `${standing.behind} commits`} this work doesn't`;
+    // A send back starts the next attempt with main merged in (revision-catch-up.ts); when that merge last conflicted
+    // with exactly this main, another would too, so the row says how to bring them together instead.
+    if (standing.conflict !== null) row("up-to-date", "no", `${missing}, and they conflict with it${conflictNames(standing.conflict)}. Merge it into ${standing.main} yourself and resolve the conflicts, or file a new task on the current ${standing.main}.`);
+    else row("up-to-date", "no", `${missing}. Send it back: Toolroll builds it again on the current ${standing.main} with this work merged in.`, { kind: "fix", run: receipt!.runId, note: upToDateNote(standing.main) });
+  }
   if (merged) row("conflicts", "yes", "Merged.");
   else if (receipt?.checks.batch?.state === "conflict") row("conflicts", "no", "It conflicted with another result in its batch check.", { kind: "fix", run: receipt.runId, note: "It conflicts with another change. Rebase it on main and resolve the conflict." });
   else row("conflicts", "unknown", notRecorded);
@@ -208,6 +214,22 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
     : answer === "not-yet" ? `Not yet: ${rows.find(one => one.mark === "waiting")!.label.toLowerCase()} — ${rows.find(one => one.mark === "waiting")!.say}`
     : `Yes, as far as Toolroll records.${unknown.length === 0 ? "" : ` Check ${unknown.join(" and ")} ${publishing.on ? "on GitHub" : "in your repository"}.`}`;
   return { taskId, activeTaskId: active, run, head, answer, sentence, rows };
+}
+
+/** Send back's prefilled feedback for work behind main: true whether or not the merge Toolroll makes first succeeds. */
+export const upToDateNote = (main: string): string => `${main} moved on since this work started. Make sure the work still fits with ${main}'s newer changes.`;
+/** A few conflicted names, made safe to show. */
+const conflictNames = (files: readonly string[]): string => files.length === 0 ? "" : ` in ${files.slice(0, 3).map(one => shownName(one)).join(", ")}${files.length > 3 ? ", …" : ""}`;
+
+/** Where a result stands against its project's main (resultBehindMain), and the files the family's last catch-up
+ * conflicted in when that was against main's commit now (revision-catch-up.ts catchUpConflictOf). Display only. */
+export function behindMainOf(store: Store, assignment: AssignmentSnapshot, main: string | null | undefined, read: GitRead = landingReads): { main: string | null; behind: number | null; conflict: string[] | null } | null {
+  const receipt = assignment.receipt;
+  if (receipt === null || assignment.repo === null) return null;
+  const standing = resultBehindMain(assignment.repo, receipt.head, main, read);
+  if (standing.main === null || standing.behind === null || standing.behind === 0) return { ...standing, conflict: null };
+  const tip = read(assignment.repo, ["rev-parse", "--verify", "-q", `refs/heads/${standing.main}^{commit}`]);
+  return { ...standing, conflict: tip === null ? null : catchUpConflictOf(store, receipt.taskId, tip) };
 }
 
 /** How many commits on the project's main the result's head doesn't contain (`rev-list --count <head>..main`), and which

@@ -1,5 +1,5 @@
 {
-  "digest": "ed0c176b6546bc4bae0b1f16d79568338812f2fda185cb7e870714f318dd3932",
+  "digest": "5f634da9877dc42df31956678b331ef60a4115f574e2cbd954cc839dced8f380",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -2522,6 +2522,43 @@
           "required": [
             "run",
             "level"
+          ],
+          "additionalProperties": false
+        },
+        "behindMain": {
+          "type": "object",
+          "properties": {
+            "run": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "receipt": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "source": {
+              "type": "string"
+            },
+            "main": {
+              "type": "string"
+            },
+            "behind": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "note": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run",
+            "receipt",
+            "source",
+            "main",
+            "behind",
+            "note"
           ],
           "additionalProperties": false
         },

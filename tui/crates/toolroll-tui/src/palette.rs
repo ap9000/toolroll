@@ -80,7 +80,7 @@ fn context_rank(app: &App, pick: &Pick) -> i64 {
             match a {
                 Action::TaskBuilder if held && app.builder_task().is_some() => 315,
                 Action::Accept if review || approval => 320,
-                Action::SendBack if review || retry => 310,
+                Action::SendBack if review || retry || app.behind_main_here() => 310,
                 Action::Retry if retry => 310,
                 Action::Steer if live => 320,
                 Action::TakeOverAgent if !thread && (live || retry || review) => 285,
