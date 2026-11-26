@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { codingEnvironment } from "./coding-provider.js";
 import { codexLimitsOf, record, type LimitReading } from "./provider-limits.js";
 import { refreshSubscriptions, type SubscriptionReaders } from "./subscription-usage.js";
-import { directChatRunning, onPlanLimitsViewed, planLimitsWanted } from "./plan-limits-demand.js";
+import { directChatRunning, onPlanLimitsViewed, planLimitsWanted, type ProcessAlive } from "./plan-limits-demand.js";
 import { billingOf, type Billing } from "./spend.js";
 import type { Store } from "./store.js";
 import { envValue } from "./names.js";
@@ -94,7 +94,7 @@ export function readCodexLimits(options: { command?: string; timeoutMs?: number;
 }
 
 /** The loop beside the console: plan limits (Codex's from its app server, then Claude's and Antigravity's when stale)
- * every five minutes, but only while they are wanted (plan-limits-demand.ts): agent work queued or running, or a person
+ * every five minutes, but only while they are wanted (plan-limits-demand.ts): an agent actually running, or a person
  * opened a page that shows them in the last ten minutes. An idle Toolroll asks no provider anything (everyday 9, B3:
  * Claude's read is a real model turn). Never in tests, the demo, or the end-to-end harness (which runs with the person's
  * own sign-in), and never while a Codex build is running (both would refresh the same sign-in). One read at a time: the
@@ -138,20 +138,22 @@ export async function codexSignedInNow(check: (provider: "codex", fresh?: boolea
 const VIEWED_PASS_GAP_MS = 60_000;
 
 /** The limits loop itself, without startCodexLimits' guards: the seams replace each provider read (tests). */
-export function scheduleLimitsLoop(store: Store, seams: { signedIn: () => Promise<boolean>; readCodex?: () => Promise<LimitReading | null>; readers?: SubscriptionReaders; clock?: () => Date }, everyMs = 5 * 60_000): () => void {
+export function scheduleLimitsLoop(store: Store, seams: { signedIn: () => Promise<boolean>; readCodex?: () => Promise<LimitReading | null>; readers?: SubscriptionReaders; clock?: () => Date;
+  /** The process check demand reads (tests); otherwise this computer's process table. */
+  alive?: ProcessAlive }, everyMs = 5 * 60_000): () => void {
   const clock = seams.clock ?? (() => new Date());
   let stopped = false, busy = false, lastPass = -Infinity;
   const pass = async (viewed: boolean) => {
     if (stopped || busy) return;
     const now = clock();
-    if (!planLimitsWanted(store, now)) return;
+    if (!planLimitsWanted(store, now, seams.alive)) return;
     if (viewed && now.getTime() - lastPass < VIEWED_PASS_GAP_MS) return;
     busy = true;
     lastPass = now.getTime();
     try {
       // Demand is read again after every await and right before each provider starts (B3 round 1, finding 5): work that
       // ended while Codex's sign-in or limits were read starts no Claude probe.
-      const stillWanted = () => !stopped && planLimitsWanted(store, clock());
+      const stillWanted = () => !stopped && planLimitsWanted(store, clock(), seams.alive);
       await codexLimitsPass(store, { signedIn: seams.signedIn, stopped: () => stopped, stillWanted, ...(seams.readCodex === undefined ? {} : { read: seams.readCodex }) });
       if (stillWanted()) {
         await refreshSubscriptions(store, store.databaseFile(), { skipCodex: true, now: clock(), stillWanted, ...(seams.readers === undefined ? {} : { readers: seams.readers }) });

@@ -87,6 +87,28 @@ pub fn wrap(s: &str, max: usize) -> Vec<String> {
     lines
 }
 
+/// Cut into lines of at most `max` cells without dropping or changing a character: joined back, the lines are `s`
+/// exactly (a command shown to copy wraps this way, never at its spaces).
+pub fn chunks(s: &str, max: usize) -> Vec<String> {
+    let max = max.max(1);
+    let mut lines = vec![];
+    let mut line = String::new();
+    let mut w = 0;
+    for c in s.chars() {
+        let cw = c.width().unwrap_or(0);
+        if w > 0 && w + cw > max {
+            lines.push(std::mem::take(&mut line));
+            w = 0;
+        }
+        line.push(c);
+        w += cw;
+    }
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,6 +120,17 @@ mod tests {
         assert!(!shown.chars().any(|c| c.is_control()), "{shown:?}");
         assert!(!shown.contains('\u{202e}') && !shown.contains('\u{200b}'));
         assert!(shown.starts_with("ok\u{fffd}]52;c;aGk=\u{fffd}\u{fffd}[2Jgone"));
+    }
+
+    #[test]
+    fn a_command_is_cut_by_cells_and_joins_back_exactly() {
+        let command = "git -C '/private/tmp/a very long/project folder' merge --ff-only 3b51847";
+        for max in [1, 7, 20, 80] {
+            let lines = chunks(command, max);
+            assert!(lines.iter().all(|l| width(l) <= max), "{lines:?}");
+            assert_eq!(lines.concat(), command);
+        }
+        assert_eq!(chunks("", 10), vec![String::new()]);
     }
 
     #[test]

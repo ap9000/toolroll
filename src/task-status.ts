@@ -265,7 +265,9 @@ function sentenceOf(headline: Headline, facts: TaskStatusFacts): string {
       if (facts.landed) return `Accepted automatically: ${facts.landed}.`;
       const by = facts.completedBy ? `Accepted by ${facts.completedBy}.` : "Accepted.";
       const pr = facts.pullRequest;
-      return pr?.state === "merged" ? `${by} ${pr.number === null ? "Its pull request" : `Pull request #${pr.number}`} merged.` : by;
+      // A completion is history (everyday-9 C1): checks that failed when they ran again later are a separate fact, said once.
+      const again = facts.checks?.status === "failed" ? " Its checks failed when they ran again." : "";
+      return pr?.state === "merged" ? `${by} ${pr.number === null ? "Its pull request" : `Pull request #${pr.number}`} merged.${again}` : `${by}${again}`;
     }
     case "Failed":
       if (facts.checks?.status === "failed") return `${facts.checks.level === "quick" ? "Quick checks" : "Checks"} failed${sha === null ? "" : ` on ${sha}`}. See what broke, then retry or send it back.`;

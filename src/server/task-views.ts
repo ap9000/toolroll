@@ -1,5 +1,5 @@
 import { localOwnerRefusal } from "../local-owner.js";
-import { broughtInOnBranch, landedWords, landingOf, publishesThroughPullRequests, recognisedOnBranch } from "../local-landing.js";
+import { broughtInOnBranch, landedStanding, landingOf, publishesThroughPullRequests, recognisedOnBranch } from "../local-landing.js";
 import type { TaskLanding } from "./render-tasks.js";
 import { requestContext } from "./request-context.js";
 import { heldFindingCount } from "../findings.js";
@@ -779,8 +779,10 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     // Already on the branch though Toolroll didn't land it (merged by hand, or its handed-off commit brought in): said,
     // with no Land. Display only (everyday-9 A3): it grants nothing.
     const onBranch = record === null || record.undone ? recognisedOnBranch(runtime.store, repo, rootId, complete ? assignment?.receipt?.head ?? null : null, baseGit) : null;
-    if (onBranch !== null) return { taskId: rootId, landed: onBranch, canLand: false, canUndo: person && broughtInOnBranch(runtime.store, repo, rootId, baseGit) };
-    return { taskId: rootId, landed: landedWords(runtime.store, rootId), canLand: person && complete && (record === null || record.undone), canUndo: person && record !== null && !record.undone };
+    // A later commit that exactly reverted it (the person's own revert) is said, and Undo, which would revert it again, isn't offered.
+    if (onBranch !== null) return { taskId: rootId, landed: onBranch.words, canLand: false, canUndo: person && !onBranch.reverted && broughtInOnBranch(runtime.store, repo, rootId, baseGit) };
+    const standing = landedStanding(runtime.store, rootId, baseGit);
+    return { taskId: rootId, landed: standing?.words ?? null, canLand: person && complete && (record === null || record.undone), canUndo: person && record !== null && !record.undone && standing?.reverted !== true };
   }
 
   /** What went wrong with the latest finished attempt (whatever its outcome, never an older failure). */

@@ -69,7 +69,7 @@ describe("Save as branch", () => {
     expect(saved, JSON.stringify(saved)).toMatchObject({ ok: true, already: false, branch: branch(), candidate, seq: 1, changedPaths: ["math.js"] });
     expect(branchAt()).toBe(candidate);
     const head = tgit(world.project, "symbolic-ref", "--short", "HEAD");
-    if (saved.ok) expect(saved.next).toBe(`To put it on ${head}: \`git -C ${world.project} merge --ff-only ${branch()}\`.`);
+    if (saved.ok) expect(saved.next).toBe(`To put it on ${head}: \`git -C '${world.project}' merge --ff-only ${branch()}\`.`);
     expect(rows()).toEqual([{ seq: 1, state: "imported", reason: null, kind: "flexible-save" }]);
     // The same commit again: nothing new is recorded or moved.
     expect(await save()).toMatchObject({ ok: true, already: true, seq: null });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { acceptWordsOf, resultStatusOf, SET_A_CHECK, buildProgressOf, lastErrorLineOf, missedRequirementOf, reportMismatchesOf, stepRowsOf, type StepRowFacts } from "./workspace-ui.js";
+import { acceptWordsOf, resultStatusOf, workStatusOf, type WorkFacts, SET_A_CHECK, buildProgressOf, lastErrorLineOf, missedRequirementOf, reportMismatchesOf, stepRowsOf, type StepRowFacts } from "./workspace-ui.js";
 import { taskRoad } from "./first-run.js";
 import { failedAttemptSentence, INTERNAL_ERROR, isInternalErrorReason, latestFinishedAttempt, missedRequirementLine, missedRequirementSuggestion, RETRY_NOTE_LIMIT, retryNoteOf, RUN_REASON_WORDS } from "./needs-you.js";
 
@@ -279,4 +279,23 @@ describe("the task page's step rows (stepRowsOf)", () => {
     const stopped = facts({ journey: taskRoad({ stage: "stopped" }, true, false, {}), status: { status: { headline: "Stopped" }, attempts: [] } });
     expect(rows(stopped)[2]).toBe("build:wait+:Stopped");
   });
+});
+
+/** A completion never hides what still waits on a person (everyday-9 C1, review round 2): a question or held findings
+ * keep their own action and Needs you, also when the completed result's checks failed when they ran again. */
+test("a completed result with an open question or held findings still asks for them", () => {
+  const failedCheck = { runId: 7, role: "builder", outcome: "built", verdict: "refuted" as const, reasons: ["the approved verification command exited 1"], accepted: false, checkLevel: "full" as const };
+  const base: WorkFacts = { id: "t", title: "t", repo: "/r", state: "done", updatedAt: "2026-11-25T12:00:00.000Z", dispatch: null, result: failedCheck,
+    publication: null, liveRunId: null, completed: true };
+  expect(workStatusOf(base).label).toBe("Complete");
+  for (const result of [failedCheck, { ...failedCheck, verdict: "verified" as const, reasons: [] }]) {
+    const asked = workStatusOf({ ...base, result, openDecision: { id: 3, runId: 7, question: "Which file?", overdue: false } });
+    expect(asked.label).toBe("Needs you");
+    expect(asked.action?.label).toBe("Answer question");
+    expect(asked.views).toContain("needs-you");
+    const held = workStatusOf({ ...base, result, heldFindings: 2 });
+    expect(held.label).toBe("Needs you");
+    expect(held.action?.kind).toBe("open-findings");
+    expect(held.views).toContain("needs-you");
+  }
 });

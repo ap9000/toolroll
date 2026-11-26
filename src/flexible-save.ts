@@ -28,6 +28,7 @@ import { flexibleThread, flexibleThreadBranch, withFlexibleThreadLock } from "./
 import { machineActing } from "./scope.js";
 import type { Store } from "./store.js";
 import type { Runner } from "./worktree.js";
+import { gitCommand, UNSAFE_FOLDER } from "./local-landing.js";
 
 export type FlexibleSaveTerms = {
   kind: "flexible-save"; version: 1; thread: string; repo: string; owner: string; ownerGeneration: number; seq: number;
@@ -39,7 +40,10 @@ export type FlexibleSaveReason = "machine-proof" | "thread-unknown" | "not-owner
 export type FlexibleSaveRefusal = { ok: false; reason: FlexibleSaveReason; message: string };
 export type FlexibleSaved = { ok: true; already: boolean; branch: string; candidate: string; seq: number | null; changedPaths: string[];
   /** The command a person copies to put it on their checked-out branch, or why there isn't one. */
-  next: string };
+  next: string;
+  /** That command alone, exactly as `next` shows it; null when none could be written (no project folder to name, or a
+   * folder name no command can carry safely). */
+  command: string | null };
 
 const WORDS: Readonly<Record<FlexibleSaveReason, string>> = Object.freeze({
   "machine-proof": "Only a person can save a thread's work. Nothing was saved.",
@@ -58,8 +62,6 @@ const refuse = (reason: FlexibleSaveReason): FlexibleSaveRefusal => ({ ok: false
 export const flexibleSaveDigestOf = (terms: FlexibleSaveTerms): string =>
   createHash("sha256").update(`standing-orders:flexible-save:${canonicalJson(terms)}`, "utf8").digest("hex").slice(0, 32);
 
-/** A path as one shell word, for a command a person copies. */
-const shellWord = (text: string): string => /^[A-Za-z0-9_./~+@%=:,-]+$/.test(text) ? text : `'${text.replace(/'/g, "'\\''")}'`;
 
 /** Who may save, from Toolroll's records, read inside the caller's transaction. */
 function saverStanding(store: Store, thread: { createdBy: string; repo: string }, by: { name: string; generation: number }): FlexibleSaveRefusal | null {
@@ -70,14 +72,16 @@ function saverStanding(store: Store, thread: { createdBy: string; repo: string }
   return null;
 }
 
-/** The words after a save: the exact merge to run, or why a fast-forward won't do. */
-async function nextWords(store: Store, thread: string, candidate: string, branch: string, runner?: Runner): Promise<string> {
+/** The words after a save: the exact merge to run, or why a fast-forward won't do. The command is Land's own (local-landing.ts
+ * gitCommand): the recorded folder single-quoted, and none at all when its name holds a control, bidi or zero-width
+ * character (never a cleaned-up name that would be a different folder): then plain words say what to run there. */
+async function nextWords(store: Store, thread: string, candidate: string, branch: string, runner?: Runner): Promise<{ next: string; command: string | null }> {
   const hint = await projectMergeHint(store, { thread, candidate, ...(runner === undefined ? {} : { runner }) });
-  if (hint === null) return `To use it: merge ${branch} in your repository.`;
-  const repo = shellWord(hint.repo);
-  if (hint.branch === null) return `To use it: check out the branch you want it on, then run \`git -C ${repo} merge --ff-only ${branch}\`.`;
-  if (hint.fastForward) return `To put it on ${hint.branch}: \`git -C ${repo} merge --ff-only ${branch}\`.`;
-  return `${hint.branch} moved since the thread started, so it won't fast-forward. To merge it: \`git -C ${repo} merge ${branch}\`.`;
+  if (hint === null) return { next: `To use it: merge ${branch} in your repository.`, command: null };
+  const ff = gitCommand(hint.repo, ["merge", "--ff-only", branch]), merge = gitCommand(hint.repo, ["merge", branch]);
+  if (hint.branch === null) return { next: `To use it: check out the branch you want it on, then ${ff === null ? UNSAFE_FOLDER(`git merge --ff-only ${branch}`) : `run \`${ff}\`.`}`, command: ff };
+  if (hint.fastForward) return { next: ff === null ? `To put it on ${hint.branch}: ${UNSAFE_FOLDER(`git merge --ff-only ${branch}`)}` : `To put it on ${hint.branch}: \`${ff}\`.`, command: ff };
+  return { next: `${hint.branch} moved since the thread started, so it won't fast-forward. ${merge === null ? UNSAFE_FOLDER(`git merge ${branch}`) : `To merge it: \`${merge}\`.`}`, command: merge };
 }
 
 /**
@@ -106,7 +110,7 @@ export async function saveFlexibleBranch(store: Store, input: { thread: string; 
       const actual = await projectThreadBranch(store, { thread: input.thread, ...runner });
       if (actual === null) return refuse("branch-gone");
       if (actual !== read.candidate) return refuse("branch-moved");
-      return { ok: true, already: true, branch, candidate: read.candidate, seq: null, changedPaths: read.changedPaths, next: await nextWords(store, input.thread, read.candidate, branch, input.runner) };
+      return { ok: true, already: true, branch, candidate: read.candidate, seq: null, changedPaths: read.changedPaths, ...(await nextWords(store, input.thread, read.candidate, branch, input.runner)) };
     }
     const at = input.now.toISOString();
     // The save recorded first (check and write together), so a crash mid-import is settled like a Ship's.
@@ -140,7 +144,7 @@ export async function saveFlexibleBranch(store: Store, input: { thread: string; 
       return imported;
     }
     store.transact(() => { store.handle.prepare("UPDATE flexible_ship SET state = 'imported', state_at = ? WHERE id = ? AND state = 'approved'").run(at, recorded.digest); });
-    return { ok: true, already: false, branch, candidate: read.candidate, seq: recorded.seq, changedPaths: read.changedPaths, next: await nextWords(store, input.thread, read.candidate, branch, input.runner) };
+    return { ok: true, already: false, branch, candidate: read.candidate, seq: recorded.seq, changedPaths: read.changedPaths, ...(await nextWords(store, input.thread, read.candidate, branch, input.runner)) };
   });
   if (locked.ok === false && (locked.reason === "not-available" || locked.reason === "thread-unknown")) return refuse("thread-unknown");
   return locked as FlexibleSaved | FlexibleSaveRefusal | FlexibleImportRefusal;

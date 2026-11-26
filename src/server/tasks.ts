@@ -3285,10 +3285,13 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (store.isDemo()) return taskScreen(response, who, act.taskId, "The demo lands nothing.", 403);
     const ref = store.lookupRef(act.taskId);
     if (ref === null || !visible(ref.repo) || who.via !== "cookie") return refuse(response, who, 404, "no such task", "/");
-    if (ref.repo !== null && publishesThroughPullRequests(store, ref.repo)) return taskScreen(response, who, act.taskId, PULL_REQUESTS_INSTEAD, 409);
+    // Every page this shows is the work's own (everyday-9 #7): the family's current version, whose accepted result lands,
+    // never an older attempt the form was posted from. Navigation only: what lands is read and proved from act.taskId.
+    const shown = store.taskFamilyOf(act.taskId, null, true)?.current.id ?? act.taskId;
+    if (ref.repo !== null && publishesThroughPullRequests(store, ref.repo)) return taskScreen(response, who, shown, PULL_REQUESTS_INSTEAD, 409);
     const local = who.authority === "local-owner";
     const principal = local ? null : leadPrincipal(who);
-    if (!local && principal === null) return taskScreen(response, who, act.taskId, "Your access changed. Sign in again.", 403);
+    if (!local && principal === null) return taskScreen(response, who, shown, "Your access changed. Sign in again.", 403);
     const access = { repos: principal !== null ? principal.repos : store.knownRepos().filter(repo => store.accountCanAccess(who.name, repo)) };
     const undo = body.get("undo") === "1";
     const into = (body.get("into") ?? "").trim();
@@ -3296,27 +3299,27 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const key = body.get("key") ?? "";
     if (key === "") {
       const read = await readLanding(store, act.taskId, access, now, options);
-      if (!read.ok) return taskScreen(response, who, act.taskId, read.message, 409);
+      if (!read.ok) return taskScreen(response, who, shown, read.message, 409);
       if (!("plan" in read)) {
         if (answersInPlace(ctx.request)) return answerActInPlace(response, "done", `Already on ${read.landed.ref.replace(/^refs\/heads\//, "")} (${read.landed.commit.slice(0, 7)}).`, 200);
-        return redirect(response, taskHref(act.taskId));
+        return redirect(response, taskHref(shown));
       }
       const plan = read.plan;
       // The terminal's Land (everyday-9 A4): the same lines and key as the page, for its own confirm; its Enter posts the key.
       if (answersInPlace(ctx.request)) return respond(response, 200, "application/json; charset=utf-8", JSON.stringify({ outcome: "land-terms", key: plan.key, lines: landingWords(plan) }));
       const title = undo ? "Undo landing" : `Land on ${plan.branch}`;
       return sendScreen(response, 200, screen(title, html`<h1>${title}</h1>${landingWords(plan).map(line => html`<p>${line}</p>`)}${postForm(`${taskHref(act.taskId)}/land`,
-        html`${btn(undo ? "Undo it" : "Land it", { variant: "primary", type: "submit" })} ${btn("Cancel", { variant: "ghost", href: taskHref(act.taskId) })}`,
+        html`${btn(undo ? "Undo it" : "Land it", { variant: "primary", type: "submit" })} ${btn("Cancel", { variant: "ghost", href: taskHref(shown) })}`,
         { hidden: { key: plan.key, ...(into === "" ? {} : { into }), ...(undo ? { undo: "1" } : {}) } })}`, { chrome: chromeFor(ref.repo, "tasks") }));
     }
     const done = await land(store, act.taskId, { key, ...(into === "" ? {} : { into }), ...(undo ? { undo: true } : {}) }, principal !== null ? { kind: "person", who: principal } : { kind: "local" }, access, now, { root: evidenceRoot });
-    if (!done.ok) return taskScreen(response, who, act.taskId, done.message, done.reason === "authority" ? 403 : 409);
+    if (!done.ok) return taskScreen(response, who, shown, done.message, done.reason === "authority" ? 403 : 409);
     if (done.handoff !== null) {
       const words = `Landing commit ${done.commit.slice(0, 7)} is ready. Your project folder has ${done.branch} checked out, so Toolroll didn't touch it. ${handoffWords(done.handoff, done.commit)}`;
-      return answersInPlace(ctx.request) ? answerActInPlace(response, "done", words, 200) : taskScreen(response, who, act.taskId, words, 200);
+      return answersInPlace(ctx.request) ? answerActInPlace(response, "done", words, 200, done.handoff.command) : taskScreen(response, who, shown, words, 200);
     }
     if (answersInPlace(ctx.request)) return answerActInPlace(response, "done", `${done.kind === "undo" ? "Undone" : "Landed"} on ${done.branch} (${done.commit.slice(0, 7)}).`, 200);
-    return redirect(response, taskHref(act.taskId));
+    return redirect(response, taskHref(shown));
   }
 
   return { registrations, workListFor, showOrder, runListPane, peekFragment, taskMutation, queueRegionFor, ciFailingFor, completedRowFor, attemptRowFor, resultRowOf, reviewCockpitViewOf, decisionEvidence, runEvidence, sendArtifact, peekGuards, liveRunIds };
@@ -3531,9 +3534,11 @@ export function localOwnerRetry(store: Store, taskId: string, run: string | null
 
 /** An act's answer in place (Work's panel, the one-workspace plan S2a): `x-toolroll-act: in-place` asked for a small
  * JSON outcome instead of a page or a redirect. Read only after every proof and the write itself: it shapes the answer,
- * never the decision. `done`: the act was kept; `refused`: nothing changed, and `words` say why. */
-export function answerActInPlace(response: ServerResponse, outcome: "done" | "refused", words: string, status: number): void {
-  respond(response, status, "application/json; charset=utf-8", JSON.stringify({ outcome, words }));
+ * never the decision. `done`: the act was kept; `refused`: nothing changed, and `words` say why. `command`: the exact
+ * command the words name, which Toolroll wrote from its own records, for a terminal to show whole on its own line
+ * (everyday-9 C2); omitted when there is none, or none could be written safely. */
+export function answerActInPlace(response: ServerResponse, outcome: "done" | "refused", words: string, status: number, command: string | null = null): void {
+  respond(response, status, "application/json; charset=utf-8", JSON.stringify(command === null ? { outcome, words } : { outcome, words, command }));
 }
 
 /** Work's list for one address (the one-workspace plan S2a): the Tasks list's screen, the work index page it shows (its

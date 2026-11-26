@@ -101,6 +101,39 @@ pub enum ActOutcome {
         words: String,
         next: String,
     },
+    /// An act's answer whose words name a command Toolroll wrote (Land's handoff, Save as branch, Ship's refusal with
+    /// its save offer, everyday-9 C2): the words, the command's exact bytes, and whether the act was refused. Kept only
+    /// when the command holds nothing a terminal could hide or act on (copyable_command).
+    Commanded {
+        words: String,
+        command: String,
+        refused: bool,
+    },
+}
+
+/// A command a person may copy exactly as sent: not empty, bounded, and free of control, bidi and zero-width
+/// characters. Anything else is never shown as a command (its words still are, made safe like every other text).
+pub fn copyable_command(command: &str) -> bool {
+    !command.trim().is_empty() && command.len() <= 4096 && !command.chars().any(hidden_or_control)
+}
+
+/// A character a terminal could act on or hide: C0, DEL and C1 controls, line and paragraph separators, bidi marks,
+/// overrides and isolates, and zero-width and invisible characters. Exactly the console's set (local-landing.ts
+/// UNSAFE_IN_COMMAND; test/attacks/local-landing.slow.test.ts holds the two together).
+fn hidden_or_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0}'..='\u{1f}'
+            | '\u{7f}'..='\u{9f}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{061c}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{feff}'
+    )
 }
 
 /// The steps a thread start may name as still missing (flexible-start.ts FlexibleNextStep). Anything else is an
@@ -1489,6 +1522,23 @@ impl Client {
                         return Ok(ActOutcome::NextStep {
                             words: non_empty(words, status),
                             next: next.to_string(),
+                        });
+                    }
+                }
+                if let Some(command) = v["command"].as_str().filter(|c| copyable_command(c)) {
+                    let refused = v["outcome"] == "refused" || status >= 400;
+                    if refused || (v["outcome"].is_string() && status < 300) {
+                        let words = if refused {
+                            non_empty(words, status)
+                        } else if words.is_empty() {
+                            done.to_string()
+                        } else {
+                            words
+                        };
+                        return Ok(ActOutcome::Commanded {
+                            words,
+                            command: command.to_string(),
+                            refused,
                         });
                     }
                 }

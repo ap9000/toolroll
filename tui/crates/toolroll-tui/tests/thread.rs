@@ -1499,7 +1499,7 @@ fn the_key_bar_names_a_threads_own_keys_for_its_state() {
         .find(|l| l.contains("all actions"))
         .unwrap()
         .to_string();
-    for words in ["s reply", "a ship", "X end"] {
+    for words in ["s reply", "a ship", "S save", "X end"] {
         assert!(bar.contains(words), "{bar}");
     }
     assert!(!bar.contains("x stop"), "{bar}");

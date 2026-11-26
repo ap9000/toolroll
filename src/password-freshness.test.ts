@@ -1001,6 +1001,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#acceptTaskProof@99>runTaskOutcomeCommand(complete,positional,rest,_).operator@1": 1,
     // Everyday-8 #1: `task land --yes`, the same authority as Accept (a password typed now; the local owner never here).
     "src/operate.ts#landTaskCommand@274": 1,
+    // Everyday-9 C5: `task new` with a password set and none remembered asks for it at the terminal (a password typed
+    // now); Approve checks it again with the exact terms in Build's own transaction.
+    "src/operate.ts#newTaskCommand@224": 1,
     "src/operate.ts#agentsCommand@43": 1,
     "src/operate.ts#dispatch@14": 1,
     "src/operate.ts#proposalsCommand@121": 1,

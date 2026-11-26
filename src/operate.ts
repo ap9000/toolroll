@@ -565,7 +565,7 @@ export const OPERATE_HELP = `toolroll — operating the queue
   toolroll task complete <id>        mark the current result complete (--digest for JSON/agents);
       [--pull-request]                  --pull-request also opens its pull request
   toolroll task land <id>            put accepted work on the project's own branch (no pull requests): shows what lands
-                                        where, then --yes --key <key> lands it as one commit; --undo reverts it
+                                        where, then --yes --key <preview-key> lands it as one commit; --undo reverts it
   toolroll task merge <id> --as <you> --token <t>
                                         merge the task's pull request once checks pass
       [--anyway]                        merge without waiting for the full check
@@ -9728,6 +9728,8 @@ async function addTask(
   positional: readonly string[],
   flags: Map<string, string | true>,
   context: Context,
+  /** Filed by `task new` after it couldn't build now: its reply never sends the person back to `task new`. */
+  fromNew = false,
 ): Promise<number> {
   const { store, write, json, now } = context;
   const title = positional.join(" ").trim();
@@ -9869,7 +9871,7 @@ async function addTask(
   // the same for everyone. `task add` is unauthenticated, so nothing about accounts or passwords may change its reply.
   // Words only; who may ask is unchanged.
   const next = filedRef !== null && filedRef.repo !== null && filedRef.plan === null && !flags.has("report")
-    ? "Next: run `toolroll`, select it and press p to ask for a plan. To build without a plan, file it with `toolroll task new` instead." : null;
+    ? `Next: run \`toolroll\`, select it and press p to ask for a plan.${fromNew ? "" : " To build without a plan, file it with `toolroll task new` instead."}` : null;
   return succeed(
     write,
     json,
@@ -9926,13 +9928,15 @@ async function runTaskChecks(positional: readonly string[], flags: Map<string, s
   const state = done?.state ?? "waiting";
   const words = `${CHECK_LEVEL_WORDS[asked.level]} checks`;
   const payload = { task: taskId, run: result.runId, head: result.head, request: asked.request, level: asked.level, state, exitCode: done?.exitCode ?? null };
+  // Accepted work stays Complete (everyday-9 C1): a check run later is a separate fact, never a change of status.
+  const complete = assignmentOf(store, taskId, clock(), { principal: "operator", repos: null, includeUnplaced: true }, context.evidenceRoot)?.state === "complete";
   if (state === "failed") {
     if (json) { write(envelopeJson({ ok: false, command: "task checks", reason: "checks-failed", ...payload })); return EXIT.failed; }
-    write(`${words} failed on ${result.head.slice(0, 7)}${done?.exitCode == null ? "" : ` (exit ${done.exitCode})`}. The result shows the failure.`);
+    write(`${words} failed on ${result.head.slice(0, 7)}${done?.exitCode == null ? "" : ` (exit ${done.exitCode})`}. ${complete ? "It stays Complete; it can't land until they pass on its exact commit." : "The result shows the failure."}`);
     return EXIT.failed;
   }
   return succeed(write, json, "task checks", payload, () => [
-    state === "passed" ? `${words} passed on ${result.head.slice(0, 7)}. The result's status is upgraded.`
+    state === "passed" ? `${words} passed on ${result.head.slice(0, 7)}.${complete ? " It stays Complete." : ""}`
       : state === "running" ? `${words} are already running on ${result.head.slice(0, 7)}.`
       : state === "not-run" ? `${words} didn't run: ${done?.note ?? "see the result's log"}`
       : `${words} are queued on ${result.head.slice(0, 7)}.`,
@@ -10312,7 +10316,8 @@ function showTask(positional: readonly string[], context: Context): number {
     ...detail.steering.slice(-5).map(one => `  note #${one.id} to the agent: ${one.words}`),
     ...(detail.claim === null ? [] : [`  claimed by ${detail.claim.runner} until ${detail.claim.expiresAt}`]),
     // A detail that already starts with its summary (a sign-in's own sentence) is said once.
-    ...(detail.dispatch === null ? [] : [`  dispatch: ${detail.dispatch.detail.startsWith(detail.dispatch.summary) ? detail.dispatch.detail : `${detail.dispatch.summary} — ${detail.dispatch.detail}`}`]),
+    // Complete work dispatches nothing more: its dispatch reading (a proof diagnostic) would only contradict its status.
+    ...(detail.dispatch === null || shared?.headline === "Complete" ? [] : [`  dispatch: ${detail.dispatch.detail.startsWith(detail.dispatch.summary) ? detail.dispatch.detail : `${detail.dispatch.summary} — ${detail.dispatch.detail}`}`]),
     ...(detail.control.kind === "none"
       ? []
       : detail.control.kind === "stop"
@@ -14586,7 +14591,7 @@ async function newTaskCommand(positional: readonly string[], flags: Map<string, 
   const local = currentLocalOwner();
   if (context.principal !== undefined || machineActing()) return fail(write, json, command, "person-only", "Only a person starts a build this way. File it with `task add`.", EXIT.refused);
   if (local === null && (json || !personAtTerminal(context))) return fail(write, json, command, "person-only", "`task new` asks a person at a terminal. Use `task add` from a script or an agent.", EXIT.refused);
-  const { name, token } = credentialsFrom(flags, context);
+  let { name, token } = credentialsFrom(flags, context);
   const passwordFree = token !== undefined && (local !== null || sessionStandsIn(store));
   const facts: PasswordFacts = { passwordless: local === null && passwordFree, localOwner: local !== null, freshAt: null, returnTo: "/" };
   const buildNow = (preview: string, digest: string): FastBuild => fastStartBuild(store, { preview, digest, actor: name ?? "", via: local === null ? "cli" : "terminal-ui", password: facts,
@@ -14605,6 +14610,25 @@ async function newTaskCommand(positional: readonly string[], flags: Map<string, 
   const repo = text(flags, "repo");
   if (words === "" || repo === undefined) return fail(write, json, command, "usage", "`toolroll task new \"<what should change>\" --repo <project>`", EXIT.usage);
   const placed = canonicalProject(repo) ?? resolve(repo);
+  // A password given on this command (`--token`) is checked before anything is shown, whatever the mode: a wrong one
+  // files nothing and says so (review round 1). With a password set and Passwordless off, Build takes a password given
+  // now (everyday-9 C5): that one, else one typed here, hidden — a remembered login names the person but is never a
+  // password given now, so it asks too. A password given now and checked is fresh for this one yes, and Approve checks
+  // it again with the exact terms in Build's own transaction. A cancel files nothing either.
+  if (local === null && (flags.has("token") || (!facts.passwordless && !passwordFreeOwner(store)))) {
+    let given = flags.has("token") ? token : undefined;
+    if (given === undefined) {
+      const usual = name === undefined ? soloOperatorOf(store) : null;
+      if (name === undefined) { const answered = await (context.easySeams?.ask ?? ask)(usual === null ? "username: " : `username [${usual}]: `); name = answered === "" && usual !== null ? usual : answered; }
+      given = await (context.easySeams?.askHidden ?? askHidden)("password: ");
+    } else if (name === undefined) name = soloOperatorOf(store) ?? undefined;
+    if (name === undefined || name === "" || given === "") { write("Nothing was filed."); return EXIT.refused; }
+    const person = name;
+    const proved = verifyApproverByPassword(store, person, given, store.knownRepos().filter(one => store.accountCanAccess(person, one)));
+    if (!proved.ok) return fail(write, json, command, "unauthenticated", "That username and password didn't work. Nothing was filed.", EXIT.refused);
+    token = given;
+    facts.freshAt = clock().getTime();
+  }
   const prepared = name === undefined || token === undefined ? { eligible: false as const, reason: "password" as const }
     : await prepareFastStart(store, { actor: name, repo: placed, title: words, via: local === null ? "cli" : "terminal-ui", password: facts }, clock());
   const terms = prepared.eligible ? fastTermsLines(store, prepared.scope, placed) : [];
@@ -14614,7 +14638,7 @@ async function newTaskCommand(positional: readonly string[], flags: Map<string, 
   }
   if (!prepared.eligible) {
     write(`${fastRefusalWords(prepared.reason)} Filing it for a plan.`);
-    return addTask([words], flags, context);
+    return addTask([words], flags, context, true);
   }
   write("Build approves exactly this:");
   write("");
@@ -15756,7 +15780,8 @@ async function threadCommand(positional: readonly string[], flags: Map<string, s
     // Its agent stopped here too, by its own recorded launches' process identities only (the console that holds it
     // closes the rest); no other thread is touched.
     if (done.stopPending) await stopFlexibleThreadsEverywhere(store, { reason: "its owner ended the thread", thread, clock });
-    return succeed(write, json, command, { thread, already: done.already }, () => [done.already ? "This thread had already ended." : "Ended. You can still ship its work for a week; then its copy is tidied."]);
+    const keeps = flexibleShipNeedsFor(store, thread) === null ? "ship its work, or save it as a branch," : `save its work as a branch (\`toolroll thread save ${thread.slice(0, 8)}\`)`;
+    return succeed(write, json, command, { thread, already: done.already }, () => [done.already ? "This thread had already ended." : `Ended. You can still ${keeps} for a week; then its copy is tidied.`]);
   }
   // save: its committed work as the branch toolroll/code-<id> in its project (flexible-save.ts: the controlled import, no
   // pull request, task or merge). The same proof End takes, asked again inside the save's own transaction.
@@ -15972,7 +15997,7 @@ async function landTaskCommand(positional: readonly string[], flags: Map<string,
   const allowed = new Set(["json", "db", "into", "undo", "yes", "key", "as", "token", "token-file", "token-env"]);
   for (const key of flags.keys()) if (!allowed.has(key)) return fail(write, json, command, "usage", `--${key} is not a ${command} option.`, EXIT.usage);
   const id = positional[0] === undefined ? undefined : resolveTaskId(store, positional[0]);
-  if (id === undefined || positional.length !== 1) return fail(write, json, command, "usage", "Use `toolroll task land <id>` to see what landing does, then `--yes --key <key>` to land it.", EXIT.usage);
+  if (id === undefined || positional.length !== 1) return fail(write, json, command, "usage", "Use `toolroll task land <id>` to see what landing does, then `--yes --key <preview-key>` to land it.", EXIT.usage);
   const into = text(flags, "into"), undo = flags.get("undo") === true, yes = flags.get("yes") === true, key = text(flags, "key");
   if (flags.has("into") && into === undefined) return fail(write, json, command, "usage", "--into needs a branch name.", EXIT.usage);
   if (undo && into !== undefined) return fail(write, json, command, "usage", "--undo lands on the branch the work landed on; it takes no --into.", EXIT.usage);
@@ -15988,7 +16013,9 @@ async function landTaskCommand(positional: readonly string[], flags: Map<string,
     if (!("plan" in read)) return succeed(write, json, command, { landed: read.landed }, () => [`${id} · Landed on ${read.landed.ref.replace(/^refs\/heads\//, "")} (${read.landed.commit.slice(0, 7)}).`]);
     const plan = read.plan;
     // Say up front what the yes will ask for (everyday-9 A4): this computer's local owner needs nothing more; anyone
-    // else, their name and password.
+    // else, their name and password. With no password set yet (a solo install), a shell can't prove a person typed the
+    // yes (an agent runs as the same user), so it says where landing works instead (everyday-9 C3): words only.
+    if (local === null && passwordFreeOwner(store)) return succeed(write, json, command, { plan }, () => [...landingWords(plan), LAND_NEEDS_PASSWORD]);
     return succeed(write, json, command, { plan }, () => [...landingWords(plan),
       `To ${undo ? "undo it" : "land it"}: toolroll task land ${id}${into === undefined ? "" : ` --into ${into}`}${undo ? " --undo" : ""} --yes --key ${plan.key}${local === null ? " --as <you>" : ""}`,
       ...(local === null ? ["That asks for your Toolroll password."] : [])]);
@@ -15996,6 +16023,8 @@ async function landTaskCommand(positional: readonly string[], flags: Map<string,
   if (key === undefined || !/^[0-9a-f]{16}$/.test(key)) return fail(write, json, command, "usage", "--yes needs the --key `toolroll task land` showed you, so what lands is what you read.", EXIT.usage);
   let authority: LandAuthority;
   if (local !== null) authority = { kind: "local" };
+  // No password exists to ask for: refuse before prompting, with where landing works (nothing about who may land changes).
+  else if (passwordFreeOwner(store)) return fail(write, json, command, "unauthenticated", LAND_NEEDS_PASSWORD, EXIT.refused);
   else {
     const acting = await askCredentials(flags, context);
     const ref = store.lookupRef(id);
@@ -16036,3 +16065,6 @@ function verifyRepoOf(store: Store, raw: string): string {
   }
   return absolute;
 }
+
+/** Where landing works on an install with no password yet (everyday-9 C3). */
+const LAND_NEEDS_PASSWORD = "Land it from the workbench (B) or the task page in the browser; from a shell it needs a Toolroll password (`toolroll password set`).";

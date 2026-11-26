@@ -451,6 +451,15 @@ pub enum Mode {
     /// A new thread was refused with what this person still needs first (thread.rs NextStep): `w` opens its page in the
     /// browser, `c` puts its command in the terminal's scrollback.
     ThreadNext(String),
+    /// An act's answer that names a command (Land's handoff, Save as branch, Ship's refusal with its save offer,
+    /// everyday-9 C2): the words whole and the command on its own line, scrolled with j/k; `c` puts the command's exact
+    /// bytes in the terminal's scrollback to copy, and any other key closes it. It reads only: it acts on nothing.
+    CommandSheet {
+        words: String,
+        command: String,
+        refused: bool,
+        scroll: usize,
+    },
     /// The Agents screen: an agent's install command, shown whole; only Enter here runs exactly it in a pane.
     ConfirmInstall {
         agent: String,
@@ -2434,6 +2443,34 @@ impl App {
                 self.sent_thread();
                 self.refresh()
             }
+            Msg::Acted(Ok(ActOutcome::Commanded {
+                words,
+                command,
+                refused,
+            })) => {
+                // Said as Done or Refused is, and shown whole on a sheet (everyday-9 C2): a long command never ends cut
+                // off on the status line, the only place it was shown before.
+                let fx = if refused {
+                    self.say(Tone::Refused, words.clone());
+                    crate::thread::keep_refused_reply(self);
+                    self.sent_thread();
+                    self.refresh()
+                } else {
+                    self.say(Tone::Said, words.clone());
+                    self.following = self.said_for.as_ref().map(|(t, _)| t.clone());
+                    self.sent_thread();
+                    self.refresh()
+                };
+                if matches!(self.mode, Mode::Normal | Mode::Sending(_)) {
+                    self.mode = Mode::CommandSheet {
+                        words,
+                        command,
+                        refused,
+                        scroll: 0,
+                    };
+                }
+                fx
+            }
             Msg::Acted(Ok(ActOutcome::BuilderPassword { task, setup })) => {
                 self.say(
                     Tone::Refused,
@@ -3558,7 +3595,7 @@ impl App {
                     if self.agents_screen.is_some() {
                         "The commands stay in your terminal's scrollback."
                     } else {
-                        "The hunk stays in your terminal's scrollback."
+                        "What was copied stays in your terminal's scrollback."
                     },
                 );
                 vec![Effect::ResumeScreen]
@@ -3864,6 +3901,34 @@ impl App {
                     }
                     _ => vec![],
                 }
+            }
+            Mode::CommandSheet {
+                words,
+                command,
+                refused,
+                scroll,
+            } => {
+                let scroll = match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => scroll + 1,
+                    KeyCode::Char('k') | KeyCode::Up => scroll.saturating_sub(1),
+                    KeyCode::Char(' ') | KeyCode::PageDown => scroll + 5,
+                    KeyCode::PageUp => scroll.saturating_sub(5),
+                    KeyCode::Char('c') => {
+                        self.mode = Mode::Copied;
+                        return vec![Effect::Scrollback(vec![command])];
+                    }
+                    _ => {
+                        self.mode = Mode::Normal;
+                        return vec![];
+                    }
+                };
+                self.mode = Mode::CommandSheet {
+                    words,
+                    command,
+                    refused,
+                    scroll,
+                };
+                vec![]
             }
             Mode::ConfirmHold {
                 task,
@@ -6044,6 +6109,7 @@ impl App {
             | Mode::Help
             | Mode::Copied
             | Mode::ThreadNext(_)
+            | Mode::CommandSheet { .. }
             | Mode::Sending(_)
             | Mode::Fatal(..)
             | Mode::TakeOver
@@ -7000,7 +7066,8 @@ impl App {
                 | ActOutcome::ShipTerms { .. }
                 | ActOutcome::LandTerms { .. }
                 | ActOutcome::BuilderPassword { .. }
-                | ActOutcome::NextStep { .. },
+                | ActOutcome::NextStep { .. }
+                | ActOutcome::Commanded { .. },
             ) => {
                 self.say(
                     Tone::Refused,

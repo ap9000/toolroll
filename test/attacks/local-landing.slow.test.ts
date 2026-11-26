@@ -22,7 +22,7 @@ import { sealVerificationReceipt } from "../../src/verification-evidence.js";
 import { recordRunCheckLevel } from "../../src/check-levels.js";
 import { acceptAndCompleteAsOperator, assignmentOf } from "../../src/assignment.js";
 import { verifyApproverByPassword, type VerifiedApprover } from "../../src/principal.js";
-import { broughtInOnBranch, handoffsOf, handoffWords, land, landableBranch, landingOf, landingWords, LAND_INTENT, LAND_SETTLED, readLanding, recognisedOnBranch, shownName, type LandAuthority } from "../../src/local-landing.js";
+import { broughtInOnBranch, gitCommand, handoffsOf, handoffWords, land, landableBranch, landedStanding, landingOf, landingWords, LAND_INTENT, LAND_SETTLED, readLanding, recognisedOnBranch, shownName, unsafeInCommand, type LandAuthority } from "../../src/local-landing.js";
 import { readGit } from "../../src/task-base.js";
 import { recordActionWhole } from "../../src/action-ledger.js";
 import { run as execRun } from "../../src/exec.js";
@@ -570,7 +570,7 @@ describe("checked-out main (everyday-9 A1): never touched; a kept commit and the
     const { landed } = await landNow("t");
     if (landed?.ok !== true || landed.handoff === null) throw new Error(JSON.stringify(landed));
     git(repo, "merge", "-q", "--ff-only", landed.commit);
-    expect(recognisedOnBranch(store, repo, "t", git(repo, "rev-parse", "toolroll/t"), readGit)).toBe("On main");
+    expect(recognisedOnBranch(store, repo, "t", git(repo, "rev-parse", "toolroll/t"), readGit)).toEqual({ words: `Landed on main (${landed.commit.slice(0, 7)})`, reverted: false });
     expect(broughtInOnBranch(store, repo, "t", readGit)).toBe(true);
     // With main still checked out, Undo says the exact revert to run there.
     const there = await readLanding(store, "t", access(), NOW, { ...options(), undo: true });
@@ -699,7 +699,7 @@ describe("already on main (everyday-9 A3): recognised for display, never grantin
     git(repo, "update-ref", "refs/heads/main", head);
     expect(recognisedOnBranch(store, repo, "t", head, readGit)).toBeNull(); // nothing recorded and the folder is on work
     git(repo, "checkout", "-q", "main");
-    expect(recognisedOnBranch(store, repo, "t", head, readGit)).toBe("On main");
+    expect(recognisedOnBranch(store, repo, "t", head, readGit)).toEqual({ words: `Landed on main (${head.slice(0, 7)})`, reverted: false });
     expect(await readLanding(store, "t", access(), NOW, options())).toMatchObject({ ok: false, reason: "nothing" });
     expect(landingOf(store, "t")).toBeNull();
   });
@@ -713,8 +713,58 @@ describe("already on main (everyday-9 A3): recognised for display, never grantin
     const head = assignmentOf(store, "t", NOW, { principal: "operator", repos: [repo] }, root)!.receipt!.head;
     expect(recognisedOnBranch(store, repo, "t", head, readGit)).toBeNull();
     git(repo, "merge", "-q", "--ff-only", landed.commit);
-    expect(recognisedOnBranch(store, repo, "t", head, readGit)).toBe("On main");
+    expect(recognisedOnBranch(store, repo, "t", head, readGit)).toEqual({ words: `Landed on main (${landed.commit.slice(0, 7)})`, reverted: false });
     expect(await readLanding(store, "t", access(), NOW, options())).toMatchObject({ ok: false, reason: "nothing" });
+  });
+
+  test("the person's own revert (everyday-9 #3): said only when a later commit is exactly the inverse; ancestry alone claims nothing", async () => {
+    built("t", { "a.txt": "two\n" });
+    git(repo, "checkout", "-q", "main");
+    const { landed } = await landNow("t");
+    if (landed?.ok !== true || landed.handoff === null) throw new Error(JSON.stringify(landed));
+    const head = assignmentOf(store, "t", NOW, { principal: "operator", repos: [repo] }, root)!.receipt!.head;
+    git(repo, "merge", "-q", "--ff-only", landed.commit);
+    writeFileSync(join(repo, "other.txt"), "later work\n");
+    git(repo, "add", "other.txt");
+    git(repo, "commit", "-qm", "later work");
+    expect(recognisedOnBranch(store, repo, "t", head, readGit)?.reverted).toBe(false);
+    // A commit that undoes it and changes something else too is not its revert.
+    writeFileSync(join(repo, "a.txt"), "one\n");
+    writeFileSync(join(repo, "other.txt"), "changed\n");
+    git(repo, "commit", "-qam", "undo and more");
+    expect(recognisedOnBranch(store, repo, "t", head, readGit)?.reverted).toBe(false);
+    git(repo, "reset", "-q", "--hard", "HEAD~1");
+    // The exact inverse, after other work: said, as history.
+    git(repo, "revert", "--no-edit", landed.commit);
+    expect(recognisedOnBranch(store, repo, "t", head, readGit)).toEqual({ words: `Landed on main (${landed.commit.slice(0, 7)}) · a later commit reverted it`, reverted: true });
+    // It grants nothing: the task stays as it was, and nothing is recorded.
+    expect(landingOf(store, "t")).toBeNull();
+  });
+
+  test("a recorded landing stays history: Landed, never On main now; a later exact inverse is said (everyday-9 #3)", async () => {
+    built("t", { "a.txt": "two\n" });
+    const before = at();
+    const { landed } = await landNow("t");
+    if (landed?.ok !== true || landed.handoff !== null) throw new Error(JSON.stringify(landed));
+    expect(landedStanding(store, "t", readGit)).toEqual({ words: `Landed on main (${landed.commit.slice(0, 7)}).`, reverted: false });
+    const inverse = git(repo, "commit-tree", `${before}^{tree}`, "-p", landed.commit, "-m", "Revert it");
+    git(repo, "update-ref", "refs/heads/main", inverse);
+    expect(landedStanding(store, "t", readGit)).toEqual({ words: `Landed on main (${landed.commit.slice(0, 7)}) · a later commit reverted it`, reverted: true });
+    expect(landingOf(store, "t")).toMatchObject({ undone: false });
+  });
+
+  test("a merged side branch that never saw the landing holds the same inverse change: not a revert (review round 1)", async () => {
+    built("t", { "a.txt": "two\n" });
+    const before = at();
+    const { landed } = await landNow("t");
+    if (landed?.ok !== true || landed.handoff !== null) throw new Error(JSON.stringify(landed));
+    // A side branch from before the landing: one→two, then two→one (the exact inverse of the landing's change).
+    const two = git(repo, "commit-tree", `${landed.commit}^{tree}`, "-p", before, "-m", "side: two");
+    const back = git(repo, "commit-tree", `${before}^{tree}`, "-p", two, "-m", "side: back to one");
+    // Merged into main, keeping the landing's files: the landing still stands.
+    const merge = git(repo, "commit-tree", `${landed.commit}^{tree}`, "-p", landed.commit, "-p", back, "-m", "merge side");
+    git(repo, "update-ref", "refs/heads/main", merge);
+    expect(landedStanding(store, "t", readGit)).toEqual({ words: `Landed on main (${landed.commit.slice(0, 7)}).`, reverted: false });
   });
 
   test("recognition never grants acceptance: work not accepted stays not accepted, and Land still refuses it", async () => {
@@ -867,5 +917,45 @@ describe("the command", () => {
     expect(await cli(["land", "t", "--into", "main", "--yes", "--key", key!, "--as", "alex", "--token", password]), lines.join("\n")).toBe(EXIT.ok);
     expect(git(repo, "rev-parse", "main^{tree}")).toBe(git(repo, "rev-parse", `${head}^{tree}`));
     store = openStore(join(scratch(), "orders.db"));
+  });
+
+  test("no password set yet (a solo install): a shell is never this computer's owner; it says where landing works and never prompts (everyday-9 C3)", async () => {
+    const { base } = built("t", { "a.txt": "two\n" });
+    const stamp = NOW.toISOString();
+    store.handle.prepare("INSERT INTO local_mode (id, owner, generation, enabled, initialized_at, changed_at) VALUES (1, 'alex', 1, 1, ?, ?)").run(stamp, stamp);
+    store.handle.prepare("UPDATE approver SET password_set = 0").run();
+    const lines: string[] = [];
+    const cli = (argv: string[]) => { lines.length = 0; return runOperate("task", argv, line => lines.push(line), { databaseFile: join(scratch(), "orders.db"), now: NOW }); };
+    store.close();
+    const words = "Land it from the workbench (B) or the task page in the browser; from a shell it needs a Toolroll password (`toolroll password set`).";
+    expect(await cli(["land", "t", "--into", "main", "--json"]), lines.join("\n")).toBe(EXIT.ok);
+    const key = (JSON.parse(lines.join("\n")) as { plan: { key: string } }).plan.key;
+    expect(await cli(["land", "t", "--into", "main"]), lines.join("\n")).toBe(EXIT.ok);
+    expect(lines.join("\n")).toContain(words);
+    expect(lines.join("\n")).not.toContain("--as <you>");
+    // Knowing the key and saying yes from a shell proves no person: refused before any prompt, and nothing lands.
+    expect(await cli(["land", "t", "--into", "main", "--yes", "--key", key, "--as", "alex", "--token", password]), lines.join("\n")).toBe(EXIT.refused);
+    expect(lines.join("\n")).toContain(words);
+    expect(git(repo, "rev-parse", "main")).toBe(base);
+    store = openStore(join(scratch(), "orders.db"));
+  });
+});
+
+describe("one set of characters no copyable command holds (everyday-9 C2)", () => {
+  test("the console and the workbench refuse exactly the same characters, so a written command always shows whole", () => {
+    // The workbench's own list, read from its source (tui/crates/toolroll-api/src/client.rs hidden_or_control).
+    const rust = readFileSync("tui/crates/toolroll-api/src/client.rs", "utf8");
+    const body = /fn hidden_or_control\(c: char\) -> bool \{([\s\S]*?)\n\}/.exec(rust)?.[1] ?? "";
+    const ranges = [...body.matchAll(/'\\u\{([0-9a-f]+)\}'(?:\.\.='\\u\{([0-9a-f]+)\}')?/g)]
+      .map(m => [parseInt(m[1]!, 16), parseInt(m[2] ?? m[1]!, 16)] as const);
+    expect(ranges.length).toBeGreaterThan(5);
+    const refusedByWorkbench = (code: number) => ranges.some(([from, to]) => code >= from && code <= to);
+    for (let code = 0; code <= 0x3000; code++) {
+      expect(unsafeInCommand(String.fromCodePoint(code)), `U+${code.toString(16)}`).toBe(refusedByWorkbench(code));
+    }
+    expect(unsafeInCommand("\ufeff")).toBe(refusedByWorkbench(0xfeff));
+    // Save as branch and Land write no command for such a folder (words say what to run instead): U+2060 among them.
+    for (const hidden of ["\u2060", "\u2064", "\u200b", "\u202e", "\u001b"]) expect(gitCommand(`/home/me/a${hidden}b`, ["merge", "--ff-only", "x"])).toBeNull();
+    expect(gitCommand("/home/me/café", ["merge"])).toBe("git -C '/home/me/café' merge");
   });
 });

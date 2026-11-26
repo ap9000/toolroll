@@ -312,7 +312,7 @@ export async function readLanding(store: Store, taskId: string, access: { repos:
   // the project has no check command at all.
   const checks = receipt.checks.status === "passed" ? "passed" as const : !projectCheckSet(store, project.repo) && receipt.checks.status === "not-run" ? "none" as const : null;
   if (checks === null) {
-    if (receipt.checks.status === "failed") return refuse("checks", later ? `Its checks failed when they ran again after you accepted it (${receipt.checks.detail}). It stays Complete; it can't land until they pass on its exact commit.`
+    if (receipt.checks.status === "failed") return refuse("checks", later ? `Its checks failed when they ran again after you accepted it (${receipt.checks.detail.replace(/\.$/, "")}). It stays Complete; it can't land until they pass on its exact commit.`
       : "Its checks failed. Only work whose checks passed on its exact commit lands.");
     return refuse("checks", later ? "Its checks changed since you accepted it and haven't run on its exact commit since. Run checks (it stays Complete), then land it."
       : "Its checks haven't passed on its exact commit. Run checks, then land it.");
@@ -740,14 +740,20 @@ function oidOrThrow(oid: string): string {
   if (!OID.test(oid)) throw new Error("not a commit id");
   return oid;
 }
+// The one set of characters no copyable command may hold: C0 and C1 controls and DEL, line and paragraph separators,
+// bidi marks, overrides and isolates, and zero-width and invisible characters. The workbench refuses exactly the same
+// set (tui/crates/toolroll-api/src/client.rs hidden_or_control; test/attacks/local-landing.slow.test.ts holds the two
+// together), so a command Toolroll writes is always one the workbench shows whole (everyday-9 C2).
 // eslint-disable-next-line no-control-regex
-const UNSAFE_IN_COMMAND = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/;
+const UNSAFE_IN_COMMAND = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/;
+/** Whether `text` holds a character no command a person copies may hold (UNSAFE_IN_COMMAND). */
+export const unsafeInCommand = (text: string): boolean => UNSAFE_IN_COMMAND.test(text);
 export function gitCommand(folder: string, args: readonly string[]): string | null {
   if (UNSAFE_IN_COMMAND.test(folder)) return null;
   return ["git", "-C", `'${folder.replace(/'/g, "'\\''")}'`, ...args].join(" ");
 }
-/** What to say instead of a command when the folder's name can't be written safely in one. */
-const UNSAFE_FOLDER = (what: string) => `Toolroll can't write a safe command for this folder's name; run ${what} in your project folder.`;
+/** What to say instead of a command when the folder's name can't be written safely in one (Save as branch says it too). */
+export const UNSAFE_FOLDER = (what: string) => `Toolroll can't write a safe command for this folder's name; run ${what} in your project folder.`;
 /** The exact command that brings a handed-off landing commit onto the branch the project folder has checked out. */
 function handoffCommand(folder: string, commit: string): string | null {
   return gitCommand(folder, ["merge", "--ff-only", oidOrThrow(commit)]);
@@ -838,34 +844,84 @@ async function revertCommit(git: Git, plan: LandingPlan, scratch?: string): Prom
   }
 }
 
-/** A landing's settled words for a task page: "Landed on main (abc1234)", or null. */
-export function landedWords(store: Store, rootId: string): string | null {
+/** The page's bounded git read (task-base.ts readGit): its output, or null when git can't say. */
+type GitLook = (cwd: string, args: readonly string[]) => string | null;
+
+/** A recorded landing's words for a task page: "Landed on main (abc1234)", or null. A landing is history: it never says
+ * its changes are on the branch now (everyday-9 #3). With `read`, a later commit on the branch that exactly reverted it
+ * is said ("· a later commit reverted it", revertedOnBranch), and `reverted` says so for the page's Undo. */
+export function landedWords(store: Store, rootId: string, read?: GitLook): string | null {
+  return landedStanding(store, rootId, read)?.words ?? null;
+}
+export function landedStanding(store: Store, rootId: string, read?: GitLook): { words: string; reverted: boolean } | null {
   const landed = landingOf(store, rootId);
   if (landed === null) return null;
-  return landed.undone ? `Landed on ${landed.intent.ref.replace(/^refs\/heads\//, "")} (${short(landed.intent.commit)}), then undone.`
-    : `Landed on ${landed.intent.ref.replace(/^refs\/heads\//, "")} (${short(landed.intent.commit)}).`;
+  const where = `Landed on ${landed.intent.ref.replace(/^refs\/heads\//, "")} (${short(landed.intent.commit)})`;
+  if (landed.undone) return { words: `${where}, then undone.`, reverted: false };
+  const reverted = read !== undefined && revertedOnBranch(landed.intent.repo, landed.intent.ref, landed.intent, read);
+  return { words: reverted ? `${where} · a later commit reverted it` : `${where}.`, reverted };
+}
+
+/**
+ * Whether a later commit on `ref` exactly reverted a one-commit landing (`commit`, whose only parent is `old`), proved
+ * from the commits themselves (everyday-9 #3): one commit on `ref` that descends from the landing (`--ancestry-path`:
+ * a merged side branch that never saw the landing can't count, though it may hold the same change) changes exactly the
+ * same files, each from the landing's after-state back to its before-state (the same modes and blob ids, swapped). Ancestry alone never says
+ * this — an ordinary revert leaves the landing in the branch's history. Display only: it never undoes, lands or allows
+ * anything. Anything git can't say (a timeout, too much output, more than 50 later commits to look at) claims nothing.
+ */
+export function revertedOnBranch(repo: string, ref: string, landing: { old: string; commit: string }, read: GitLook): boolean {
+  if (!OID.test(landing.old) || !OID.test(landing.commit) || !ref.startsWith("refs/heads/")) return false;
+  const parents = read(repo, ["rev-list", "--parents", "-n", "1", landing.commit])?.split(" ") ?? [];
+  if (parents.length !== 2 || parents[0] !== landing.commit || parents[1] !== landing.old) return false;
+  const changes = (raw: string): string[] | null => {
+    const lines = raw.split("\n").filter(line => line.startsWith(":"));
+    const keys: string[] = [];
+    for (const line of lines) {
+      const match = /^:(\d{6}) (\d{6}) ([0-9a-f]{40}|[0-9a-f]{64}) ([0-9a-f]{40}|[0-9a-f]{64}) [A-Z]\d*\t(.+)$/.exec(line);
+      if (match === null) return null;
+      keys.push(`${match[1]} ${match[2]} ${match[3]} ${match[4]}\t${match[5]}`);
+    }
+    return keys.sort();
+  };
+  const own = read(repo, ["diff-tree", "-r", "--no-renames", "--no-abbrev", "--no-commit-id", "--no-ext-diff", "--no-textconv", landing.commit]);
+  const mine = own === null ? null : changes(own);
+  if (mine === null || mine.length === 0) return false;
+  // The exact inverse: every file back from the landing's after-state to its before-state.
+  const inverse = mine.map(key => { const [modes, path] = key.split("\t"); const [m1, m2, s1, s2] = modes!.split(" "); return `${m2} ${m1} ${s2} ${s1}\t${path}`; }).sort().join("\n");
+  const later = read(repo, ["log", "--no-show-signature", "--no-merges", "--ancestry-path", "-n", "50", "--format=%x01%H", "--raw", "--no-renames", "--no-abbrev", "--no-ext-diff", "--no-textconv", `${landing.commit}..${ref}`]);
+  if (later === null) return false;
+  return later.split("\u0001").slice(1).some(entry => changes(entry.slice(entry.indexOf("\n") + 1))?.join("\n") === inverse);
 }
 
 /**
  * Whether a completed task's work is already on its project's branch though Toolroll didn't land it (everyday-9 A3): the
  * branch contains the result's commit (the person merged it themselves) or a landing commit Toolroll handed them. For
- * display only ("On main"): it never accepts, completes or lands anything, and nothing reads it for a decision. The
+ * display only ("Landed on main (abc1234)"): it never accepts, completes or lands anything, and nothing reads it for a decision. The
  * branch is the recorded destination, else the one the project folder stands on; `read` is the page's bounded git read
  * (null when git can't say: then nothing is claimed).
  */
 export function recognisedOnBranch(store: Store, repo: string, rootId: string, candidate: string | null,
-  read: (cwd: string, args: readonly string[]) => string | null): string | null {
+  read: GitLook): { words: string; reverted: boolean } | null {
   if (candidate === null || !OID.test(candidate)) return null;
   const recorded = recordedDestination(store, repo)?.ref ?? null;
   const ref = recorded ?? (() => { const head = read(repo, ["symbolic-ref", "-q", "HEAD"]); return head !== null && head.startsWith("refs/heads/") ? head : null; })();
   if (ref === null || !landableBranch(ref.slice("refs/heads/".length))) return null;
-  const commits = [candidate, ...handoffsOf(store, repo, rootId).filter(one => one.candidate === candidate && one.ref === ref).map(one => one.commit)];
-  return commits.some(commit => read(repo, ["merge-base", "--is-ancestor", commit, ref]) !== null) ? `On ${ref.slice("refs/heads/".length)}` : null;
+  // Its own commit merged by hand, or a landing commit Toolroll handed over and the person brought in. Said as history
+  // ("Landed on main (abc1234)"), never as "its changes are on main now" (everyday-9 #3); a handed-over commit, which is
+  // exactly one commit on the branch's old commit, also says when a later commit exactly reverted it.
+  const handed = handoffsOf(store, repo, rootId).filter(one => one.candidate === candidate && one.ref === ref);
+  const found = [{ commit: candidate, old: null as string | null }, ...handed.map(one => ({ commit: one.commit, old: one.old }))]
+    .find(one => read(repo, ["merge-base", "--is-ancestor", one.commit, ref]) !== null);
+  if (found === undefined) return null;
+  const reverted = found.old !== null && revertedOnBranch(repo, ref, { old: found.old, commit: found.commit }, read);
+  const where = `Landed on ${ref.slice("refs/heads/".length)} (${short(found.commit)})`;
+  return { words: reverted ? `${where} · a later commit reverted it` : where, reverted };
 }
 
 /** Whether a landing commit Toolroll handed the person is on its branch now (they brought it in) with no landing record
  * yet: the page offers Undo, whose yes records it as landed first (reconcileHandoff). Display only. */
-export function broughtInOnBranch(store: Store, repo: string, rootId: string, read: (cwd: string, args: readonly string[]) => string | null): boolean {
+export function broughtInOnBranch(store: Store, repo: string, rootId: string, read: GitLook): boolean {
   const landed = landedCommits(store, rootId);
   return handoffsOf(store, repo, rootId).some(one => !landed.has(one.commit) && read(repo, ["merge-base", "--is-ancestor", one.commit, one.ref]) !== null);
 }

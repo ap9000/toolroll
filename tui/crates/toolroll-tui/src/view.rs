@@ -3678,6 +3678,7 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
                 v.push((&[Steer], "reply"));
             }
             v.push((&[Accept], "ship"));
+            v.push((&[ThreadSave], "save"));
         }
         if !ended {
             v.push((&[CancelTask], "end"));
@@ -4579,6 +4580,7 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
             }
         }
         Mode::Build { .. } | Mode::Approve { .. } => return draw_build(f, app, area),
+        Mode::CommandSheet { .. } => return draw_command_sheet(f, app, area),
         Mode::ConfirmProposal(_) => return draw_proposal_dialog(f, app, area),
         Mode::ConfirmInstall { .. }
         | Mode::PickModel(_)
@@ -4919,6 +4921,62 @@ pub fn dialog(f: &mut Frame, r: Rect, title: &str) -> Block<'static> {
         .border_style(dim())
         .padding(Padding::horizontal(1))
         .title(Span::styled(title.to_string(), ink()))
+}
+
+/// An act's answer that names a command (app.rs Mode::CommandSheet, everyday-9 C2): its words whole, then the command
+/// on lines of its own, cut by cells only so its bytes read in order; scrolled with j/k when the window is short. `c`
+/// puts the command's exact bytes in the terminal's scrollback, the one way it is copied.
+fn draw_command_sheet(f: &mut Frame, app: &mut App, area: Rect) {
+    let Mode::CommandSheet {
+        words,
+        command,
+        refused,
+        scroll,
+    } = &mut app.mode
+    else {
+        return;
+    };
+    let w = area.width.saturating_sub(4).min(84);
+    let inner_w = usize::from(w.saturating_sub(4)).max(8);
+    let mut body: Vec<Line<'static>> = wrap(&clean(words), inner_w)
+        .into_iter()
+        .map(|l| Line::from(Span::styled(l, ink())))
+        .collect();
+    body.push(Line::raw(""));
+    let bold = ink().add_modifier(Modifier::BOLD);
+    for piece in crate::text::chunks(&clean(command), inner_w) {
+        body.push(Line::from(Span::styled(piece, bold)));
+    }
+    // Inside the border: a blank above, then the foot (a blank, where the reading stands, the keys).
+    let room = usize::from(area.height.saturating_sub(2)).saturating_sub(4);
+    let visible = body.len().min(room.max(1));
+    let max_scroll = body.len().saturating_sub(visible);
+    if *scroll > max_scroll {
+        *scroll = max_scroll;
+    }
+    let end = (*scroll + visible).min(body.len());
+    let mut lines = vec![Line::raw("")];
+    lines.extend(body[*scroll..end].iter().cloned());
+    lines.push(Line::raw(""));
+    if visible < body.len() {
+        let first = *scroll + 1;
+        let at = format!("Lines {first}–{end} of {} · j/k scroll", body.len());
+        lines.push(Line::from(Span::styled(at, dim())));
+    }
+    let mut keys = sheet::act("c", "copies the command,", true);
+    keys.push(Span::raw("  "));
+    keys.extend(sheet::act("Esc", "closes", false));
+    lines.push(Line::from(keys));
+    let title = if *refused { " Not done " } else { " Done " };
+    let h = (lines.len() as u16 + 2).min(area.height);
+    let r = Rect {
+        x: area.x + area.width.saturating_sub(w) / 2,
+        y: area.y + area.height.saturating_sub(h) / 2,
+        width: w,
+        height: h,
+    };
+    let block = dialog(f, r, title);
+    f.render_widget(Paragraph::new(lines).block(block), r);
 }
 
 /// The words that end Build's terms when the window can't show them at all.

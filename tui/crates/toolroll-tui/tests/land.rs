@@ -115,3 +115,66 @@ fn b_lands_a_finished_task_through_the_same_path_and_the_key_bar_says_so() {
     assert!(!screen(&mut live, 120, 30).contains("B land"));
     assert_eq!(live.key(key('B')), vec![]);
 }
+
+/// What Land's handoff says (everyday-9 C2): a long command, as a deep project folder makes it.
+const HANDOFF: &str = concat!(
+    "git -C '/private/tmp/a very deep folder/that names/its project/proj'",
+    " merge --ff-only 3b5184790c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f"
+);
+const LANDED: &str = concat!(
+    "Landing commit 3b51847 is ready. Your project folder has main checked out, ",
+    "so Toolroll didn't touch it. To bring it in: "
+);
+const SHIP_REFUSED: &str = concat!(
+    "This project can't open pull requests yet, and Ship needs them: the merge goes through one. ",
+    "Turn them on with `toolroll publish setup --repo /home/me/shop --yes` (or in Settings → ",
+    "Projects). Nothing was shipped. To use its work now, save it as a branch in your repository ",
+    "instead (S on the thread in `toolroll`, or `toolroll thread save 0123abcd`)."
+);
+
+#[test]
+fn a_landing_handoff_opens_a_sheet_with_the_whole_command_and_c_copies_its_exact_bytes() {
+    let mut app = on("t-old");
+    app.update(Msg::Acted(Ok(ActOutcome::Commanded {
+        words: format!("{LANDED}{HANDOFF}"),
+        command: HANDOFF.into(),
+        refused: false,
+    })));
+    assert!(
+        matches!(&app.mode, Mode::CommandSheet { command, refused: false, .. } if command == HANDOFF),
+        "{:?}",
+        app.mode
+    );
+    // A narrow window: every piece of the command is on screen, in order, none cut off.
+    let shown = screen(&mut app, 60, 30);
+    let inner = usize::from(60u16.saturating_sub(4).min(84).saturating_sub(4));
+    for piece in toolroll_tui::text::chunks(HANDOFF, inner) {
+        assert!(shown.contains(&piece), "{piece:?}\n{shown}");
+    }
+    assert!(shown.contains("copies the command"), "{shown}");
+    // c: exactly those bytes, to the terminal's scrollback.
+    assert_eq!(
+        app.key(key('c')),
+        vec![Effect::Scrollback(vec![HANDOFF.to_string()])]
+    );
+    assert_eq!(app.mode, Mode::Copied);
+}
+
+#[test]
+fn a_short_window_scrolls_the_sheet_and_any_other_key_closes_it() {
+    let mut app = on("t-old");
+    app.update(Msg::Acted(Ok(ActOutcome::Commanded {
+        words: SHIP_REFUSED.into(),
+        command: "toolroll thread save 0123abcd".into(),
+        refused: true,
+    })));
+    let shown = screen(&mut app, 50, 12);
+    assert!(shown.contains("j/k scroll"), "{shown}");
+    for _ in 0..40 {
+        app.key(key('j'));
+    }
+    let shown = screen(&mut app, 50, 12);
+    assert!(shown.contains("toolroll thread save 0123abcd"), "{shown}");
+    assert_eq!(app.key(code(KeyCode::Esc)), vec![]);
+    assert_eq!(app.mode, Mode::Normal);
+}
