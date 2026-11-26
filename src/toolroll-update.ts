@@ -922,6 +922,8 @@ function assertNoneActive(stateDir: string): void {
  * the journal is made, and refuses with its words; `prepared` binds the saved journal before the lock is let go (when it
  * throws, the journal is refused and nothing starts). */
 export type PrepareHooks = { reserve?: () => string | null; prepared?: (j: RuntimeUpdateJournal) => void;
+  /** An automatic update's origin, written into the journal itself before it is first saved (after `reserve`). */
+  automatic?: () => NonNullable<RuntimeUpdateJournal["automatic"]> | null;
   /** A test's seam: how long to wait for another preparer (5 s by default). */
   lockWaitMs?: number };
 
@@ -937,6 +939,8 @@ export function prepareRuntimeUpdate(o: StartOptions, now: Date, hooks: PrepareH
       keepCompletedUpdate(o.stateDir);
       const at = o.when === "at" ? nextAt(o.at ?? "03:00", now).toISOString() : null;
       const j = newJournal("update", { stateDir: o.stateDir, databaseFile: o.databaseFile, from: o.current, to: { version: o.version, dist: "" }, when: o.when, at, actor: o.actor }, now);
+      const automatic = hooks.automatic?.() ?? null;
+      if (automatic !== null) j.automatic = automatic;
       save(j, "scheduled", at ? `Scheduled for ${at}.` : "Starting.", now);
       try { hooks.prepared?.(j); }
       catch (error) { save(j, "refused", `The update could not start: ${(error as Error).message}`, now); return { refused: `The update could not start: ${(error as Error).message}` }; }
@@ -1740,19 +1744,25 @@ function refuseLapsedAutomatic(j: RuntimeUpdateJournal, before: "started" | "swi
 }
 
 /**
- * Whether the automatic attempt behind this journal (auto_update_attempt names it) still stands: automatic updates on at
- * the revision it was reserved under, and the person who turned them on still an active, unrestricted approver at the
- * account generation it bound. Null when it stands, or when no automatic attempt names this journal (a person's update);
- * otherwise why, in words. Anything that can't be read is a lapse.
+ * Whether the automatic attempt behind this journal still stands: its exact attempt row (the journal's own `automatic`
+ * names it: id, this journal, the person, their account generation, the policy revision), automatic updates on at that
+ * revision, and the person still an active, unrestricted approver at that generation. A journal marked automatic whose
+ * row is missing or different (a restored database no longer holds it) refuses: never treated as a person's update.
+ * An unmarked journal is a person's update, unless an attempt row names it anyway. Anything that can't be read is a lapse.
  */
 function automaticAuthorityProblem(j: RuntimeUpdateJournal): string | null {
+  const origin = j.automatic;
   let db: DatabaseSync;
   try { db = new (sqlite().DatabaseSync)(j.databaseFile, { readOnly: true }); } catch { return "its database can't be read"; }
   try {
     db.exec("PRAGMA busy_timeout=5000");
-    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'auto_update_attempt'").get() === undefined) return null;
-    const attempt = db.prepare("SELECT enabled_by, enabled_generation, policy_revision FROM auto_update_attempt WHERE journal_id = ?").get(j.id);
-    if (attempt === undefined) return null;
+    const missing = "its automatic update record is missing from the database (a restored database no longer holds it)";
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'auto_update_attempt'").get() === undefined) return origin === undefined ? null : missing;
+    const attempt = origin === undefined
+      ? db.prepare("SELECT enabled_by, enabled_generation, policy_revision FROM auto_update_attempt WHERE journal_id = ?").get(j.id)
+      : db.prepare("SELECT enabled_by, enabled_generation, policy_revision FROM auto_update_attempt WHERE id = ? AND journal_id = ? AND enabled_by = ? AND enabled_generation = ? AND policy_revision = ?")
+        .get(origin.attempt, j.id, origin.by, origin.generation, origin.revision);
+    if (attempt === undefined) return origin === undefined ? null : missing;
     const policy = db.prepare("SELECT enabled, revision FROM auto_update_policy WHERE id = 1").get();
     if (policy === undefined || policy["enabled"] !== 1 || policy["revision"] !== attempt["policy_revision"]) return "automatic updates were turned off";
     const who = db.prepare("SELECT role, revoked_at, generation, projects_json FROM approver WHERE name = ?").get(attempt["enabled_by"] as string);

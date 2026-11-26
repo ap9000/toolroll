@@ -411,3 +411,31 @@ describe("the update job is this user's, shared by every database", () => {
     await expect(launchRuntimeUpdate({ databaseFile: a.databaseFile, id: third.id, dist: join(a.dir, "dist") }, seams)).rejects.toThrow(/can't tell whose it is/);
   });
 });
+
+describe("the updater re-checks an automatic run against the journal's own record of it", () => {
+  test("a journal marked automatic whose attempt row a restore no longer holds refuses before anything is downloaded", async () => {
+    const w = world();
+    let launched = "";
+    expect(await autoUpdatePass(w.store, { stateDir: w.dir, databaseFile: w.databaseFile, current: { version: "0.9.120", dist: join(w.dir, "dist") }, kind: "managed", latest: "0.9.121", now: () => T0,
+      launch: async args => { launched = args.id; } })).toMatchObject({ started: "0.9.121" });
+    expect(readRuntimeUpdate(w.dir)?.automatic).toMatchObject({ by: "alex", revision: 1 });
+    // An older database put back while the job was pending: no attempt row, and (restored) the switch reads on.
+    w.store.handle.exec("DROP TRIGGER auto_update_attempt_no_delete");
+    w.store.handle.prepare("DELETE FROM auto_update_attempt").run();
+    let asked = 0;
+    const system = { now: () => T0, sleep: async () => undefined, release: async () => { asked++; throw new Error("no registry in this test"); } } as unknown as UpdateSystem;
+    const outcome = await resumeRuntimeUpdate(w.dir, system, launched);
+    expect(outcome).toMatchObject({ ok: false, phase: "refused", message: expect.stringContaining("stopped before it started: its automatic update record is missing") });
+    expect(asked).toBe(0);
+  });
+
+  test("a person's own update, which no attempt names, is unchanged", async () => {
+    const w = world();
+    const j = journal(w, "0.9.121");
+    expect(j.automatic).toBeUndefined();
+    let asked = 0;
+    const system = { now: () => T0, sleep: async () => undefined, release: async () => { asked++; throw new Error("no registry in this test"); } } as unknown as UpdateSystem;
+    expect(await resumeRuntimeUpdate(w.dir, system, j.id)).toMatchObject({ phase: "refused", message: expect.stringContaining("no registry in this test") });
+    expect(asked).toBe(1);
+  });
+});

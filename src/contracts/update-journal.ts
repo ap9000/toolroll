@@ -122,6 +122,9 @@ export const runtimeUpdateJournalSchema = z.object({
   codingBackupPath: z.string().exactOptional(), codingBackupHash: z.string().exactOptional(),
   /** A rollback installs the update's earlier backups (checked against their recorded hashes). */
   restoreFrom: z.object({ path: z.string(), hash: z.string(), updateId: z.string(), codingPath: z.string().exactOptional(), codingHash: z.string().exactOptional() }).exactOptional(),
+  /** An automatic update (auto-update.ts): the attempt it stands on, the person, their account generation and the policy
+   * revision, written by the preparer under the prepare lock. The updater refuses unless the database still matches it. */
+  automatic: z.object({ attempt: z.number(), by: z.string(), generation: z.number(), revision: z.number() }).exactOptional(),
   rehearsal: z.object({ tables: z.number(), rows: z.number() }).exactOptional(),
   /** The background service, recorded before it is stopped: its definition and the processes that must be gone. */
   service: unitSchema.exactOptional(),

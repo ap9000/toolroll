@@ -297,6 +297,8 @@ export async function autoUpdatePass(store: AutoUpdateStore, o: AutoUpdatePassOp
       attempt = reserved.attempt;
       return null;
     },
+    // The journal itself says it is automatic, and on whose yes: the updater refuses unless the database still matches.
+    automatic: () => { const one = attempt as AutoUpdateAttempt | null; return one === null ? null : { attempt: one.id, by: one.enabledBy, generation: one.enabledGeneration, revision: one.policyRevision }; },
     prepared: j => { if (attempt === null || !linkAutoUpdateJournal(store, attempt.id, j.id)) throw new Error("its attempt record could not be written"); },
   });
   const reservedAttempt = attempt as AutoUpdateAttempt | null;
