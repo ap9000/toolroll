@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { checkLinuxDependencies } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 import { LINUX_SANDBOX_TOOLS, SANDBOX_LAUNCH_SPEC, linuxSandboxInstallLine, missingLinuxSandboxTools, sandboxRuntimeProblem, srtSpawn, type SandboxLaunchSpec, type SrtTerms } from "./sandbox-runtime.js";
-import { managerLine, packageSystem } from "./linux-packages.js";
+import { managerLine, managerReinstall, packageSystem, reinstallLine } from "./linux-packages.js";
 import { hasUnsafeText } from "./shown-text.js";
 import { checkSeccompHelper, resolveLinuxSandboxTools, sandboxToolsRepair, sandboxToolExclusions, seccompHelperPath, verifyLinuxSandboxTools, type LinuxSandboxTools, type ToolTrust } from "./sandbox-tools.js";
 import { toolrollInstall } from "./agent-fence.js";
@@ -71,6 +71,18 @@ describe("the Linux sandbox's programs: one list", () => {
     expect(packageSystem(path => path === { apt: "/usr/bin/apt-get", dnf: "/usr/bin/dnf", zypper: "/usr/bin/zypper", pacman: "/usr/bin/pacman", apk: "/sbin/apk" }[manager], isRoot ? 0 : 1000)).toEqual({ manager, root: isRoot });
   });
 
+  test.each([
+    ["apt", false, "sudo apt update && sudo apt install --reinstall bubblewrap debianutils"],
+    ["apt", true, "apt update && apt install --reinstall bubblewrap debianutils"],
+    ["dnf", false, "sudo dnf reinstall bubblewrap which"],
+    ["zypper", false, "sudo zypper install -f bubblewrap which"],
+    ["pacman", false, "sudo pacman -S bubblewrap which"],
+    ["apk", true, "apk fix bubblewrap which"],
+  ] as const)("the reinstall line for %s (root: %s) puts an installed package's own files back", (manager, isRoot, line) => {
+    expect(reinstallLine(["bubblewrap", "which"], { manager, root: isRoot })).toBe(line);
+    expect(managerReinstall(manager, ["bubblewrap", "which"], isRoot)).toBe(line);
+  });
+
   test("install.sh, the Linux guide and the README name exactly these", () => {
     expect(root("install.sh")).toContain(`for tool in ${LINUX_SANDBOX_TOOLS.map(tool => `${tool.command}:${tool.package}`).join(" ")}; do`);
     const packages = LINUX_SANDBOX_TOOLS.map(tool => tool.package);
@@ -127,7 +139,7 @@ describe("the Linux sandbox's own programs: root's own, by exact path, checked a
     expect(refused.ok).toBe(false);
     if (!refused.ok) {
       expect(refused.why).toContain(`${join(users, "bwrap")}: ${join(users, "bwrap")} isn't owned by root`);
-      expect(refused.why).toContain(`install bubblewrap from your system package manager (${linuxSandboxInstallLine(["bubblewrap"])})`);
+      expect(refused.why).toContain(`remove a copy your package manager didn't install, or reinstall bubblewrap (${reinstallLine(["bubblewrap"])}); \`toolroll doctor\` says which`);
     }
   });
 
@@ -188,15 +200,16 @@ describe("the Linux sandbox's own programs: root's own, by exact path, checked a
   });
 
   test("an installed program that fails its check is a trust failure with its paths, not missing; it is reinstalled, never chmod-ed or chown-ed", () => {
-    const reinstall = (pkg: string) => `reinstall ${pkg} from your system package manager (${linuxSandboxInstallLine([pkg])})`;
+    const reinstall = (pkg: string) => `reinstall ${pkg} so its own files come back (${reinstallLine([pkg])})`;
+    const packaged = { managed: () => true };
     // A writable bwrap (the others fine).
     const system = folder("system");
     const seccomp = helper(system);
     chmodSync(join(system, "bwrap"), 0o777);
     const writable = resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp });
     expect(writable).toMatchObject({ ok: false, failure: "untrusted", rejected: [join(system, "bwrap")] });
-    expect(!writable.ok && writable.why).toMatch(/^bubblewrap \(bwrap\) has no copy Toolroll can trust in .*: reinstall bubblewrap from your system package manager/);
-    const fileRepair = sandboxToolsRepair({ ...standIn, folders: [system], seccomp }, null)!;
+    expect(!writable.ok && writable.why).toMatch(/^bubblewrap \(bwrap\) has no copy Toolroll can trust in .*: remove a copy your package manager didn't install, or reinstall bubblewrap/);
+    const fileRepair = sandboxToolsRepair({ ...standIn, folders: [system], seccomp, ...packaged }, null)!;
     expect(fileRepair.commands).toEqual([]);
     expect(fileRepair.faults).toContainEqual({ path: join(system, "bwrap"), kind: "world-write" });
     expect(fileRepair.notes).toEqual([`${join(system, "bwrap")} can't be trusted (everyone can change ${join(system, "bwrap")}): ${reinstall("bubblewrap")}, and don't change its permissions by hand.`]);
@@ -204,15 +217,17 @@ describe("the Linux sandbox's own programs: root's own, by exact path, checked a
     chmodSync(join(system, "bwrap"), 0o755);
     chmodSync(system, 0o775);
     expect(resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp })).toMatchObject({ ok: false, failure: "untrusted" });
-    const folderRepair = sandboxToolsRepair({ ...standIn, folders: [system], seccomp }, null)!;
+    const folderRepair = sandboxToolsRepair({ ...standIn, folders: [system], seccomp, ...packaged }, null)!;
     expect(folderRepair.commands.filter(one => one.includes(system))).toEqual([]);
     for (const pkg of ["bubblewrap", "socat", "bash", "ripgrep", "which"]) expect(folderRepair.notes.join("\n")).toContain(reinstall(pkg));
-    // Copies root doesn't own (here this user's, where only root's count): why and the package manager, never a chown.
+    // Copies root doesn't own, outside the package manager's folders (as in /usr/local/bin): removed, then installed from
+    // the package manager; never a chown, never "reinstall" (that wouldn't replace them).
     const users = folder("usr-local-bin");
     const theirs = sandboxToolsRepair({ folders: [users], root: [0], codeOwner: me, seccomp: helper(users) }, null)!;
     expect(theirs.commands.filter(one => /chown|chmod/.test(one) && one.includes(users))).toEqual([]);
     expect(theirs.notes.join("\n")).toContain(`${join(users, "bwrap")} can't be trusted (${join(users, "bwrap")} belongs to another user`);
-    expect(theirs.notes.join("\n")).toContain(reinstall("bubblewrap"));
+    expect(theirs.notes.join("\n")).toContain(`: remove it (it isn't from your system package manager, and Toolroll won't run it), then install bubblewrap: ${linuxSandboxInstallLine(["bubblewrap"])}.`);
+    expect(theirs.notes.join("\n")).not.toContain("reinstall bubblewrap");
   });
 
   test("a trusted copy doesn't open the way for a command on a rejected one: no chmod on a folder above any installed system copy", () => {
@@ -231,6 +246,10 @@ describe("the Linux sandbox's own programs: root's own, by exact path, checked a
     expect(checkSeccompHelper(seccomp, { all: [] }, trust).ok).toBe(false);
     const repair = sandboxToolsRepair(trust, null);
     expect((repair?.commands ?? []).filter(one => one.includes(realpathSync(local)))).toEqual([]);
+    // The rejected copy is still named, with what to do: it isn't a package's file, so it is removed (the trusted one
+    // stays), not "reinstalled".
+    expect(repair?.notes.join("\n")).toContain(`${join(realpathSync(local), "bin", "bwrap")} can't be trusted`);
+    expect(repair?.notes.join("\n")).toContain("remove it (it isn't from your system package manager, and Toolroll won't run it).");
   });
 
   test("a missing program refuses with a plain reason, and nothing falls back to a PATH lookup", () => {

@@ -46,3 +46,27 @@ export function installLine(packages: readonly string[], system: PackageSystem =
   if (system.manager !== null) return managerLine(system.manager, packages, system.root);
   return PROGRAMS.map(([manager]) => `${managerLine(manager, packages, system.root)} (${NAMES[manager]})`).join("; ");
 }
+
+/**
+ * One manager's command that reinstalls `packages` already installed, putting back the package's own files (an ordinary
+ * install leaves an installed package as it is). Checked: apt's --reinstall and `apk fix` restore a replaced file
+ * (Debian 13, Alpine 3.22 containers, 2026-11); dnf reinstall, zypper install -f and pacman -S (reinstalls what is
+ * installed, without --needed) are each manager's documented reinstall.
+ */
+export function managerReinstall(manager: PackageManager, packages: readonly string[], root: boolean): string {
+  const sudo = root ? "" : "sudo ";
+  const named = [...new Set(packages.map(one => RENAMED[one]?.[manager] ?? one))].join(" ");
+  switch (manager) {
+    case "apt": return `${sudo}apt update && ${sudo}apt install --reinstall ${named}`;
+    case "dnf": return `${sudo}dnf reinstall ${named}`;
+    case "zypper": return `${sudo}zypper install -f ${named}`;
+    case "pacman": return `${sudo}pacman -S ${named}`;
+    case "apk": return `${sudo}apk fix ${named}`;
+  }
+}
+
+/** The line that reinstalls `packages` here; with no manager found, each manager's, named by its distributions. */
+export function reinstallLine(packages: readonly string[], system: PackageSystem = packageSystem()): string {
+  if (system.manager !== null) return managerReinstall(system.manager, packages, system.root);
+  return PROGRAMS.map(([manager]) => `${managerReinstall(manager, packages, system.root)} (${NAMES[manager]})`).join("; ");
+}

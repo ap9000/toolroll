@@ -28,7 +28,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SrtTerms } from "./sandbox-runtime.js";
-import { installLine } from "./linux-packages.js";
+import { installLine, reinstallLine } from "./linux-packages.js";
 import { hasUnsafeText, shownText } from "./shown-text.js";
 import { mergeRepairs, toolrollPackageRoot, trustFaults, trustFaultWords, trustRepair, type TrustFault, type TrustRepair } from "./trust-repair.js";
 import { platformAcl, rootOwnedBinary, rootOwnedFolders, type AclReader } from "./trusted-path.js";
@@ -176,7 +176,7 @@ export function resolveLinuxSandboxTools(options: ToolTrust & { folders?: readon
       // Installed, but no copy passes its check: that is a trust failure with its paths (repaired by toolroll doctor's
       // commands), not a missing program.
       return { ok: false, failure: "untrusted", rejected,
-        why: shownText(`${tool.words} has no copy Toolroll can trust in ${folders.join(", ")} (${passedOver.join("; ")}): reinstall ${tool.install} from your system package manager (${installLine([tool.install])})`) };
+        why: shownText(`${tool.words} has no copy Toolroll can trust in ${folders.join(", ")} (${passedOver.join("; ")}): remove a copy your package manager didn't install, or reinstall ${tool.install} (${reinstallLine([tool.install])}); \`toolroll doctor\` says which`) };
     }
   }
   const helper = "seccomp" in options ? options.seccomp ?? null : seccompHelperPath();
@@ -266,23 +266,34 @@ export function seccompHelperRepair(options: ToolTrust = {}, packageRoot: string
  * What to do about every sandbox program that is installed but fails its check (not only the first): each system
  * program (bwrap, socat, bash, rg, which) whose copies in the folders all fail is never repaired in place — no chmod,
  * no chown, whoever runs this, since making a copy that others could have replaced look root's own would launder it —
- * its copy is named as untrusted (why, by trust-repair.ts trustFaults) and it is reinstalled from the system package
- * manager, with this computer's line; merged with the seccomp helper's repair (seccompHelperRepair). The checks are
- * unchanged. Null when nothing installed fails.
+ * every copy that fails (even beside one that passes) is named as untrusted (why, by trust-repair.ts trustFaults): a
+ * package's own file is reinstalled with this computer's reinstall command (linux-packages.ts reinstallLine; an ordinary
+ * install would leave it as it is), and a copy outside the package manager's folders (/usr/local, a home folder) is to
+ * be removed. Merged with the seccomp helper's repair (seccompHelperRepair). The checks are unchanged. Null when nothing
+ * installed fails.
  */
-export function sandboxToolsRepair(options: ToolTrust & { folders?: readonly string[] } = {}, packageRoot: string | null = toolrollPackageRoot()): TrustRepair | null {
+export function sandboxToolsRepair(options: ToolTrust & { folders?: readonly string[]; managed?: (copy: string) => boolean } = {}, packageRoot: string | null = toolrollPackageRoot()): TrustRepair | null {
   const folders = options.folders ?? SANDBOX_TOOL_FOLDERS;
   const trust = trustOf(options);
+  const managed = options.managed ?? fromPackageManager;
   const faults: TrustFault[] = [];
   const notes: string[] = [];
   for (const tool of SYSTEM_TOOLS) {
     const candidates = folders.map(folder => join(folder, tool.command)).filter(candidate => existsSync(candidate));
-    const passes = candidates.some(candidate => checkSystem(candidate, trust, NO_EXCLUSIONS).ok
+    const passing = candidates.filter(candidate => checkSystem(candidate, trust, NO_EXCLUSIONS).ok
       && (tool.key !== "which" || rootOwnedFolders(dirname(candidate), trust.acl, trust.root).ok));
-    if (passes || candidates.length === 0) continue;
-    const found = candidates.flatMap(candidate => trustFaults(candidate, { owners: trust.root }) ?? []);
-    faults.push(...found);
-    notes.push(`${shownText(candidates.join(", "))} can't be trusted${found.length === 0 ? "" : ` (${shownText(found.map(trustFaultWords).join("; "))})`}: reinstall ${tool.install} from your system package manager (${installLine([tool.install])}), and don't change its permissions by hand.`);
+    // Every copy that fails, even beside one that passes: each is named, with what to do about it.
+    for (const copy of candidates.filter(candidate => !passing.includes(candidate))) {
+      const found = trustFaults(copy, { owners: trust.root }) ?? [];
+      faults.push(...found);
+      const why = `${shownText(copy)} can't be trusted${found.length === 0 ? "" : ` (${shownText(found.map(trustFaultWords).join("; "))})`}`;
+      if (!managed(copy)) {
+        // Not a package's file (a copy in /usr/local, a home folder): reinstalling a package wouldn't replace it.
+        notes.push(`${why}: remove it (it isn't from your system package manager, and Toolroll won't run it)${passing.length > 0 ? "." : `, then install ${tool.install}: ${installLine([tool.install])}.`}`);
+      } else {
+        notes.push(`${why}: reinstall ${tool.install} so its own files come back (${reinstallLine([tool.install])}), and don't change its permissions by hand.`);
+      }
+    }
   }
   const system = faults.length === 0 && notes.length === 0 ? null : { faults, commands: [], notes };
   // Not even through the helper's repair: no command touches any installed copy of a system program (passing or not,
@@ -308,4 +319,11 @@ function touchesProtected(command: string, protectedPaths: ReadonlySet<string>):
   const target = quoted[1]!.replace(/'\\''/g, "'");
   if (protectedPaths.has(target)) return true;
   return / -R /.test(command) && [...protectedPaths].some(path => insideOrAt(path, target));
+}
+
+/** The folders a distribution's packages put programs in (FHS: never /usr/local, never a home folder). */
+const PACKAGE_FOLDERS: ReadonlySet<string> = new Set(["/usr/bin", "/bin", "/usr/sbin", "/sbin", "/run/current-system/sw/bin"]);
+/** Whether a copy is a package's own file: its canonical folder is one packages install into. */
+function fromPackageManager(copy: string): boolean {
+  return PACKAGE_FOLDERS.has(dirname(realOrSelf(copy)));
 }
