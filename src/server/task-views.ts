@@ -296,7 +296,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         sourceTask?: unknown;
         sourceRun?: unknown;
         kind?: unknown;
-        comments?: { path?: unknown; line?: unknown; note?: unknown; author?: unknown; image?: unknown }[];
+        comments?: { id?: unknown; path?: unknown; line?: unknown; note?: unknown; author?: unknown; image?: unknown }[];
       };
       return {
         sourceTask: String(parsed.sourceTask ?? "?"),
@@ -304,6 +304,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         kind: parsed.kind === "ci-repair" ? "ci-repair" : parsed.kind === "criterion-repair" ? "criterion-repair" : "annotations",
         lineage: runtime.store.revisionLineageOf(ref.externalId, runtime.clock()),
         comments: (parsed.comments ?? []).slice(0, 100).map(one => ({
+          id: typeof one.id === "number" && Number.isSafeInteger(one.id) ? one.id : null,
           path: one.path === null || one.path === undefined ? null : String(one.path),
           line: one.line === null || one.line === undefined ? null : Number(one.line),
           note: String(one.note ?? ""),

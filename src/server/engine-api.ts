@@ -926,9 +926,9 @@ export const APPROVE_IN_BROWSER = "Press w to open it in your browser.";
  * terms), then what the plan changed from the terms before it (the task page's amendment, said before the yes), then the
  * notes a revision was sent back with (the page's revision card). */
 export function approvalTermsOf(summary: ApprovalSummary, contract: PlanContractView | null, revision: RevisionView | null,
-  /** What people typed into the notes that made this revision (store.ts typedNotesFor): a note shows its person's own
-   * words, never what the page filled in ahead of them (a quoted requirement, a check's failure). */
-  typed: readonly { author: string; note: string }[] = []): { label: string; words: string }[] {
+  /** What people typed into the notes that made this revision (store.ts typedNotesFor, by each note's id): a note shows
+   * its person's own words, never what the page filled in ahead of them (a quoted requirement, a check's failure). */
+  typed: readonly { id: number; author: string; note: string }[] = []): { label: string; words: string }[] {
   const terms = termsOfLines(summaryLines(summary));
   if (contract !== null && "problem" in contract) terms.push({ label: "Plan record", words: contract.problem });
   else if (contract !== null && (contract.filed || contract.revision === true) && contract.changes.length > 0) {
@@ -938,7 +938,9 @@ export function approvalTermsOf(summary: ApprovalSummary, contract: PlanContract
   }
   if (revision !== null && "problem" in revision) terms.push({ label: "Sent back", words: revision.problem });
   else if (revision !== null && revision.comments.length > 0) {
-    const said = (one: { note: string; author: string }) => typed.find(words => words.author === one.author && words.note !== "" && one.note.includes(words.note))?.note ?? one.note;
+    // Each note by its own saved id (never by its words: one note can hold another's), only while it still holds them.
+    const said = (one: { id?: number | null; note: string; author: string }) =>
+      typed.find(words => one.id != null && words.id === one.id && words.author === one.author && words.note !== "" && one.note.includes(words.note))?.note ?? one.note;
     terms.push({ label: "Sent back", words: revision.comments.map(one => `${one.path === null ? "" : `${one.path}${one.line === null ? "" : `:${one.line}`} — `}${said(one)} (${one.author})`).join("\n") });
   }
   return terms;

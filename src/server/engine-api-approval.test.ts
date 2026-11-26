@@ -18,7 +18,8 @@ import { acquire } from "../claim.js";
 import { mintApiToken } from "../api-tokens.js";
 import { asLocalOwner, type LocalPrincipal } from "../local-owner.js";
 import { withActor } from "../actor.js";
-import { APPROVE_IN_BROWSER, NOTHING_TO_APPROVE } from "./engine-api.js";
+import { approvalTermsOf, APPROVE_IN_BROWSER, NOTHING_TO_APPROVE } from "./engine-api.js";
+import type { ApprovalSummary } from "../approval-summary.js";
 
 let world: LocalWorld, terminal: ApprovalWorld["terminal"], sentBack: ApprovalWorld["sentBack"], card: ApprovalWorld["card"];
 beforeEach(async () => { ({ world, terminal, sentBack, card } = await openApprovalWorld()); }, LOCAL_WORLD_SETUP_MS);
@@ -62,6 +63,20 @@ test("a note sent back with a quoted requirement ahead of it: the card's Sent ba
   const revision = await sentBack(session, "Rebuild on the current main.", "Not right: “Add a double function to math.js”");
   const read = await card(session, revision);
   expect(read.terms.at(-1)).toEqual({ label: "Sent back", words: "Rebuild on the current main. (alex)" });
+});
+
+test("two notes from one person, one holding the other's words: each shows its own typed words, by its saved id (review round 1)", () => {
+  const summary: ApprovalSummary = { revision: null, revisionNotes: [], revisionChanges: [], decisions: [], why: null, differs: [], warnings: [], usual: [], usualLabel: "", usualSummary: "", key: "k" };
+  const revision = { sourceTask: "t", sourceRun: 3, kind: "annotations" as const, lineage: null, comments: [
+    { id: 11, path: null, line: null, note: "Use cents.", author: "alex" },
+    { id: 12, path: null, line: null, note: "Not right: “Totals round”\n\nUse cents. Keep refunds negative.", author: "alex" },
+    // A brief from before notes named their ids: shown whole.
+    { path: null, line: null, note: "Not right: “Old”\n\nUse cents.", author: "alex" },
+  ] };
+  // The older note's words first: matched by words, the second note would read "Use cents." and lose an instruction.
+  const typed = [{ id: 11, author: "alex", note: "Use cents." }, { id: 12, author: "alex", note: "Use cents. Keep refunds negative." }];
+  expect(approvalTermsOf(summary, null, revision, typed).at(-1)).toEqual({ label: "Sent back",
+    words: "Use cents. (alex)\nUse cents. Keep refunds negative. (alex)\nNot right: “Old”\n\nUse cents. (alex)" });
 });
 
 test("a stale or changed digest refuses and approves nothing", async () => {

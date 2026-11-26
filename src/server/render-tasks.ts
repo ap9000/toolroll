@@ -1558,7 +1558,8 @@ export type RevisionView =
       sourceRun: number;
       /** What kind of brief this is — annotations, a CI repair, a criterion repair. */
       kind: "annotations" | "ci-repair" | "criterion-repair";
-      comments: { path: string | null; line: number | null; note: string; author: string; image?: import("../result-review.js").FeedbackImage | null }[];
+      /** `id`: the saved note's own id (diff_comment), as the sealed brief names it; null when the brief doesn't. */
+      comments: { id?: number | null; path: string | null; line: number | null; note: string; author: string; image?: import("../result-review.js").FeedbackImage | null }[];
       /** The lineage and ACTUAL terms (contract handoff task 2), read from
        * the child's own rows — the same projection chat and the approval
        * card restate. */
