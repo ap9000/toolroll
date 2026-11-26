@@ -472,6 +472,7 @@ const HISTORY_RULES: Record<string, HistoryRule> = {
   // v180 adds a table only (pending_agent_change, a task's pending model change): no rule is needed.
   // v185 adds a table only (flexible_turn_said, what was said in a Flexible thread): no rule is needed.
   // v186 adds tables only (skill_library_change, skill_project_opt_out, skill_bundle, skill_local_sync): no rule is needed.
+  // v187 adds tables only (auto_update_policy, auto_update_attempt): no rule is needed.
   ...Object.fromEntries(Object.entries(addedColumns(V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS, V128_ADDED_COLUMNS, V129_ADDED_COLUMNS, V134_ADDED_COLUMNS, V135_ADDED_COLUMNS, V138_ADDED_COLUMNS, V143_ADDED_COLUMNS, V147_ADDED_COLUMNS, V148_ADDED_COLUMNS, V150_ADDED_COLUMNS, V151_ADDED_COLUMNS, V152_ADDED_COLUMNS, V153_ADDED_COLUMNS, V158_ADDED_COLUMNS, V159_ADDED_COLUMNS, V169_ADDED_COLUMNS, V170_ADDED_COLUMNS, V172_ADDED_COLUMNS, V173_ADDED_COLUMNS))
     .map(([table, rule]) => [table, { ...EARLIER_RULES[table], ...rule }])),
 };

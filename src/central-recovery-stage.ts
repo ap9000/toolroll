@@ -12,14 +12,14 @@ import { openStore, type Store } from "./store.js";
 import { holdAutoPublish, autoPublishHeld, PUBLISH_ALLOWED_ACTION, PUBLISH_HELD_ACTION } from "./release-auto.js";
 import { revokeCoordinator } from "./coordinator.js";
 
-// Exact fresh v186 schema, compiled from this source (732 non-internal objects).
+// Exact fresh v187 schema, compiled from this source (736 non-internal objects).
 // Variants/unknown schemas remain unsupported; no caller can supply or widen this inventory.
 // This unreachable scaffold supports backups up to128MiB; larger files require a reviewed streaming design.
 // This is an input byte bound, never an agent/model runtime deadline.
 export const MAX_STAGE_BYTES = 128 * 1024 * 1024;
-const SUPPORTED_SCHEMA = 186;
-const SCHEMA_OBJECT_COUNT = 732;
-const SCHEMA_DIGEST = "5bd44762a424f9dccb0f4adeac674b53c6978b253cdf0c74c349c321ba43a361";
+const SUPPORTED_SCHEMA = 187;
+const SCHEMA_OBJECT_COUNT = 736;
+const SCHEMA_DIGEST = "022a4f3a011e86d4578211036ba4be1cf9bf00757c73c193ba48107941b2fc48";
 const INVENTORY = [
   ["person-credentials", "store.ts:revokeApiToken", "credential", true],
   ["lead-credentials", "store.ts:revokeLeadCredentials", "credential", true],
@@ -30,6 +30,7 @@ const INVENTORY = [
   ["intake-grant-fresh-command-admission", "store.ts:clearIntakeGrant/operate.ts:intakeCommand", "intake_grant", true],
   ["flexible-snapshot-sign-in-admission", "flexible-sign-in.ts verifier semantics (private snapshot SQL only)", "flexible_sign_in/flexible_sign_in_epoch", true],
   ["durable-browser-sessions", "server/guards.ts/session.ts", "web_session", true],
+  ["automatic-updates", "auto-update.ts", "auto_update_policy (attempt history kept as found)", true],
   ["local-owner-and-memory", "local-owner.ts/server/guards.ts", "local_mode/in-memory nonces and links", false],
   ["password-and-saved-login", "scope.ts/login-secrets.ts", "approver/protected login files", false],
   ["sso-membership", "sso-settings.ts/store.ts", "sso_identity/protected sign-in settings", false],
@@ -257,10 +258,14 @@ export function retireCentralRecoveryStage(handle: RecoveryStageHandle): Recover
       if (count(stage, "SELECT count(*) AS n FROM flexible_sign_in WHERE state IN ('active','staged')") !== 0) throw Error("Snapshot sign-in admission remains live");
       const sessions = stage.webSessions(null); counts.set("durable-browser-sessions", sessions.length);
       for (const session of sessions) stage.dropWebSession(session.idHash);
+      // A restored standing yes to install releases by itself is off until a person turns it on again.
+      counts.set("automatic-updates", count(stage, "SELECT count(*) AS n FROM auto_update_policy WHERE enabled = 1"));
+      stage.handle.prepare("UPDATE auto_update_policy SET enabled = 0, revision = revision + 1, updated_by = ?, updated_at = ? WHERE enabled = 1").run(by, now.toISOString());
       if (count(stage, "SELECT count(*) AS n FROM intake_grant WHERE revoked_at IS NULL") !== 0
         || count(stage, "SELECT count(*) AS n FROM publication_grant WHERE revoked_at IS NULL") !== 0
         || count(stage, "SELECT count(*) AS n FROM coordinator_proposal WHERE state IN ('pending','confirming')") !== 0
         || count(stage, "SELECT count(*) AS n FROM credential WHERE revoked_at IS NULL") !== 0
+        || count(stage, "SELECT count(*) AS n FROM auto_update_policy WHERE enabled = 1") !== 0
         || count(stage, "SELECT (SELECT count(*) FROM oauth_code)+(SELECT count(*) FROM oauth_grant)+(SELECT count(*) FROM oauth_refresh)+(SELECT count(*) FROM web_session) AS n") !== 0) throw Error("Retirement postcondition failed");
       return report(kept, "retired-partial", counts);
     });

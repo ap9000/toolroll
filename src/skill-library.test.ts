@@ -141,7 +141,7 @@ afterEach(async () => {
 
 describe("Skill Library (schema v186)", () => {
   test("schema v186 immutability triggers and project delete cleanup", async () => {
-    expect(SCHEMA_VERSION).toBe(186);
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(186);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(186);
     const store = openStore(":memory:");
     cleanups.push(() => store.close());

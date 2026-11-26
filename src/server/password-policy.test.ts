@@ -66,6 +66,8 @@ const COOKIE_ONLY_POSTS = [
   'settings.task-sizing',
   // Settings → General: interactive agent threads (beta), an operator's step-up from a browser, never a token.
   'settings.flexible',
+  // Settings → Updates: automatic updates on or off, an operator's step-up from a browser, never a token.
+  'settings.updates-auto',
   // Settings → General: your own Claude sign-in for threads (saved as a credential act, checked again, removed; an
   // operator removes someone else's from People), from a browser only, never a token.
   'settings.flexible-sign-in', 'settings.flexible-sign-in-check', 'settings.flexible-sign-in-clear',
@@ -96,7 +98,7 @@ const PASSWORD_CEREMONIES = [
   '/settings/chat-approval/confirm', '/settings/chat-approval/save', '/settings/project/live-view', '/settings/project/fallback',
   '/control/instructions-approve', '/control/setup-approve', '/fleet/runner/register', '/fleet/runner/retire',
   '/mode/sign', '/mode/confirm', '/people/projects', '/people/invite', '/people/invite-revoke', '/people/revoke',
-  '/projects/onboard-confirm', '/push/subscribe', '/settings/local-mode/off', '/settings/install-mode/solo', '/settings/task-sizing', '/settings/flexible',
+  '/projects/onboard-confirm', '/push/subscribe', '/settings/local-mode/off', '/settings/install-mode/solo', '/settings/task-sizing', '/settings/flexible', '/settings/updates/auto',
   '/settings/flexible-sign-in', '/settings/flexible-sign-in-check', '/settings/flexible-sign-in-clear',
   '/settings/provider-key', '/settings/telegram-token', '/settings/email', '/settings/google',
   '/chat/config', '/chat', `/chat/file/${'a'.repeat(32)}`, '/chat/ack/1',
