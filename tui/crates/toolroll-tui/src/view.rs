@@ -3715,6 +3715,10 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
             // Work that would start for the first time (approved, or a plan asked for): a pause, not a retry.
             v.push((&[Stop], "pause task"));
         } else if land {
+            // Accepted but behind main: send back is the way on (its next attempt starts with main merged in).
+            if app.behind_main_here() {
+                v.push((&[SendBack], "send back"));
+            }
             v.push((&[Land], "land"));
         }
         if plan {

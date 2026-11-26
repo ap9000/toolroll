@@ -381,6 +381,12 @@ export const stepCardsSchema = z.object({
    * result's build and the level its project has a command for, when its check failed, is out of date, can't be read or
    * didn't run. Display only: the console decides who may at the post, as for the page. Absent otherwise. */
   runChecks: z.object({ run: z.number().int(), level: z.enum(["quick", "full"]) }).optional(),
+  /** An accepted result behind its project's main, not landed, in a project without pull requests (merge-checklist.ts
+   * behindMainOf): Send back is the way on, since its next attempt starts with main merged in (revision-catch-up.ts).
+   * What that send back posts to POST /r/<run>/comment intent=revise (`run`, `source`), the `receipt` it was read at, the
+   * branch and how far behind, and the feedback the task page prefills (`note`). Absent otherwise, and when the last such
+   * merge conflicted with main as it is now. Read facts only: the post proves them again. */
+  behindMain: z.object({ run: z.number().int(), receipt: z.string().regex(/^[0-9a-f]{64}$/), source: z.string(), main: z.string(), behind: z.number().int(), note: z.string() }).optional(),
   room: z.string(),
 });
 

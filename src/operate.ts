@@ -160,7 +160,8 @@ import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { parseMachLookup, parseReadDeny, readDenyWords, type ProjectSandbox } from "./project-sandbox.js";
 import { LOCAL_POLICY } from "./surface.js";
-import { handoffWords, land, landedLine, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding, type LandAuthority } from "./local-landing.js";
+import { handoffWords, land, landedLine, landingBranchOf, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding, type LandAuthority } from "./local-landing.js";
+import { catchUpMergeOf, catchUpRevision, recordCatchUp, type CatchUp } from "./revision-catch-up.js";
 import { asLocalOwner, currentLocalOwner, localActNow, LOCAL_MODE_CONFINES, localModeOn, localOwnerRefusal, localOwnerRequested, type LocalOwnerAct, type LocalPrincipal } from "./local-owner.js";
 import { CHECK_ACCESS_WARNINGS, checkAccessRunsAs, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
@@ -3675,16 +3676,34 @@ async function tickCommand(
     );
 
     let buildBase = base;
+    // A revision's new branch starts from its source head with the project's main merged in, when main moved on
+    // (revision-catch-up.ts): so the work can land, and its checks run on the combined tree.
+    let caughtUp: { head: string; onto: string; result: CatchUp } | null = null;
     if (ref.revisionOf !== null) {
       const source = revisionSourceHead(store, context.evidenceRoot, ref.id, ref.revisionOf);
       let problem: string | null = source.ok ? null : source.problem;
       if (source.ok) {
-        if (exists.code !== 0 && text(flags, "base") === undefined) buildBase = source.head;
-        else {
+        if (exists.code !== 0 && text(flags, "base") === undefined) {
+          buildBase = source.head;
+          if (!publishesThroughPullRequests(store, repo)) {
+            const onto = landingBranchOf(store, repo, base);
+            const result = await catchUpRevision(hardenedGit(git, "build", { repo }), repo, source.head, onto, id, clock());
+            caughtUp = { head: source.head, onto, result };
+            // The branch is made at the merge commit by the lease below; the move is recorded only once it stands there.
+            if (result.kind === "merged") buildBase = result.commit;
+          }
+        } else {
           const descendant = exists.code === 0 ? branch : base;
           // On a git without --no-lazy-fetch, through a frozen read view that refuses a partial clone (lazyFetchSafeGit).
           const ancestry = await lazyFetchSafeGit(git)("git", [...noLazyFetch(), "-c", "protocol.allow=never", "--no-replace-objects", "merge-base", "--is-ancestor", source.head, descendant], { cwd: repo });
           if (ancestry.code !== 0) problem = ancestry.stderr.includes(PARTIAL_CLONE_REFUSAL) ? PARTIAL_CLONE_REFUSAL : "the requested revision base does not contain its source head";
+          // A branch made at a catch-up merge whose first attempt never opened (its read-back couldn't confirm it): the
+          // move is recorded now, from the branch as it stands, before this attempt opens.
+          else if (exists.code === 0 && store.latestBranchBaseMove(ref.id, branch) === null && store.firstBuilderBase(ref.id, branch) === null && !publishesThroughPullRequests(store, repo)) {
+            const tip = exists.stdout.trim();
+            const main = await catchUpMergeOf(hardenedGit(git, "build", { repo }), repo, tip, source.head, landingBranchOf(store, repo, base));
+            if (main !== null) store.recordBranchBaseMove(ref.id, branch, tip, main, clock());
+          }
         }
       }
       if (problem !== null) {
@@ -3704,6 +3723,23 @@ async function tickCommand(
       reclaim: { evidenceRoot: context.evidenceRoot },
       ...(exists.code === 0 ? freshBaseFor(store, id, branch, base) : {}),
     });
+    // A revision made at Toolroll's merge of main: recorded (from the merge commit to main's) only once the new branch is
+    // proved to stand at exactly that commit, before its attempt opens, so the family's whole change runs from main's
+    // commit (familyStartOf). A lease that failed, or a branch anywhere else, records nothing and says no merge.
+    if (caughtUp !== null && caughtUp.result.kind === "merged") {
+      const merged = caughtUp.result;
+      const at = leased.ok && leased.created ? await hardenedGit(git, "build", { repo })("git", ["rev-parse", "--verify", "-q", `refs/heads/${branch}^{commit}`], { cwd: repo }) : null;
+      if (at !== null && at.code === 0 && at.stdout.trim() === merged.commit) store.recordBranchBaseMove(ref.id, branch, merged.commit, merged.main, clock());
+      else if (leased.ok && leased.created) {
+        // Made at the merge, but not proved there: no attempt opens on an unrecorded base. The next pass finds the branch
+        // and records the move from the merge it stands at (above), or builds on whatever it is.
+        await worktrees.release(leased.worktree.path, clock());
+        release(store, lease, clock());
+        dispatched.push({ id, outcome: "failed", reason: "git", detail: "Toolroll couldn't confirm the new branch stands at its merge of main; it tries again." });
+        broke++;
+        continue;
+      } else caughtUp = { ...caughtUp, result: { kind: "unavailable" } };
+    }
     if (!leased.ok) {
       // The task is fine; this machine's pool is not. Hand the claim back so
       // a healthier pass can take it, and let the exit code say we broke.
@@ -3761,6 +3797,7 @@ async function tickCommand(
       continue;
     }
     noteBaseStanding(store, runId, leased.base, base, clock());
+    if (caughtUp !== null && leased.created) recordCatchUp(store, { repo, taskId: id, runId, branch, head: caughtUp.head, onto: caughtUp.onto }, caughtUp.result, clock());
     if (leased.resumedFromRun !== undefined) {
       store.addRunNote(
         runId,

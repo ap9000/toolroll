@@ -1867,6 +1867,12 @@ impl App {
         self.steps_here().is_some_and(|s| s.review.is_some())
     }
 
+    /// Accepted work behind main, which Send back (r) builds again with main merged in.
+    pub fn behind_main_here(&self) -> bool {
+        self.steps_here()
+            .is_some_and(|s| s.review.is_none() && s.behind_main.is_some())
+    }
+
     /// What Retry would post for the selected task (a failed task whose approval stands as it is).
     pub fn retry_pins(&self) -> Option<(String, toolroll_api::RetryPins)> {
         let task = self.selected_item().filter(|i| i.is_task)?.id.clone();
@@ -5377,6 +5383,14 @@ impl App {
             Action::SendBack if !self.review_waiting() && self.retry_pins().is_some() => {
                 self.run_action(Action::Retry)
             }
+            // Accepted work behind main: Send back builds it again with main merged in, the feedback prefilled as the
+            // task page prefills it.
+            Action::SendBack if !self.review_waiting() && self.behind_main_pin().is_some() => {
+                let (pin, note) = self.behind_main_pin().unwrap();
+                self.status = None;
+                self.mode = Mode::SendBack(pin, note);
+                vec![]
+            }
             Action::Retry => match self.retry_pins() {
                 Some((task, pins)) => {
                     self.status = None;
@@ -6861,9 +6875,49 @@ impl App {
                 })
     }
 
+    /// Accepted work behind main (StepCards.behind_main) pinned for Send back, with the feedback to prefill.
+    fn behind_main_pin(&self) -> Option<(ReviewPin, String)> {
+        let task = self.selected_item().filter(|i| i.is_task)?.id.clone();
+        let steps = self.steps_here()?;
+        let behind = steps.behind_main.as_ref()?;
+        Some((
+            ReviewPin {
+                version: self.version_here().unwrap_or_else(|| task.clone()),
+                task,
+                run: behind.run,
+                receipt: behind.receipt.clone(),
+                source: behind.source.clone(),
+                totals: None,
+            },
+            behind.note.clone(),
+        ))
+    }
+
+    /// Whether a pinned Send back still stands: the result waiting (review_pin_stands), or the same accepted result still
+    /// behind main.
+    fn send_back_pin_stands(&self, pin: &ReviewPin) -> bool {
+        self.review_pin_stands(pin)
+            || (self.selected_item().is_some_and(|i| i.id == pin.task)
+                && self.version_here().as_deref() == Some(pin.version.as_str())
+                && self
+                    .steps
+                    .as_ref()
+                    .filter(|s| s.review.is_none())
+                    .and_then(|s| s.behind_main.as_ref())
+                    .is_some_and(|b| {
+                        b.run == pin.run && b.receipt == pin.receipt && b.source == pin.source
+                    }))
+    }
+
     /// After a refresh: a dialog whose pinned facts no longer stand closes, saying so (nothing is sent).
     fn check_pins(&mut self) {
         let changed = match &self.mode {
+            // Accepted work behind main: nothing on screen to agree with but the same result, still behind.
+            Mode::SendBack(pin, _) | Mode::SendReview { pin, .. }
+                if !self.review_pin_stands(pin) && self.send_back_pin_stands(pin) =>
+            {
+                None
+            }
             Mode::ConfirmAccept(pin) | Mode::SendBack(pin, _) | Mode::SendReview { pin, .. }
                 if self.review_pin_stands(pin) =>
             {
@@ -7044,7 +7098,7 @@ impl App {
 
     /// Send back's words are typed: freeze the whole text it would post, and show it to be read to the end.
     fn review_send_back(&mut self, pin: ReviewPin, general: String) -> Vec<Effect> {
-        if !self.review_pin_stands(&pin) {
+        if !self.send_back_pin_stands(&pin) {
             self.say(Tone::Refused, RESULT_CHANGED);
             return vec![];
         }
@@ -7073,7 +7127,7 @@ impl App {
     /// Send back with exactly the text the review showed to its end, as one revise act (POST /r/<run>/comment
     /// intent=revise, the result page's own Send back): pinned exactly as Accept is, under one request identity per text.
     fn send_back_with_notes(&mut self, pin: ReviewPin, typed: String, text: String) -> Vec<Effect> {
-        if !self.review_pin_stands(&pin) {
+        if !self.send_back_pin_stands(&pin) {
             self.say(Tone::Refused, RESULT_CHANGED);
             return vec![];
         }
