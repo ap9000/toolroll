@@ -29,7 +29,7 @@ import { flexibleAvailable } from "../flexible-available.js";
 import { laptopShipProblem } from "../flexible-laptop.js";
 import { threadsStatusNote, tidyFlexibleSignIns } from "../flexible-sign-in.js";
 import { FLEXIBLE_UNAVAILABLE } from "../flexible.js";
-import { flexibleUncommittedFiles, saveFlexibleBranch } from "../flexible-save.js";
+import { flexibleSavedWords, flexibleUncommittedFiles, saveFlexibleBranch } from "../flexible-save.js";
 import { admitFlexibleThreadOwner, answerFlexibleRequest, cancelFlexibleThreadShip, closeFlexibleSessions, closeFlexibleThread, continueFlexibleThread, flexibleShipNeedsFor, flexibleThreadShipTerms, latestFlexibleShip, sendBackFlexibleThread, shipFlexibleThread, tidyEndedFlexibleThreads, flexibleThreadChangeOf, flexibleThreadEdited, flexibleThreadLiveOf, flexibleThreadsOf, FLEXIBLE_WAIT_MS, flexibleThreadsExist, flexibleWorkOpen, openFlexibleSessions,
   recoverFlexibleHolders, startFlexibleThread, settleFlexibleStops, tickFlexibleSessions, waitFlexibleThreadChange, flexibleThreadChanges, flexibleThreadTipOf, type FlexibleChoice, type FlexibleSessions } from "../flexible-session.js";
 import { createFlexibleLauncher, type FlexibleLauncher } from "../flexible-launcher.js";
@@ -757,7 +757,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     if (held === null || !held()) return acted(response, 403, "refused", "Only a person signed in here can save a thread's work.");
     const saved = await saveFlexibleBranch(store, { thread: id, by: { name: who.name, generation: who.session.generation }, now: new Date(), prove: held });
     if (!saved.ok) return acted(response, 409, "refused", saved.message);
-    return acted(response, 200, "done", `${saved.already ? `Already saved as ${saved.branch}.` : `Saved as ${saved.branch} (commit ${saved.candidate.slice(0, 12)}).`} ${saved.next}`, undefined, saved.command);
+    return acted(response, 200, "done", `${flexibleSavedWords(saved)} ${saved.next}`, undefined, saved.command);
   }
 
   /** GET /engine/chat[?project=]: the person's central Lead conversation as structured data (never HTML), admitted as

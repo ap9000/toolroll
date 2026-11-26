@@ -4,7 +4,7 @@ import { readStoredGeminiStatus, refreshSubscriptions } from "./subscription-usa
 import { liveCommandsShown } from "./live-detail.js";
 import { flexibleArmedPass } from "./flexible-ship.js";
 import { directChatArmedPass } from "./direct-chat-ship.js";
-import { flexibleUncommittedFiles, saveFlexibleBranch } from "./flexible-save.js";
+import { flexibleSavedWords, flexibleUncommittedFiles, saveFlexibleBranch } from "./flexible-save.js";
 import { closeFlexibleThread, flexibleShipNeedsFor, flexibleThreadRecords, flexibleThreadShipTerms, flexibleThreadTitleOf, latestFlexibleShip, removeFlexibleThreadCopy, shipFlexibleThread, stopFlexibleThreadsEverywhere, type FlexibleStopReport } from "./flexible-session.js";
 import { runCardCommand } from "./card-cli.js";
 import { mintSecret } from "./secret-mint.js";
@@ -15793,8 +15793,8 @@ async function threadCommand(positional: readonly string[], flags: Map<string, s
   if (verb === "save") {
     const saved = await saveFlexibleBranch(store, { thread, by: { name: who.name, generation: account.generation }, now: clock(), prove: proveNow });
     if (!saved.ok) return fail(write, json, command, saved.reason, saved.message, EXIT.refused);
-    return succeed(write, json, command, { thread, branch: saved.branch, commit: saved.candidate, already: saved.already, files: saved.changedPaths, next: saved.next },
-      () => [saved.already ? `Already saved as ${saved.branch} (commit ${saved.candidate.slice(0, 12)}).` : `Saved as ${saved.branch} (commit ${saved.candidate.slice(0, 12)}, ${saved.changedPaths.length} file${saved.changedPaths.length === 1 ? "" : "s"}).`, saved.next]);
+    return succeed(write, json, command, { thread, branch: saved.branch, commit: saved.candidate, already: saved.already, files: saved.changedPaths, next: saved.next,
+      leftover: saved.leftover, uncommitted: saved.uncommitted }, () => [flexibleSavedWords(saved), saved.next]);
   }
   // remove: the thread's own copy (its repository and keep-ref), refused while anything of its agent may run or a Ship is open.
   const removed = await removeFlexibleThreadCopy(store, { thread, by: who.name, now: clock(), prove: proveNow });

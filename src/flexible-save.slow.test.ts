@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { prepareFlexibleThread, removeFlexibleThread, type FlexibleThreadPaths, type FlexibleThreadRow } from "./flexible-thread.js";
-import { flexibleSaveDigestOf, flexibleUncommittedFiles, saveFlexibleBranch } from "./flexible-save.js";
+import { flexibleSaveDigestOf, flexibleSavedWords, flexibleUncommittedFiles, saveFlexibleBranch } from "./flexible-save.js";
 import { LEFTOVER_COMMIT_MESSAGE } from "./flexible-import.js";
 import { flexibleShipsOf, flexibleShipTerms, mergeArmedFlexible, reconcileFlexibleShips, removeFlexibleImport, shipFlexible } from "./flexible-ship.js";
 import { canonicalJson } from "./canonical-json.js";
@@ -215,7 +215,8 @@ describe("Save as branch", () => {
       expect(saved, JSON.stringify(saved)).toMatchObject({ ok: true, already: false, seq: 2, changedPaths: ["math.js", "notes.md"] });
       if (!saved.ok) return;
       expect(saved.candidate).not.toBe(first);
-      expect(saved.next).toMatch(/^It includes the edits the agent hadn't committed \(2 files\)\. To put it on /);
+      expect(saved).toMatchObject({ leftover: "committed", uncommitted: "It includes the edits the agent hadn't committed (2 files)." });
+      expect(saved.next).toMatch(/^To put it on /);
       expect(branchAt()).toBe(saved.candidate);
       expect(tgit(world.project, "rev-parse", `${saved.candidate}^`)).toBe(first);
       expect(tgit(world.project, "show", "-s", "--format=%an <%ae>|%cn <%ce>|%B", saved.candidate)).toBe(`Sam Stranger <sam@example.com>|Sam Stranger <sam@example.com>|${LEFTOVER_COMMIT_MESSAGE.trim()}`);
@@ -227,7 +228,8 @@ describe("Save as branch", () => {
       // Nothing new now: already saved, with no note.
       const again = await save();
       expect(again).toMatchObject({ ok: true, already: true, candidate: saved.candidate });
-      if (again.ok) expect(again.next).not.toMatch(/uncommitted/);
+      expect(again).toMatchObject({ leftover: "none", uncommitted: null });
+      if (again.ok) expect(flexibleSavedWords(again)).toBe(`Already saved as ${branch()} (commit ${saved.candidate.slice(0, 12)}).`);
     });
 
     test("with nothing committed at all, the uncommitted edits alone are saved", async () => {
@@ -242,7 +244,7 @@ describe("Save as branch", () => {
       launch("spawning");
       const saved = await save();
       expect(saved).toMatchObject({ ok: true, already: false, candidate: first });
-      if (saved.ok) expect(saved.next).toMatch(/^The agent's uncommitted edits \(1 file\) aren't in it while its agent is running: end the thread, then save again\. /);
+      expect(saved).toMatchObject({ leftover: "found", uncommitted: "The agent's uncommitted edits (1 file) aren't in it while its agent is running: end the thread, then save again." });
       expect(tgit(paths.repo, "status", "--porcelain")).toBe("M math.js");
       expect(tgit(paths.repo, "rev-parse", "HEAD")).toBe(first);
       // End's words don't read a copy its agent may still write.
@@ -250,7 +252,9 @@ describe("Save as branch", () => {
       // Saving again isn't "already saved" in silence: the edits are said again.
       const again = await save();
       expect(again).toMatchObject({ ok: true, already: true });
-      if (again.ok) expect(again.next).toMatch(/uncommitted edits \(1 file\) aren't in it/);
+      expect(again).toMatchObject({ leftover: "found" });
+      // Never "Already saved" while the copy holds work the save didn't take (Codex round 1, finding 4).
+      if (again.ok) expect(flexibleSavedWords(again)).toMatch(/^Its committed work is already saved as toolroll\/code-[0-9a-f]+ \(commit [0-9a-f]{12}\)\. The agent's uncommitted edits \(1 file\) aren't in it/);
     });
 
     // The thread's copy is the agent's (attacker input): committing what it left runs no command it planted.
@@ -271,10 +275,49 @@ describe("Save as branch", () => {
       const tip = tgit(paths.repo, "rev-parse", "HEAD");
       const again = await save();
       expect(again, JSON.stringify(again)).toMatchObject({ ok: true, already: true });
-      if (again.ok) expect(again.next).toMatch(/^Toolroll couldn't check the thread's copy for uncommitted edits: /);
+      expect(again).toMatchObject({ leftover: "unknown" });
+      if (again.ok) expect(again.uncommitted).toMatch(/^Toolroll couldn't check the thread's copy for uncommitted edits: /);
+      if (again.ok) expect(flexibleSavedWords(again)).not.toMatch(/^Already saved/);
       expect(existsSync(marker)).toBe(false);
       expect(tgit(paths.repo, "rev-parse", "HEAD")).toBe(tip);
       expect(first).not.toBe(tip);
+    });
+
+    // Codex round 1, finding 1: the person is proved again right before the branch moves; until then only objects exist.
+    test("a person whose proof lapses while the edits are read moves nothing: the thread's branch and copy stay as they were", async () => {
+      const first = commit({ "a.txt": "one\n" });
+      leave({ "a.txt": "one\ntwo\n" });
+      let asked = 0;
+      expect(await save({ prove: () => ++asked === 1 })).toMatchObject({ ok: false, reason: "stale-generation" });
+      expect(asked).toBe(2);
+      expect(tgit(paths.repo, "rev-parse", "HEAD")).toBe(first);
+      expect(tgit(paths.repo, "status", "--porcelain")).toBe("M a.txt");
+      expect(rows()).toEqual([]);
+      expect(branchAt()).toBeNull();
+    });
+
+    // Codex round 1, finding 2: a planted MERGE_HEAD (or any state file) never makes a merge.
+    test("the commit has exactly one parent, the thread's recorded tip, whatever state files the copy holds", async () => {
+      const first = commit({ "a.txt": "one\n" });
+      for (const name of ["MERGE_HEAD", "CHERRY_PICK_HEAD"]) writeFileSync(join(paths.repo, ".git", name), `${world.first}\n`);
+      leave({ "a.txt": "one\ntwo\n" });
+      const saved = await save();
+      expect(saved, JSON.stringify(saved)).toMatchObject({ ok: true, already: false, leftover: "committed" });
+      if (!saved.ok) return;
+      expect(tgit(world.project, "rev-list", "--parents", "-n", "1", saved.candidate)).toBe(`${saved.candidate} ${first}`);
+    });
+
+    // Codex round 1, finding 3: the copy's own index is never trusted to say what changed.
+    test("edits hidden by the copy's index (assume-unchanged, skip-worktree) are still found and saved", async () => {
+      commit({ "a.txt": "one\n", "b.txt": "one\n" });
+      tgit(paths.repo, "update-index", "--assume-unchanged", "a.txt");
+      tgit(paths.repo, "update-index", "--skip-worktree", "b.txt");
+      leave({ "a.txt": "two\n", "b.txt": "two\n" });
+      expect(tgit(paths.repo, "status", "--porcelain")).toBe("");
+      expect(await flexibleUncommittedFiles(store, { thread: thread.id })).toEqual(["a.txt", "b.txt"]);
+      const saved = await save();
+      expect(saved, JSON.stringify(saved)).toMatchObject({ ok: true, already: false, leftover: "committed", changedPaths: ["a.txt", "b.txt"] });
+      if (saved.ok) expect(tgit(world.project, "show", `${saved.candidate}:b.txt`)).toBe("two");
     });
 
     test("what the import would refuse for good is kept out, said, and the committed work is still saved", async () => {
@@ -282,7 +325,7 @@ describe("Save as branch", () => {
       leave({ "config.js": `const key = "${["AKIA", "Q7ZK", "M3XW", "P9TR", "B2NV"].join("")}";\n` });
       const saved = await save();
       expect(saved, JSON.stringify(saved)).toMatchObject({ ok: true, already: false, candidate: first });
-      if (saved.ok) expect(saved.next).toMatch(/^The agent's uncommitted edits \(1 file\) weren't saved: an added line looks like a real key\. They stay in the thread's copy\. /);
+      expect(saved).toMatchObject({ leftover: "kept", uncommitted: "The agent's uncommitted edits (1 file) weren't saved: an added line looks like a real key. They stay in the thread's copy." });
       expect(tgit(paths.repo, "rev-parse", "HEAD")).toBe(first);
       expect(tgit(paths.repo, "status", "--porcelain")).toBe("?? config.js");
     });

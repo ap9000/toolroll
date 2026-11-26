@@ -13,7 +13,7 @@
  *   runs (no turn, no unsettled launch, so after Stop or End), Toolroll commits them onto the thread's branch first, as
  *   it commits a build's work (the hardened runner, the project's identity), and the import checks that commit like
  *   any other. While its agent may still write, they are only found, and the words say so. "Already saved" is said
- *   only when nothing new is left, committed or not.
+ *   only when nothing new is left, committed or not (FlexibleSaved.leftover, .uncommitted).
  * - A save is recorded as a send of the thread (flexible_ship, the same numbering as Ship's, so a later Ship's import
  *   follows from the branch a save left and a crash mid-import is settled by the same reconciler) whose terms are their
  *   own kind, `flexible-save`: never a Ship's terms, so nothing reads it as a Ship (flexible-ship.ts readRow), it arms
@@ -49,7 +49,13 @@ export type FlexibleSaved = { ok: true; already: boolean; branch: string; candid
   next: string;
   /** That command alone, exactly as `next` shows it; null when none could be written (no project folder to name, or a
    * folder name no command can carry safely). */
-  command: string | null };
+  command: string | null;
+  /** The edits the agent left uncommitted: none; committed and included; or found, kept out or unchecked, and so not
+   * in what was saved. `already` says only that nothing new was imported: with any of the last three, the copy still
+   * holds work this save didn't take, said in `uncommitted`. */
+  leftover: "none" | "committed" | "found" | "kept" | "unknown";
+  /** What to say about those edits, or null when there were none. */
+  uncommitted: string | null };
 
 const WORDS: Readonly<Record<FlexibleSaveReason, string>> = Object.freeze({
   "machine-proof": "Only a person can save a thread's work. Nothing was saved.",
@@ -110,21 +116,29 @@ export async function saveFlexibleBranch(store: Store, input: { thread: string; 
     if (turnRunning(store, input.thread)) return refuse("thread-running");
     // The person proved again before anything is written, even to the thread's own copy (check and write together: the
     // save's own transaction below proves them once more before the project's repository is touched).
-    const standing = store.transact(() => {
+    const standingNow = () => store.transact(() => {
       const thread = flexibleThread(store, input.thread);
       if (thread === null) return refuse("thread-unknown");
       if (thread.state !== "ready") return refuse("thread-removed");
       return saverStanding(store, thread, input.by) ?? (input.prove() ? null : refuse("stale-generation"));
     });
+    const standing = standingNow();
     if (standing !== null) return standing;
     // Edits the agent left uncommitted are committed first, onto the thread's branch, once nothing of its agent runs
     // (stranger 17: after End they were never saved, and nothing said so); while its agent may still write, they are
-    // only found and said.
-    const leftover = await flexibleLeftover(store, { thread: input.thread, commit: unsettledLaunch(store, input.thread) === null, ...runner });
-    const note = leftoverNote(leftover);
-    const withNote = (next: { next: string; command: string | null }) => note === null ? next : { ...next, next: `${note} ${next.next}` };
+    // only found and said. Only objects are written until the branch moves, and the person is proved again (with no
+    // turn and no launch since) at that moment.
+    let late: FlexibleSaveRefusal | null = null;
+    const allowed = () => {
+      late = turnRunning(store, input.thread) || unsettledLaunch(store, input.thread) !== null ? refuse("changed") : standingNow();
+      return late === null;
+    };
+    const leftover = await flexibleLeftover(store, { thread: input.thread, commit: unsettledLaunch(store, input.thread) === null, allowed, ...runner });
+    if (leftover.state === "refused") return late ?? refuse("changed");
+    const uncommitted = leftoverNote(leftover);
+    const withNote = (next: { next: string; command: string | null }) => ({ ...next, leftover: leftover.state, uncommitted });
     const read = await readFlexibleCandidate(store, { thread: input.thread, ...runner });
-    if (!read.ok) return note !== null && "check" in read && read.check === "nothing-to-send" ? { ...read, message: `${read.message} ${note}` } : read;
+    if (!read.ok) return uncommitted !== null && "check" in read && read.check === "nothing-to-send" ? { ...read, message: `${read.message} ${uncommitted}` } : read;
     const branch = flexibleThreadBranch(input.thread);
     const held = branchHeld(store, input.thread);
     if (held === read.candidate) {
@@ -194,6 +208,7 @@ function leftoverNote(leftover: FlexibleLeftover): string | null {
     case "found": return `The agent's uncommitted edits (${filesWord(leftover.paths.length)}) aren't in it while its agent is running: end the thread, then save again.`;
     case "kept": return `The agent's uncommitted edits (${filesWord(leftover.paths.length)}) weren't saved: ${leftover.why}. They stay in the thread's copy.`;
     case "unknown": return `Toolroll couldn't check the thread's copy for uncommitted edits: ${leftover.why}.`;
+    case "refused": return null;
   }
 }
 const filesWord = (n: number): string => `${n} file${n === 1 ? "" : "s"}`;
@@ -206,4 +221,12 @@ export async function flexibleUncommittedFiles(store: Store, input: { thread: st
   if (unsettledLaunch(store, input.thread) !== null) return [];
   const found = await flexibleLeftover(store, { thread: input.thread, commit: false, ...(input.runner === undefined ? {} : { runner: input.runner }) });
   return found.state === "found" ? found.paths : [];
+}
+
+/** A save's first line, as every surface says it: what was saved, and what the copy still holds that wasn't. */
+export function flexibleSavedWords(saved: FlexibleSaved): string {
+  const commit = saved.candidate.slice(0, 12);
+  if (!saved.already) return `Saved as ${saved.branch} (commit ${commit}, ${filesWord(saved.changedPaths.length)}).${saved.uncommitted === null ? "" : ` ${saved.uncommitted}`}`;
+  // Nothing new was imported: "Already saved" only when the copy holds nothing else either.
+  return saved.uncommitted === null ? `Already saved as ${saved.branch} (commit ${commit}).` : `Its committed work is already saved as ${saved.branch} (commit ${commit}). ${saved.uncommitted}`;
 }

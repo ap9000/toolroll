@@ -126,13 +126,17 @@ function privateFolder(path: string): boolean {
 export function keepFlexibleTurnRecords(folder: string, turn: string, records: readonly LiveRecord[]): void {
   if (!ID.test(turn) || basename(folder) === "" || !privateFolder(folder) || !privateFolder(dirname(folder))) return;
   const lines: string[] = [];
+  // Counted as the file holds them (UTF-8 bytes, each line's newline, and room kept for the closing `cap` record), as
+  // the reader counts them: a long transcript in a script of wide characters is never written past what is read back.
+  const size = (line: string) => Buffer.byteLength(line, "utf8") + 1;
   let bytes = 0;
   for (const record of records) {
     if (!TURN_KINDS.has(record.k)) continue;
     const line = serializeLiveRecord(record);
-    if (bytes + line.length + 1 > TURN_RECORDS_BYTES) { lines.push(serializeLiveRecord({ k: "cap", at: record.at })); break; }
+    const cap = serializeLiveRecord({ k: "cap", at: record.at });
+    if (bytes + size(line) + size(cap) > TURN_RECORDS_BYTES) { lines.push(cap); break; }
     lines.push(line);
-    bytes += line.length + 1;
+    bytes += size(line);
   }
   if (lines.length === 0) return;
   const dir = join(folder, TURN_RECORDS_DIR);
@@ -151,7 +155,7 @@ export function flexibleTurnRecordsOf(folder: string, turn: string): LiveRecord[
   try { fd = openSync(join(folder, TURN_RECORDS_DIR, `${turn}.jsonl`), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW); } catch { return []; }
   try {
     const held = fstatSync(fd);
-    if (!held.isFile() || held.size > TURN_RECORDS_BYTES + 64 * 1024) return [];
+    if (!held.isFile() || held.size > TURN_RECORDS_BYTES) return [];
     const bytes = Buffer.alloc(held.size);
     const read = readSync(fd, bytes, 0, bytes.length, 0);
     return parseLiveRecords(bytes.subarray(0, read).toString("utf8")).filter(one => TURN_KINDS.has(one.k));

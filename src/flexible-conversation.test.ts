@@ -6,14 +6,14 @@
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { chmodSync, mkdirSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "./flexible.js";
 import { admitFlexibleTurn, beginFlexibleTurn, finishFlexibleTurn, withdrawFlexibleTurn } from "./flexible-turns.js";
 import {
-  CONVERSATION_BEGIN, CONVERSATION_END, conversationBriefLines, flexibleConversationOf, flexibleTurnMessage, recordFlexibleFiles, recordFlexibleReply, recordFlexibleSaid,
-  recordFlexibleStartTip, saidLines, type FlexibleSaidTurn,
+  CONVERSATION_BEGIN, CONVERSATION_END, conversationBriefLines, flexibleConversationOf, flexibleTurnMessage, flexibleTurnRecordsOf, keepFlexibleTurnRecords, recordFlexibleFiles,
+  recordFlexibleReply, recordFlexibleSaid, recordFlexibleStartTip, saidLines, TURN_RECORDS_BYTES, type FlexibleSaidTurn,
 } from "./flexible-conversation.js";
 import { attachFlexibleAgent, flexibleThreadLiveOf, openFlexibleSessions, startFlexibleThreadSession, type FlexibleSessions } from "./flexible-session.js";
 import { HIDDEN_LINE } from "./live-records.js";
@@ -252,5 +252,20 @@ describe("what was said, recorded per turn", () => {
     if (!after.ok || !after.window.ok) throw new Error("no recorded window");
     expect(after.window.records).toEqual([{ k: "you", at: NOW.toISOString(), t: ["Add f2 to math.js"] }, ...shownLive]);
     expect(JSON.stringify(after.window.records)).not.toMatch(/relay returned 200/);
+  });
+
+  // Codex round 1, finding 5: the writer counts what the reader counts (UTF-8 bytes), so a long transcript in a wide
+  // script is kept cut at the cap, never written past it and then thrown away on read.
+  test("a turn's records in a wide script, far past the cap, are kept cut at it and read back", () => {
+    const folder = join(world.state, "threads", T1);
+    for (const one of [join(world.state, "threads"), folder]) chmodSync(one, 0o700);
+    const turn = "e".repeat(32);
+    const line = "你好世界".repeat(100);
+    keepFlexibleTurnRecords(folder, turn, Array.from({ length: 600 }, () => ({ k: "say" as const, at: NOW.toISOString(), t: [line] })));
+    expect(statSync(join(folder, "turns", `${turn}.jsonl`)).size).toBeLessThanOrEqual(TURN_RECORDS_BYTES);
+    const back = flexibleTurnRecordsOf(folder, turn);
+    expect(back.length).toBeGreaterThan(10);
+    expect(back.at(-1)).toEqual({ k: "cap", at: NOW.toISOString() });
+    expect(back[0]).toEqual({ k: "say", at: NOW.toISOString(), t: [line] });
   });
 });

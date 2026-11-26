@@ -329,7 +329,7 @@ describe("the switch can't become an override", () => {
         "branchHeld"]);
     // Save as branch (everyday 9 B1) is a person's recovery of past work, like the import it runs: never gated (it grants
     // nothing; a later Ship's arming still checks the switch). The rest are reads.
-    decided("src/flexible-save.ts", [], ["saveFlexibleBranch", "isFlexibleSave", "latestFlexibleSave", "flexibleUncommittedFiles"]);
+    decided("src/flexible-save.ts", [], ["saveFlexibleBranch", "isFlexibleSave", "latestFlexibleSave", "flexibleUncommittedFiles", "flexibleSavedWords"]);
     // Readiness is a read (it names what is missing, the switch first among them).
     decided("src/flexible-start.ts", ["flexibleStartCard"], ["flexibleReadiness"]);
     decided("src/flexible-launcher.ts", [], ["flexibleThreadNetwork", "flexibleNetworkDigest", "createFlexibleLauncher"]);
