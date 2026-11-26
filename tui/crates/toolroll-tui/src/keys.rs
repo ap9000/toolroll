@@ -234,9 +234,14 @@ const PAIRS: &[(Action, Action, &str)] = &[
     ),
     (Action::Agents, Action::Models, "Agents / model assignments"),
     (
+        Action::NewThread,
+        Action::ThreadSave,
+        "New thread / save its work as a branch",
+    ),
+    (
         Action::Accept,
         Action::Land,
-        "Accept or approve / land on your branch",
+        "Accept or approve / land the work",
     ),
     (
         Action::LeadChat,
