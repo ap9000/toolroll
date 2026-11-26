@@ -160,6 +160,12 @@ export function assignmentChecksForRun(given: Store, root: string | undefined, r
   const batch: ChecksBatch | null = waitingBatch ? { state: "waiting", tested: null, peers: [] }
     : sealedBatch !== null && latest !== undefined ? { state: sealedBatch.mode, tested: latest.tested ?? sealedBatch.tested,
       peers: sealedBatch.members.filter(one => one.run !== runId).map(one => one.task) } : null;
+  // The newest check that ran failed under a command approved again since (stranger 17): out of date wins over that
+  // failure, as it does over a pass — the result's checks say "the check command changed since they ran", never a pass.
+  if (latest?.state === "failed" && latest.outdated === true && read.status === "failed") {
+    return { ...own, running: read.running, ...(batch === null ? {} : { batch }), status: "unavailable", cause: "command-changed", level: read.level, exitCode: null,
+      logArtifactId: latest.logArtifactId ?? own.logArtifactId, detail: "The check command changed since this check." };
+  }
   return { ...own, running: read.running, ...(batch === null ? {} : { batch }),
     ...(changed ? { status: read.status, level: read.level, exitCode: read.exitCode, logArtifactId: latest?.logArtifactId ?? own.logArtifactId,
       detail: read.status === "passed" ? `${words} passed.` : `${words} failed (exit ${read.exitCode}).` } : {}) };
