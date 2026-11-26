@@ -167,9 +167,16 @@ async function usableRepository(repo: string, read: Git): Promise<{ common: stri
   if (!ownObjects(objects)) throw new Error("its objects folder isn't a real folder");
   if (existsSync(join(objects, "info", "alternates")) || existsSync(join(objects, "info", "http-alternates"))) throw new Error("it borrows objects from another repository");
   const listing = await read(repo, ["config", "--list", "--show-scope", "-z"]);
-  if (listing.code !== 0) throw new Error("its git config couldn't be read");
+  if (listing.code !== 0) throw new Error(`its git config couldn't be read${gitSaid(listing.stderr)}`);
   if (lazyFetchSetting(listing.stdout) !== null) throw new Error("it is a partial clone");
   return { common, objects: realpathSync(objects) };
+}
+/** What git (or the hardened runner's refusal) said, for a refusal's detail: its first non-empty line, with no control or
+ * bidi characters, bounded; empty when it said nothing. A bare "couldn't be read" hid a slow first git start on a CI
+ * runner as if the config were bad. */
+function gitSaid(stderr: string): string {
+  const line = stderr.split("\n").map(one => one.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "").trim()).find(one => one !== "");
+  return line === undefined ? "" : `: ${line.length <= 240 ? line : `${line.slice(0, 239)}…`}`;
 }
 const ownObjects = (path: string): boolean => { try { const held = lstatSync(path); return held.isDirectory() && !held.isSymbolicLink(); } catch { return false; } };
 
