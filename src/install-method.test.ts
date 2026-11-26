@@ -23,10 +23,10 @@ describe("c2: installMethod", () => {
     expect(installMethod(bin, probe(real))).toEqual({ kind, updateCommand: command });
   });
 
-  test("a plane deployed from a checkout (staged-upgrades/browser-*) is a source install, never npm", () => {
+  test("a plane a release deployed from a checkout (staged-upgrades/browser-*) updates itself from npm, never as source", () => {
     const real = "/Users/a/.config/toolroll/staged-upgrades/browser-6cfc944-8cb322/runtime/node_modules/toolroll/dist/bin.js";
     expect(installMethod("/Users/a/.nvm/versions/node/v22.22.0/bin/toolroll", probe(real)))
-      .toEqual({ kind: "source", updateCommand: "git pull && npm install && npm run build" });
+      .toEqual({ kind: "managed", updateCommand: "toolroll update" });
   });
 
   test("a runtime toolroll update installed (staged-upgrades/release-* or rollback-*) updates itself", () => {
