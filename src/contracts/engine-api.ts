@@ -219,6 +219,9 @@ const workRowSchema = z.object({
    * again since it ran: `stale`, never a failure) or can't be read (work-index.ts AfterCheck): the fact its Complete
    * headline doesn't say. Absent on every other row. */
   check: z.enum(["failed", "stale", "unreadable"]).optional(),
+  /** Complete work already on its branch (merge-checklist.ts landedRowsOf): its landing words, "Landed on main (abc1234)".
+   * Absent on every other row. Display only. */
+  landed: z.string().optional(),
   detail: z.string().nullable(),
   problem: z.string().nullable(),
   /** What this waiting row asks; absent when it waits on nobody. */
@@ -298,6 +301,9 @@ export const stepCardsSchema = z.object({
   liveRun: z.number().int().nullable(),
   /** The task's newest run, live or finished (null: none yet): the `run` a cancel names as the build it showed. */
   latestRun: z.number().int().nullable(),
+  /** Every build of the task's versions (its revisions included), newest first: "attempt N" is the Nth of them, the count
+   * the task page's results use. */
+  familyBuilds: z.array(z.number().int()).optional(),
   /** The agent each step of this task runs: its approved route, else the proposed or recommended one. `chosen` says
    * whether a person overrode the recommendation for this task. Null when the task has no exact route to show. */
   models: z.array(z.object({ phase: z.string(), provider: z.string(), model: z.string(), chosen: z.enum(["recommended", "override", "pinned"]) })).nullable(),

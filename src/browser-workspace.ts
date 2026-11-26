@@ -1056,7 +1056,7 @@ export type MergeReadyAct =
 /** The task page's "Can I merge?" panel. */
 export type MergeReadyView = {
   answer: "yes" | "no" | "not-yet" | "merged"; sentence: string;
-  rows: { key: string; label: string; mark: "yes" | "no" | "waiting" | "unknown" | "skip"; say: string; act: MergeReadyAct | null }[];
+  rows: { key: string; label: string; mark: "yes" | "no" | "waiting" | "unknown" | "note" | "skip"; say: string; act: MergeReadyAct | null }[];
 };
 
 export type { PageWork } from './page-work-contract.js';

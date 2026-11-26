@@ -296,7 +296,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         sourceTask?: unknown;
         sourceRun?: unknown;
         kind?: unknown;
-        comments?: { path?: unknown; line?: unknown; note?: unknown; author?: unknown; image?: unknown }[];
+        comments?: { id?: unknown; path?: unknown; line?: unknown; note?: unknown; author?: unknown; image?: unknown }[];
       };
       return {
         sourceTask: String(parsed.sourceTask ?? "?"),
@@ -304,6 +304,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         kind: parsed.kind === "ci-repair" ? "ci-repair" : parsed.kind === "criterion-repair" ? "criterion-repair" : "annotations",
         lineage: runtime.store.revisionLineageOf(ref.externalId, runtime.clock()),
         comments: (parsed.comments ?? []).slice(0, 100).map(one => ({
+          id: typeof one.id === "number" && Number.isSafeInteger(one.id) ? one.id : null,
           path: one.path === null || one.path === undefined ? null : String(one.path),
           line: one.line === null || one.line === undefined ? null : Number(one.line),
           note: String(one.note ?? ""),
@@ -887,10 +888,13 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     const status = view.status === null ? null : { ...view.status, action: view.status.action === null ? null : link(view.status.action),
       status: { ...view.status.status, details: view.status.status.details.map(one => ({ ...one, href: one.href === null ? null : toTab(one.href), action: one.action === null ? null : link(one.action) })) } };
     const selected = extras.result?.selected ?? null;
+    // Each result named as its attempt: the Nth build of this task, its revisions' included (the workbench counts the same).
+    const builds = runs.filter(run => run.role === "builder" || run.role === "scout" || run.role === "repair").map(run => run.id).sort((a, b) => a - b);
     const attempts = [...results.entries()].sort((a, b) => b[0] - a[0]).map(([id, taskId]) => {
       const run = runs.find(one => one.id === id)!;
       const outcome = run.outcome === "built" ? "result" : run.outcome === "no-change" ? "no change" : run.outcome === null ? "never finished" : run.outcome;
-      return { label: `${run.role === "scout" ? "Report" : "Build"} #${id} · ${outcome}`, href: tabHref(taskId, id, null, ""), current: selected?.build === id };
+      const at = builds.indexOf(id);
+      return { label: `${at < 0 ? `Build #${id}` : `Attempt ${at + 1}`} · ${outcome}`, href: tabHref(taskId, id, null, ""), current: selected?.build === id };
     });
     return {
       ...view,

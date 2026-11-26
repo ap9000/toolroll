@@ -12,13 +12,15 @@ import { runOperate, EXIT } from "./operate.js";
 import { storeEvidence } from "./evidence.js";
 import { sealVerificationReceipt } from "./verification-evidence.js";
 import { recordRunCheckLevel } from "./check-levels.js";
-import { assignmentOf } from "./assignment.js";
+import { assignmentOf, checkAssignmentAsOperator } from "./assignment.js";
+import { verifyApproverByPassword } from "./principal.js";
+import { withActor } from "./actor.js";
 import { CHECKS_FINISHED, CHECKS_REQUESTED, FOLLOW_UP_LOG, FOLLOW_UP_RECEIPT } from "./result-follow-ups.js";
 import { workIndexPage, workIndexTask } from "./work-index.js";
 import { stepCardsOf } from "./engine-reads.js";
 import { taskWorkSummaryOf } from "./work-summary.js";
 import { mintCoordinator } from "./coordinator.js";
-import { assignmentStatusFacts, headlineOf } from "./task-status.js";
+import { approvedCheckStateOf, assignmentStatusFacts, headlineOf } from "./task-status.js";
 
 const NOW = new Date("2026-11-05T12:00:00.000Z");
 const REPO = "/repo/task-accept";
@@ -157,6 +159,30 @@ describe("a completion stays complete when the check command changes", () => {
     }
   });
 
+  test("completed by the lead's token: a person's later Accept records their yes to that exact receipt, never to a changed one (review round 2)", async () => {
+    const who = verifyApproverByPassword(store, "alex", password, [REPO]);
+    if (!who.ok) throw new Error("who");
+    const byLead = (id: string) => withActor({ account: "alex", lead: true }, () => checkAssignmentAsOperator(store, id, receipt(id), who.who, NOW, root()));
+    built("t-lead-done");
+    expect(byLead("t-lead-done").ok).toBe(true);
+    expect(snapshot("t-lead-done").completion).toMatchObject({ lead: true });
+    expect(snapshot("t-lead-done").completion?.person).toBeUndefined();
+    // The CLI's Accept by the person: recorded as theirs, for the same receipt (it stays complete under it).
+    const sealed = receipt("t-lead-done");
+    await complete("t-lead-done");
+    expect(snapshot("t-lead-done").completion).toMatchObject({ person: "alex", digest: sealed });
+    // A completion that is history (its check command changed since): a person's yes to today's receipt records nothing,
+    // so it never completes today's receipt past what it owes.
+    built("t-lead-history");
+    expect(byLead("t-lead-history").ok).toBe(true);
+    store.setVerifyCommand({ repo: REPO, command: "npm test", timeoutMs: 60_000, approvedBy: "alex" }, LATER);
+    const today = snapshot("t-lead-history").receipt!.digest;
+    expect(checkAssignmentAsOperator(store, "t-lead-history", today, who.who, LATER, root()).ok).toBe(true);
+    expect(snapshot("t-lead-history").completion).toMatchObject({ historical: true });
+    expect(snapshot("t-lead-history").completion?.person).toBeUndefined();
+    expect(store.handle.prepare("SELECT count(*) AS n FROM action_ledger WHERE outcome = ?").get(today)!["n"]).toBe(0);
+  });
+
   test("a task finished before any check command existed stays complete when one is set", async () => {
     store.clearVerifyCommand(REPO, "alex", NOW);
     store.createTask({ id: "t-none", title: "t-none" }, NOW);
@@ -219,6 +245,26 @@ describe("a completion stays complete when the check command changes", () => {
     expect(snapshot("t-recheck").state).not.toBe("complete");
     expect(workIndexTask(store, "t-recheck", LATER, access, root())!.assignmentState).not.toBe("complete");
     expect(taskWorkSummaryOf(store, "t-recheck", LATER, access)!.status.label).not.toBe("Complete");
+  });
+
+  test("a later check that failed, then the check command changed again: out of date wins over that failure (stranger 17)", async () => {
+    const runId = built("t-outdated");
+    await complete("t-outdated");
+    storeEvidence(store, root(), runId, "structured-output", "follow-up-check-1.log", Buffer.from("1 failed\n"), FOLLOW_UP_LOG, LATER, { captureStatus: "ok" });
+    const request = store.recordAction({ at: LATER.toISOString(), actor: "cli", repo: REPO, taskId: "t-outdated", runId, action: CHECKS_REQUESTED, outcome: "full", source: "work", detail: `${HEAD} · person · ${store.liveVerifyCommand(REPO)!.digest}` });
+    store.recordAction({ at: LATER.toISOString(), actor: "system", repo: REPO, taskId: "t-outdated", runId, action: CHECKS_FINISHED, outcome: `${request}:failed`, source: "work", detail: "exit 1" });
+    const checkOf = (at: Date) => approvedCheckStateOf(assignmentOf(store, "t-outdated", at, { principal: "operator", repos: [REPO] }, root())!.receipt!.checks);
+    expect(checkOf(LATER)).toBe("failed");
+    // The command is approved again (a different one): the failure ran under a command that no longer stands.
+    const AFTER = new Date(LATER.getTime() + 60_000);
+    store.setVerifyCommand({ repo: REPO, command: "npm test", timeoutMs: 60_000, approvedBy: "alex" }, AFTER);
+    expect(checkOf(AFTER)).toBe("stale");
+    const after = assignmentOf(store, "t-outdated", AFTER, { principal: "operator", repos: [REPO] }, root())!;
+    expect(after.state).toBe("complete");
+    expect(after.receipt!.checks).toMatchObject({ status: "unavailable", cause: "command-changed" });
+    // A command removed instead leaves the failure as it is (nothing stands to be out of date against).
+    store.clearVerifyCommand(REPO, "alex", new Date(AFTER.getTime() + 60_000));
+    expect(checkOf(new Date(AFTER.getTime() + 120_000))).toBe("failed");
   });
 
   test("an earlier version's open question or unsettled build keeps the family from Complete, in the list and the raw reading alike (review round 2)", async () => {

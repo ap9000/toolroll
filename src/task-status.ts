@@ -188,6 +188,8 @@ export type TaskStatusFacts = {
   blockers?: readonly CompletionBlocker[];
   evidence?: { shortened: number; missing: number; damaged: number } | null;
   completedBy?: string | null;
+  /** Completed by a person themselves (assignment completion `person`): their yes answers the requirements they check. */
+  personCompleted?: true;
   /** Marked complete by Toolroll because its work landed: why, in a few words ("its pull request merged"). */
   landed?: string | null;
   action?: StatusAction | null;
@@ -345,9 +347,12 @@ function detailsOf(headline: Headline, facts: TaskStatusFacts): StatusDetail[] {
   else if (req != null && req.total > 0 && req.unverified === true) row("requirements", "Requirements", "Unverified", "none");
   else if (req != null && req.total > 0) {
     const atRelease = req.atRelease ?? 0;
-    const unmet = req.total - req.met - req.yours - atRelease;
-    const text = `${req.met} of ${req.total} met${atRelease > 0 ? ` · ${atRelease} at release` : ""}${req.yours > 0 ? ` · You check ${req.yours}` : ""}`;
-    row("requirements", "Requirements", text, unmet > 0 ? problem(headline) : req.met === req.total ? "ok" : "none",
+    // Complete by a person: their completion answered every requirement a person checks; none still waits on "You check".
+    // Work a machine or the lead completed keeps them open.
+    const yours = headline === "Complete" && facts.personCompleted === true ? 0 : req.yours, met = req.met + req.yours - yours;
+    const unmet = req.total - met - yours - atRelease;
+    const text = `${met} of ${req.total} met${atRelease > 0 ? ` · ${atRelease} at release` : ""}${yours > 0 ? ` · You check ${yours}` : ""}`;
+    row("requirements", "Requirements", text, unmet > 0 ? problem(headline) : met === req.total ? "ok" : "none",
       unmet > 0 && headline !== "Failed" ? { action: { label: "See which", href: facts.links?.checks ?? facts.links?.result ?? null } } : {});
   }
   const evidence = facts.evidence;
@@ -600,6 +605,14 @@ export function receiptChecksOf(receipt: NonNullable<AssignmentSnapshot["receipt
   return approvedCheckOf(receipt.proof?.verdict ?? null, receipt.proof?.reasons ?? [], checksFactOf(receipt.checks, receipt.head));
 }
 
+/** Who accepted a completed task, as its status says it ("Accepted by sam."): the lead, or the person's name; null when
+ * nobody did (not complete, or Toolroll completed it because its work landed). */
+export function completedByOf(completion: AssignmentSnapshot["completion"]): string | null {
+  // A person's own yes names them, even when a machine or the lead completed it first.
+  if (completion !== null && completion.person !== undefined) return completion.person;
+  return completion === null || completion.landed !== undefined ? null : completion.lead === true ? "the lead" : completion.actor.replace(/^(?:operator|coordinator|lead):/, "");
+}
+
 /** The status facts of one assignment, as every surface reads them. */
 export function assignmentStatusFacts(assignment: AssignmentSnapshot, options: {
   work?: { token: string; views?: readonly string[]; detail?: string } | null; planning?: boolean;
@@ -630,7 +643,8 @@ export function assignmentStatusFacts(assignment: AssignmentSnapshot, options: {
     ...(withResult && receipt?.proofAcceptance != null ? { accepted: true } : {}),
     ...(withResult && (assignment.readiness?.blockers.length ?? 0) > 0 ? { blockers: assignment.readiness!.blockers } : {}),
     evidence: withResult ? options.evidence ?? evidenceOf(receipt, [...(receipt?.caveats ?? []), ...assignment.attention]) : null,
-    completedBy: assignment.completion === null || assignment.completion.landed !== undefined ? null : assignment.completion.lead === true ? "the lead" : assignment.completion.actor.replace(/^(?:operator|coordinator|lead):/, ""),
+    completedBy: completedByOf(assignment.completion),
+    ...(assignment.completion?.person !== undefined ? { personCompleted: true as const } : {}),
     ...(assignment.completion?.landed === undefined ? {} : { landed: assignment.completion.landed }),
     action: options.action ?? null,
     ...(options.links === undefined ? {} : { links: options.links }),

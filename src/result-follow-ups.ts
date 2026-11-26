@@ -58,6 +58,9 @@ export type FollowUpCheck = {
   tested?: string | null;
   /** From the sealed receipt of a batch check. */
   batch?: BatchFacts | null;
+  /** A failure under a check command approved again since (its digest is no longer the approved one): it still reads as a
+   * failure everywhere a failure blocks, but what the result's checks say is out of date, not failed. */
+  outdated?: true;
 };
 type Refusal = { ok: false; reason: string; message: string };
 const refuse = (reason: string, message: string): Refusal => ({ ok: false, reason, message });
@@ -123,7 +126,10 @@ export function followUpChecksOf(store: Store, runId: number, now: Date = new Da
         return { ...base, state: "not-run" as const, note: "The saved check result could not be verified." };
       }
       const exit = /exit (\d+)/.exec(finished.detail ?? "");
-      return { ...base, state: status === "passed" ? "passed" as const : status === "failed" ? "failed" as const : "not-run" as const,
+      // Out of date only while a command stands that is approved again since (a command removed leaves the failure as it is).
+      const outdated = status === "failed" && root !== undefined && asOf === undefined && repo !== null && !stillApproved(base.level, digest)
+        && (() => { try { return checkCommandFor(store, repo, base.level).command !== null; } catch { return false; } })();
+      return { ...base, ...(outdated ? { outdated: true as const } : {}), state: status === "passed" ? "passed" as const : status === "failed" ? "failed" as const : "not-run" as const,
         exitCode: exit === null ? sealed?.exitCode ?? null : Number(exit[1]), logArtifactId: sealed?.log ?? null, note: status === "not-run" ? finished.detail : null,
         ...(sealed === null ? {} : { tested: sealed.ran ? sealed.tested : null, batch: sealed.batch }) };
     }

@@ -263,19 +263,23 @@ test("wire budgets: what the browser receives today stays within its committed c
   const engine: [string, string, string][] = [
     ["alex", "operator", "/work/rows"],
     ["sam", "project-limited viewer", "/work/rows"],
+    // Work's Completed rows, with landed work among them (the wire world seeds it): its landing words read in one statement.
+    ["alex", "operator", "/work/rows?view=completed"],
     ["alex", "operator", `/t/${task}/steps`],
     ["alex", "operator", `/t/${task}/diff`],
     ["alex", "operator", `/t/${task}/diff?run=${resultRun}&file=0`],
     ["alex", "operator", `/agents/live/run/${resultRun}?file=main`],
   ];
   const ENGINE_SERVER_MS = 300;
-  const ENGINE_NAMES: Record<string, string> = { "/work/rows": "work rows", steps: "step cards", diff: "result files", file: "one result file", live: "live session" };
+  const ENGINE_NAMES: Record<string, string> = { "/work/rows": "work rows", "/work/rows?view=completed": "completed work rows", steps: "step cards", diff: "result files", file: "one result file", live: "live session" };
   for (const [who, label, path] of engine) {
-    const name = path === "/work/rows" ? ENGINE_NAMES[path]! : path.includes("file=0") ? ENGINE_NAMES["file"]! : path.endsWith("/diff") ? ENGINE_NAMES["diff"]! : path.endsWith("/steps") ? ENGINE_NAMES["steps"]! : ENGINE_NAMES["live"]!;
+    const name = path.startsWith("/work/rows") ? ENGINE_NAMES[path]! : path.includes("file=0") ? ENGINE_NAMES["file"]! : path.endsWith("/diff") ? ENGINE_NAMES["diff"]! : path.endsWith("/steps") ? ENGINE_NAMES["steps"]! : ENGINE_NAMES["live"]!;
     const scenario = `${label} · Engine · ${name}`;
     bump();
     const answer = await send(path, { cookie: cookies[who]!, accept: "application/json" });
     expect(answer.status, `${scenario} (${answer.body.slice(0, 200)})`).toBe(200);
+    // Work's Completed rows include landed work (the wire world seeds it): its landing words are inside the budget.
+    if (path === "/work/rows?view=completed") expect(answer.body).toContain('"landed":"Landed on main (');
     gate(scenario, "bytes", "bytes", wireBytes(answer.body));
     gate(scenario, "SQL statements", "count", answer.tally.statements);
     gate(scenario, "projection calls", "count", projectionTotal(answer.tally));
@@ -283,7 +287,7 @@ test("wire budgets: what the browser receives today stays within its committed c
     // Server time, gated for the engine's own reads (the plan's 300 ms bar): the better of this read and one more, so a
     // busy runner's one slow turn doesn't fail it. Work's rows are the Work projection's own cost (reported, not gated
     // here: B2a gates Work's server time).
-    if (name !== ENGINE_NAMES["/work/rows"]) {
+    if (!path.startsWith("/work/rows")) {
       const again = await send(path, { cookie: cookies[who]!, accept: "application/json" });
       const best = Math.min(answer.ms, again.ms);
       info(scenario, "server time, better of two", "ms", best);

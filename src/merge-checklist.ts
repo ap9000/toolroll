@@ -12,7 +12,7 @@ import { releaseCiHoldOf, releaseCiRunningOf } from "./release-ci-hold.js";
 import { isRevisionFeedback } from "./result-review.js";
 import { approvalOf, deployGateScope } from "./scope.js";
 import { shipChecksForTask, type Store } from "./store.js";
-import { approvedCheckStateOf, requirementWordOf } from "./task-status.js";
+import { approvedCheckStateOf, completedByOf, requirementWordOf } from "./task-status.js";
 import { projectCheckSet } from "./check-levels.js";
 import { projectName } from "./project.js";
 import { landingBranchOf, landingHistoryOf, publishesThroughPullRequests, shownName } from "./local-landing.js";
@@ -35,8 +35,9 @@ export function landedNowOf(store: Store, assignment: AssignmentSnapshot, read: 
 export const CHECKLIST_KEYS = ["plan", "build", "checks", "requirements", "pull-request", "pr-ci", "up-to-date", "conflicts", "comments", "release"] as const;
 export type ChecklistKey = (typeof CHECKLIST_KEYS)[number];
 /** yes: done; no: in the way (with its act when one exists); waiting: under way, nothing to do yet; unknown: Toolroll
- * keeps no record of it; skip: doesn't apply to this task. */
-export type ChecklistMark = "yes" | "no" | "waiting" | "unknown" | "skip";
+ * keeps no record of it; note: a fact worth seeing that is not in the way (no check is set: Land doesn't need one);
+ * skip: doesn't apply to this task. */
+export type ChecklistMark = "yes" | "no" | "waiting" | "unknown" | "note" | "skip";
 /** The existing act a blocker carries. `fix`: Send back, with `note` as its feedback (empty: send the saved notes). */
 export type ChecklistAct = { kind: "run-checks"; run: number } | { kind: "retry"; taskId: string } | { kind: "fix"; run: number; note: string };
 export type ChecklistRow = { key: ChecklistKey; label: string; mark: ChecklistMark; say: string; act: ChecklistAct | null };
@@ -97,6 +98,11 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
   const head = receipt?.head ?? null;
   const rows: ChecklistRow[] = [];
   const row = (key: ChecklistKey, mark: ChecklistMark, say: string, act: ChecklistAct | null = null) => rows.push({ key, label: CHECKLIST_LABELS[key], mark, say, act });
+  // Complete: its completion is on record (a completion is history: it stays when its checks run again later); Land
+  // lands it on its checks and main alone (below). Only a person's own completion (never a lead's token, a coordinator
+  // or a machine credential) answers the requirements a person checks and says who accepted it.
+  const accepted = assignment.state === "complete" && assignment.completion !== null;
+  const acceptedByPerson = accepted && assignment.completion!.person !== undefined;
 
   // Plan approved: the approval as dispatch reads it.
   if (scope === null) row("plan", "no", "There's no plan yet.");
@@ -117,15 +123,17 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
     { kind: "fix", run: receipt.runId, note: `The project checks failed on ${short(head)}${receipt.checks.exitCode === null ? "" : ` (exit ${receipt.checks.exitCode})`}. Fix them so they pass.` });
   else if (check === "running") row("checks", "waiting", "Running now.");
   else if (check === "off") row("checks", "waiting", "Checks are off for this project; they run at release.");
-  // No check command at all: Run checks could only refuse, so the row says how to set one instead.
+  // No check command at all: Run checks could only refuse, so the row says how to set one instead. Not in the way: Land
+  // lands work from a project with no check (local-landing.ts), and so does Accept.
   else if (check === "not-run" && assignment.repo !== null && !projectCheckSet(store, assignment.repo)) {
-    row("checks", "no", noCheckSetWords(assignment.repo));
+    row("checks", "note", noCheckSetWords(assignment.repo));
   }
   else row("checks", "no", check === "unreadable" ? "The check result couldn't be read." : check === "stale" ? "The check command changed since they ran on this commit." : "No check ran on this commit.", { kind: "run-checks", run: receipt.runId });
 
   // Requirements: the result's own blockers, as Accept reads them.
   const criteria = assignment.readiness?.blockers.filter(one => one.key === "criteria" || one.key === "high") ?? [];
   if (receipt === null) row("requirements", "waiting", "Waits for a build.");
+  else if (acceptedByPerson) { const by = completedByOf(assignment.completion); row("requirements", "yes", by === null ? "Accepted." : `Accepted by ${by}.`); }
   else if (criteria.length > 0) row("requirements", "no", criteria[0]!.message, { kind: "fix", run: receipt.runId, note: criteria.map(one => one.message).join("\n") });
   else if (assignment.readiness?.verdict === "refuted") row("requirements", "no", "The result doesn't match its plan.", { kind: "fix", run: receipt.runId, note: "The result doesn't match its plan. Fix it so it does." });
   else {
@@ -196,7 +204,8 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
   const notes = run === null ? [] : store.liveDiffComments(run).filter(one => isRevisionFeedback(one));
   if (run === null) row("comments", "waiting", "Waits for a build.");
   else if (notes.length === 0) row("comments", "yes", "None open.");
-  else row("comments", "no", `${notes.length} note${notes.length === 1 ? "" : "s"} not sent back yet.`, { kind: "fix", run, note: "" });
+  // Accepted work lands without them (local-landing.ts): a saved note is still offered, never in the way.
+  else row("comments", accepted ? "note" : "no", `${notes.length} note${notes.length === 1 ? "" : "s"} not sent back yet.`, { kind: "fix", run, note: "" });
 
   // A release: its own check, as the release card reads it.
   if (scope !== null && deployGateScope(scope)) {
@@ -248,7 +257,7 @@ function resultBehindMain(repo: string, head: string | null, main: string | null
 /** The checklist as plain lines (the CLI, the lead, the TUI): the answer, then one line per row that applies. */
 export function checklistLines(list: MergeChecklist): string[] {
   if (list.answer === "landed") return [list.sentence];
-  const MARK: Readonly<Record<ChecklistMark, string>> = { yes: "✓", no: "✗", waiting: "…", unknown: "?", skip: "–" };
+  const MARK: Readonly<Record<ChecklistMark, string>> = { yes: "✓", no: "✗", waiting: "…", unknown: "?", note: "–", skip: "–" };
   return [`Can I merge ${list.activeTaskId}? ${list.sentence}`,
     // A blocker's act is a button on the task's page; in plain text it says where to find it, never a fake button.
     ...list.rows.filter(one => one.mark !== "skip").map(one => `  ${MARK[one.mark]} ${one.label}: ${one.say}${one.act === null ? "" : ` Next: ${CHECKLIST_ACT_LABELS[one.act.kind]}, on the task's page.`}`)];

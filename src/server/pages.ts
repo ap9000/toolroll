@@ -99,6 +99,7 @@ import { workIndexPage } from "../work-index.js";
 import { checkEngineResponse, ENGINE_API_VERSION, type WorkRows } from "../contracts/engine-api.js";
 import { readRunLive } from "./engine-api.js";
 import { waitingForTasks } from "../engine-reads.js";
+import { landedRowsOf } from "../landed-rows.js";
 import { FOUND_PLACES_MAX,FOUND_REPOS_MAX,foundReposCache } from "./found-repos.js";
 /** The common places in the home folder the picker offers as shortcuts (and GET /engine/projects looks in). */
 const PICKER_PLACES = ["Developer", "Documents", "code", "Projects"] as const;
@@ -1466,7 +1467,8 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
   // its rows as data.
   /** Work's view for this address (homeRedirect's, and GET /work/rows'): the list page shown, what waits on this person
    * from that very page, each waiting task's row carrying its ask. Null: the list answered the request itself. */
-  async function workViewOf(ctx: HandlerContext): Promise<{ view: BrowserWorkView; needs: ReturnType<typeof workNeeds>; listed: NonNullable<Awaited<ReturnType<WorkListDeps["listFor"]>>>["screen"]; chrome: ReturnType<typeof chromeFor> } | null> {
+  async function workViewOf(ctx: HandlerContext): Promise<{ view: BrowserWorkView; needs: ReturnType<typeof workNeeds>; listed: NonNullable<Awaited<ReturnType<WorkListDeps["listFor"]>>>["screen"]; chrome: ReturnType<typeof chromeFor>;
+    work: NonNullable<Awaited<ReturnType<WorkListDeps["listFor"]>>>["work"] } | null> {
     const { who, now, project } = ctx;
     const found = await work.listFor(ctx);
     if (found === null) return null;
@@ -1496,7 +1498,7 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
       setup: firstRunStepsNow(now) !== null ? "/welcome" : null,
       empty: needs.any || needs.total > 0 ? null : { title: "No tasks yet", text: "Describe a change in a sentence; an agent writes a plan for you to approve." },
     };
-    return { view, needs, listed, chrome };
+    return { view, needs, listed, chrome, work: found.work };
   }
 
   /** GET /work/rows: Work's list as data (contracts/engine-api.ts workRows), the same address keys, grouping and
@@ -1529,10 +1531,13 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
       ...(row.group === undefined ? {} : { group: row.group }), reason: row.reason, line: row.line, action: row.action, question: row.question });
     // Every row's wait, read at once (one statement, never a few per row: the wire budgets hold it).
     const waiting = waitingForTasks(store, list.rows.map(row => row.id), now);
+    // Complete work already on its branch: its landing words, the mark the terminal's row shows (display only).
+    const landed = landedRowsOf(store, built.work.items);
     const body: WorkRows = {
       version: ENGINE_API_VERSION, project: view.project, projectName: view.projectName, needsCount: view.needsCount, groups: list.groups,
       rows: list.rows.map(row => ({ id: row.id, title: row.title, href: row.href, project: row.project, age: row.age, status: row.status, word: row.word, ask: row.ask,
-        chip: row.chip, group: row.group, rank: row.rank, ...(row.check === undefined ? {} : { check: row.check }), detail: row.detail, problem: row.problem, need: row.need === undefined ? null : needOf(row.need),
+        chip: row.chip, group: row.group, rank: row.rank, ...(row.check === undefined ? {} : { check: row.check }),
+        ...(landed.has(row.id) ? { landed: landed.get(row.id)! } : {}), detail: row.detail, problem: row.problem, need: row.need === undefined ? null : needOf(row.need),
         waiting: waiting.get(row.id) ?? null })),
       needs: view.needs.map(group => ({ key: group.key, label: group.label, count: group.count, rows: group.rows.map(needOf) })),
       next: list.pages.next, room: "workspace", spend, limits,
