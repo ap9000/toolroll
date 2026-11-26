@@ -26,6 +26,24 @@ function harness(store: Store) {
   return { calls, stop, total: () => calls.claude + calls.codex + calls.gemini + calls.signIn };
 }
 
+/** A build an agent is running: its run, held by its worker's live lease (`liveFor` from now; negative: it lapsed). A
+ * build on Claude keeps Claude's own read away (the same sign-in), so the reads below watch one on Codex. */
+function building(store: Store, id: string, liveFor = 3 * HOUR, provider: "claude" | "codex" = "codex"): { end: () => void } {
+  const at = new Date();
+  store.createTask({ id, title: id }, at);
+  const ref = store.refFor("built-in", id).id;
+  store.handle.prepare("UPDATE task SET state = 'running', updated_at = ? WHERE id = ?").run(at.toISOString(), id);
+  store.handle.prepare("INSERT INTO claim (lease_id, task_ref, lease_generation, runner, acquired_at, expires_at, heartbeat_at) VALUES (?, ?, 1, 'r', ?, ?, ?)")
+    .run(`l-${id}`, ref, at.toISOString(), new Date(at.getTime() + liveFor).toISOString(), at.toISOString());
+  store.handle.prepare("INSERT INTO run (task_ref, lease_id, runner, branch, worktree, started_at, provider) VALUES (?, ?, 'r', ?, ?, ?, ?)").run(ref, `l-${id}`, `b-${id}`, `/pool/${id}`, at.toISOString(), provider);
+  return { end: () => {
+    const now = new Date().toISOString();
+    store.handle.prepare("UPDATE claim SET released_at = ?, released_by = 'released' WHERE lease_id = ?").run(now, `l-${id}`);
+    store.handle.prepare("UPDATE run SET outcome = 'built', finished_at = ? WHERE lease_id = ?").run(now, `l-${id}`);
+    store.handle.prepare("UPDATE task SET state = 'done', updated_at = ? WHERE id = ?").run(now, id);
+  } };
+}
+
 let store: Store | null = null;
 afterEach(() => { store?.close(); store = null; vi.useRealTimers(); });
 
@@ -39,20 +57,44 @@ describe("no idle model spend (everyday 9, B3)", () => {
     loop.stop();
   });
 
-  test("while a task runs, usage refreshes (Claude's read no more than its half-hour freshness allows); it stops when the work ends", async () => {
+  test("while a build runs, usage refreshes (Claude's read no more than its half-hour freshness allows); it stops when the work ends", async () => {
     vi.useFakeTimers({ now: START });
     store = openStore(":memory:");
     const loop = harness(store);
-    const at = new Date().toISOString();
-    store.handle.prepare("INSERT INTO task (id, title, state, created_at, updated_at) VALUES ('t1', 'Add a square function', 'running', ?, ?)").run(at, at);
+    const job = building(store, "t1");
     await vi.advanceTimersByTimeAsync(2 * HOUR);
     expect(loop.calls.claude).toBeGreaterThanOrEqual(3);
     expect(loop.calls.claude).toBeLessThanOrEqual(5);
-    expect(loop.calls.codex).toBeGreaterThan(0);
-    store.handle.prepare("UPDATE task SET state = 'done', updated_at = ? WHERE id = 't1'").run(new Date().toISOString());
+    job.end();
     const after = loop.total();
     await vi.advanceTimersByTimeAsync(6 * HOUR);
     expect(loop.total()).toBe(after);
+    loop.stop();
+  });
+
+  test("only an agent actually running is work (everyday-9 C4): two hours of waiting work cost nothing", async () => {
+    vi.useFakeTimers({ now: START });
+    store = openStore(":memory:");
+    const now = new Date().toISOString();
+    // Just filed and waiting for a plan or a person; put away; a lead message and a thread turn waiting their turn.
+    store.handle.prepare("INSERT INTO task (id, title, state, created_at, updated_at) VALUES ('q1', 'Add a halve function', 'queued', ?, ?)").run(now, now);
+    store.handle.prepare("INSERT INTO task (id, title, state, created_at, updated_at) VALUES ('q2', 'Add a double function', 'queued', ?, ?)").run(now, now);
+    store.handle.prepare(`INSERT INTO thread_turn (id, thread, seq, repo, owner, owner_generation, terms_id, terms_digest, level, provider, model, billing,
+      request_key, holder, admitted_at, utc_day, status) VALUES (?, ?, 1, '/p', 'alex', 1, 1, 'd', 'supervised', 'claude', 'sonnet',
+      'subscription', 'k', 'h', ?, ?, 'admitted')`).run("c".repeat(32), "d".repeat(32), now, now.slice(0, 10));
+    store.handle.prepare("PRAGMA foreign_keys = OFF").run();
+    store.handle.prepare(`INSERT INTO lead_queue (message, thread, approver, approver_generation, session, ceiling_digest, request_id, payload_hash, status, created_at)
+      VALUES (1, 1, 'alex', 1, 1, 'c', 'r1', 'p', 'queued', ?)`).run(now);
+    store.handle.prepare("PRAGMA foreign_keys = ON").run();
+    // A "running" build whose worker went away: its run never ended, its lease lapsed.
+    building(store, "stale", -60_000);
+    const loop = harness(store);
+    await vi.advanceTimersByTimeAsync(2 * HOUR);
+    expect(loop.total()).toBe(0);
+    // An agent starts building: usage refreshes at once.
+    building(store, "live");
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(loop.calls.claude).toBe(1);
     loop.stop();
   });
 
@@ -105,12 +147,11 @@ describe("no idle model spend (everyday 9, B3)", () => {
       readers: { claude: async () => { claude += 1; return null; }, gemini: async now => ({ connected: false, provider: "antigravity", topModel: null, modelCount: 0, observedAt: now.toISOString(), note: null }) },
       clock: () => new Date(),
     });
-    const at = new Date().toISOString();
-    store.handle.prepare("INSERT INTO task (id, title, state, created_at, updated_at) VALUES ('t3', 'Short job', 'running', ?, ?)").run(at, at);
+    const job = building(store, "t3", 3 * HOUR, "claude");
     await vi.advanceTimersByTimeAsync(10_000);
     expect(codex).toBe(1);
     // The work ends while Codex's read is still out; then the read comes back.
-    store.handle.prepare("UPDATE task SET state = 'done', updated_at = ? WHERE id = 't3'").run(new Date().toISOString());
+    job.end();
     release(null);
     await vi.advanceTimersByTimeAsync(6 * HOUR);
     expect(claude).toBe(0);

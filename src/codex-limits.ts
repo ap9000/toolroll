@@ -94,7 +94,7 @@ export function readCodexLimits(options: { command?: string; timeoutMs?: number;
 }
 
 /** The loop beside the console: plan limits (Codex's from its app server, then Claude's and Antigravity's when stale)
- * every five minutes, but only while they are wanted (plan-limits-demand.ts): agent work queued or running, or a person
+ * every five minutes, but only while they are wanted (plan-limits-demand.ts): an agent actually running, or a person
  * opened a page that shows them in the last ten minutes. An idle Toolroll asks no provider anything (everyday 9, B3:
  * Claude's read is a real model turn). Never in tests, the demo, or the end-to-end harness (which runs with the person's
  * own sign-in), and never while a Codex build is running (both would refresh the same sign-in). One read at a time: the

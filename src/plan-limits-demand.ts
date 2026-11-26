@@ -1,15 +1,15 @@
 /**
  * When the plan-limits loop may ask the providers anything (everyday 9, B3). Reading Claude's limits costs a real model
  * turn (`claude -p . --model haiku`), so an idle Toolroll must never do it: the loop beside the console only reads while
- * agent work is queued or running (tasks, threads, Direct Chats, the lead's queue), or for ten minutes after a person
- * opens a page that shows plan limits (Spend). Nothing here starts a read; it only answers whether one is wanted.
+ * an agent is actually running (a build or plan on a live lease, a thread turn, a Direct Chat turn, a lead turn), or for
+ * ten minutes after a person opens a page that shows plan limits (Spend). Work that only waits — queued, waiting for a
+ * plan, Needs you, put away, or a "running" row whose lease lapsed — never counts (everyday-9 C4). Nothing here starts a
+ * read; it only answers whether one is wanted.
  */
 import type { Store } from "./store.js";
 
 /** How long opening a page that shows plan limits keeps them fresh. */
 export const PLAN_LIMITS_VIEW_WINDOW_MS = 10 * 60_000;
-/** A queued task counts as work only this soon after it was queued: a task parked in the queue for days is not. */
-const QUEUED_RECENTLY_MS = 60 * 60_000;
 /** A run or turn with no recorded end counts as running only this long: a row a crash left open never keeps it on. */
 const RUNNING_AT_MOST_MS = 6 * 3_600_000;
 
@@ -36,16 +36,18 @@ function any(store: Store, sql: string, ...values: string[]): boolean {
   try { return store.handle.prepare(sql).get(...values) !== undefined; } catch { return false; }
 }
 
-/** Whether agent work is queued or running right now: a task, a build run, a thread turn, a Direct Chat turn, or the
- * lead's queue. Each table is read alone, so one missing on an older database answers "no" for itself only. */
+/** Whether an agent is actually running right now: a build or plan run whose worker still holds its lease (a live,
+ * unreleased claim: a crashed worker's lease lapses), a thread turn that started, a Direct Chat turn, or a lead turn the
+ * lead's queue is executing. A task's own state never counts: queued, waiting for a plan or a person, or a "running" row
+ * nothing holds. Each table is read alone, so one missing on an older database answers "no" for itself only. */
 export function agentWorkActive(store: Store, now: Date): boolean {
-  const queuedSince = new Date(now.getTime() - QUEUED_RECENTLY_MS).toISOString();
+  const at = now.toISOString();
   const runningSince = new Date(now.getTime() - RUNNING_AT_MOST_MS).toISOString();
-  return any(store, "SELECT 1 FROM task WHERE state = 'running' OR (state = 'queued' AND updated_at > ?) LIMIT 1", queuedSince)
-    || any(store, "SELECT 1 FROM run WHERE outcome IS NULL AND started_at > ? LIMIT 1", runningSince)
-    || any(store, "SELECT 1 FROM thread_turn WHERE status IN ('admitted', 'running') AND admitted_at > ? LIMIT 1", runningSince)
+  return any(store, `SELECT 1 FROM run r JOIN claim c ON c.lease_id = r.lease_id WHERE r.outcome IS NULL AND r.started_at > ?
+      AND c.released_at IS NULL AND c.expires_at > ? LIMIT 1`, runningSince, at)
+    || any(store, "SELECT 1 FROM thread_turn WHERE status = 'running' AND started_at > ? LIMIT 1", runningSince)
     || any(store, "SELECT 1 FROM direct_chat_turn WHERE status = 'running' AND created_at > ? LIMIT 1", runningSince)
-    || any(store, "SELECT 1 FROM lead_queue WHERE status IN ('queued', 'running') LIMIT 1");
+    || any(store, "SELECT 1 FROM lead_queue WHERE status = 'running' AND claimed_at > ? LIMIT 1", runningSince);
 }
 
 /** Whether the limits loop may read now: work is active, or a person opened plan limits in the last ten minutes. */
