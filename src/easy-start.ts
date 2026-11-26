@@ -173,7 +173,9 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
       const { missingSandboxToolsWords } = await import("./sandbox-runtime.js");
       blockers.push(missingSandboxToolsWords(sandbox.missing));
     } else if (sandbox.problem !== null) {
-      blockers.push([`Agents can't run in a sandbox here: ${sandbox.problem}.`, ...sandbox.repair ?? []]);
+      // The opt-in needs a password install first (refused without one): said once, in the password road's line below.
+      const { UNCONFINED_OPT_IN } = await import("./sandbox-runtime.js");
+      blockers.push([`Agents can't run in a sandbox here: ${sandbox.problem}.`, ...(sandbox.repair ?? []).filter(line => line !== UNCONFINED_OPT_IN)]);
       passwordInstead = others.blockers.length === 0;
     }
     blockers.push(...others.blockers);
@@ -186,7 +188,7 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
         write("Toolroll can't start on this computer yet. Fix these, then run toolroll again:");
         blockers.forEach((lines, index) => lines.forEach((line, at) => write(at === 0 ? `${index + 1}. ${line}` : `   ${line}`)));
       }
-      if (passwordInstead) write("To start now with a password instead (agents can't run until the sandbox works): run `toolroll up`.");
+      if (passwordInstead) write("To start now with a password instead, run `toolroll up`. Agents then run only once the sandbox works, or if an instance operator lets them run without OS confinement (`toolroll config unconfined-agents allow`).");
       for (const line of others.advisories) write(line);
       return EXIT.refused;
     }

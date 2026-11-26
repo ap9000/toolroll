@@ -503,7 +503,7 @@ describe("l1: a Linux computer missing the sandbox's programs (stranger test, Ub
     seams.sandbox = async () => ({ missing: [], problem, repair: ["Fix it with:", "  chmod go-w '/home/dev/.npm-global'"] });
     expect(await runEasyStart("start", bare, seams)).toBe(3);
     expect(lines).toEqual([`Agents can't run in a sandbox here: ${problem}.`, "Fix it with:", "  chmod go-w '/home/dev/.npm-global'", "Then run toolroll again.",
-      "To start now with a password instead (agents can't run until the sandbox works): run `toolroll up`."]);
+      "To start now with a password instead, run `toolroll up`. Agents then run only once the sandbox works, or if an instance operator lets them run without OS confinement (`toolroll config unconfined-agents allow`)."]);
     expect(inits).toEqual([]);
     expect(calls).toEqual([]);
   });
