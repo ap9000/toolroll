@@ -123,10 +123,16 @@ describe("each row reads its one source", () => {
 
   test("up to date with main reads the task's Base line where there are no pull requests; landed work answers with its history (everyday-9 E1/E3)", () => {
     const assignment = assignmentOf(store, "ready", NOW, { principal: "operator", repos: [REPO] }, ev)!;
-    const row = (base: { main: string | null; behind: number | null }) => checklistFromAssignment(store, "ready", assignment, null, base).rows.find(one => one.key === "up-to-date")!;
-    expect(row({ main: "main", behind: 0 })).toMatchObject({ mark: "yes", say: "Up to date with main." });
-    expect(row({ main: "main", behind: 2 })).toMatchObject({ mark: "no", act: { kind: "fix", run: runs["ready"] } });
-    expect(row({ main: null, behind: null })).toMatchObject({ mark: "unknown", say: NOT_RECORDED_LOCAL });
+    const head = assignment.receipt!.head!;
+    // git as a revision's project answers it: main's newer commits are already in the result's own head, while its
+    // pinned review base is two commits behind main (review round 1).
+    const git = (missing: string | null) => (_cwd: string, args: readonly string[]) =>
+      args[0] === "rev-list" ? args[2] === `${head}..refs/heads/main` ? missing : "2" : null;
+    const row = (missing: string | null, main: string | null = "main") => checklistFromAssignment(store, "ready", assignment, null, { main }, git(missing)).rows.find(one => one.key === "up-to-date")!;
+    expect(row("0")).toMatchObject({ mark: "yes", say: "Up to date with main." });
+    expect(row("2")).toMatchObject({ mark: "no", act: { kind: "fix", run: runs["ready"] } });
+    expect(row(null)).toMatchObject({ mark: "unknown", say: NOT_RECORDED_LOCAL });
+    expect(row("0", null)).toMatchObject({ mark: "unknown", say: NOT_RECORDED_LOCAL });
     const landed = checklistFromAssignment(store, "ready", assignment, "Landed on main (abc1234).");
     expect(landed).toMatchObject({ answer: "landed", sentence: "Landed on main (abc1234).", rows: [] });
     expect(checklistLines(landed)).toEqual(["Landed on main (abc1234)."]);

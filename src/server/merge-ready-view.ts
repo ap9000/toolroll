@@ -16,7 +16,7 @@ import type { Who } from "./session.js";
  * landing history words, which the page's landing card says at the top instead of "Not yet"). */
 export function mergeReadyViewOf(store: Store, taskId: string, assignment: AssignmentSnapshot | null | undefined, who: Who,
   runChecks: { action: string; level: "quick" | "full"; returnTo: string } | null, returnTo: string, landed: string | null = null,
-  base: Pick<TaskBaseView, "main" | "behind"> | null = null): MergeReadyView | null {
+  base: Pick<TaskBaseView, "main"> | null = null): MergeReadyView | null {
   if (assignment == null || assignment.receipt === null) return null;
   const list = checklistFromAssignment(store, taskId, assignment, landed, base);
   if (list.answer === "landed") return null;
