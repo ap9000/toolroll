@@ -5,13 +5,13 @@
  * history or journals record nothing and reserve nothing. Isolated temp stores and state folders; no updater runs.
  */
 import { afterEach, describe, expect, test } from "vitest";
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { durableJson } from "./desktop-update.js";
 import { addApprover } from "./scope.js";
 import { openStore, type Store } from "./store.js";
-import { prepareLockFile, prepareRuntimeUpdate, readRuntimeUpdate, resumeRuntimeUpdate, type RuntimeUpdateJournal, type UpdateSystem } from "./toolroll-update.js";
+import { launchRuntimeUpdate, prepareLockFile, prepareRuntimeUpdate, readRuntimeUpdate, resumeRuntimeUpdate, type RuntimeUpdateJournal, type UpdateSystem } from "./toolroll-update.js";
 import { lockHeld, sqliteLock } from "./desktop-update.js";
 import { autoUpdateAttempts, autoUpdateDecision, autoUpdatePass, cancelAutomaticUpdate, type AutoUpdateFacts, linkAutoUpdateJournal, reconcileAutoUpdates, reserveAutoUpdate, setAutoUpdatePolicy, AUTO_UPDATE_STALE_MS } from "./auto-update.js";
 
@@ -354,5 +354,35 @@ describe("versions never tried again, whatever database is put back", () => {
     chmodSync(join(w.dir, "toolroll-update.never-automatic.json"), 0o644);
     expect(await run(w, "0.9.121")).toEqual({ held: "history-unreadable" });
     expect(autoUpdateAttempts(w.store)).toEqual([]);
+  });
+});
+
+describe("the update job is this user's, shared by every database", () => {
+  test("a second database's update can't take the job while the first one's updater is at work; a finished owner's job is replaced", async () => {
+    const a = world(), b = world();
+    const home = join(a.dir, "home");
+    const calls: string[][] = [];
+    const seams = { home, platform: "darwin" as const, npmBin: async () => null, run: (async (_file: string, args: readonly string[]) => { calls.push([...args]); return { code: args[0] === "print" ? 113 : 0, stdout: "", stderr: "", timedOut: false }; }) as never };
+    const unit = join(home, "Library", "LaunchAgents", "com.toolroll.update.plist");
+    const first = journal(a, "0.9.121");
+    await launchRuntimeUpdate({ databaseFile: a.databaseFile, id: first.id, dist: join(a.dir, "dist") }, seams);
+    expect(readFileSync(unit, "utf8")).toContain(first.id);
+    // b's automatic update: refused at launch, its journal refused, its attempt settled; a's job untouched.
+    const booted = calls.filter(one => one[0] === "bootout").length;
+    const pass = await autoUpdatePass(b.store, { stateDir: b.dir, databaseFile: b.databaseFile, current: { version: "0.9.120", dist: join(b.dir, "dist") }, kind: "managed", latest: "0.9.121", now: () => T0,
+      launch: args => launchRuntimeUpdate({ ...args, dist: join(b.dir, "dist") }, seams) });
+    expect(pass).toMatchObject({ failed: expect.stringContaining(`Another Toolroll on this computer (${a.dir}) is updating right now`) });
+    expect(readRuntimeUpdate(b.dir)).toMatchObject({ phase: "refused" });
+    expect(readFileSync(unit, "utf8")).toContain(first.id);
+    expect(calls.filter(one => one[0] === "bootout").length).toBe(booted);
+    // a's update finished: its job is stale, and b's next update takes it.
+    save({ ...readRuntimeUpdate(a.dir)!, phase: "complete" });
+    const second = journal(b, "0.9.122");
+    await launchRuntimeUpdate({ databaseFile: b.databaseFile, id: second.id, dist: join(b.dir, "dist") }, seams);
+    expect(readFileSync(unit, "utf8")).toContain(second.id);
+    // A job Toolroll can't attribute is never replaced.
+    writeFileSync(unit, "<plist>not ours</plist>");
+    const third = journal(a, "0.9.123");
+    await expect(launchRuntimeUpdate({ databaseFile: a.databaseFile, id: third.id, dist: join(a.dir, "dist") }, seams)).rejects.toThrow(/can't tell whose it is/);
   });
 });

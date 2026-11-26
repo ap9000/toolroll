@@ -1548,8 +1548,15 @@ export async function launchRuntimeUpdate(args: { databaseFile: string; id: stri
     const npmBin = await (seams.npmBin ?? (() => npmPrefixBin(run)))();
     const pathEnv = [...new Set([dirname(process.execPath), ...(npmBin ? [npmBin] : []), join(home, ".local", "bin"), join(home, "bin"), join(home, "Library", "pnpm"), "/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"])].join(":");
     const unit = launchdPlist({ label: UPDATE_JOB_LABEL, command, workingDirectory: stateDir, logPath: log, pathEnv, keepAlive: false, runAtLoad: false });
-    const started = await installLaunchdService({ platform: "darwin", label: UPDATE_JOB_LABEL, bin: process.execPath, entry: join(dist, "bin.js"), logPath: log, unitPath: jobUnit(home), unitContent: unit }, run);
-    if (!started.ok) throw Error(started.message);
+    // The job's label is this user's, shared by every Toolroll database: another database's updater still at work owns
+    // it, and installing over it would stop that updater mid-update. Checked and installed under one per-user lock.
+    const lock = jobLock(home);
+    try {
+      const owner = jobOwnerProblem(jobUnit(home), args.id);
+      if (owner !== null) throw Error(owner);
+      const started = await installLaunchdService({ platform: "darwin", label: UPDATE_JOB_LABEL, bin: process.execPath, entry: join(dist, "bin.js"), logPath: log, unitPath: jobUnit(home), unitContent: unit }, run);
+      if (!started.ok) throw Error(started.message);
+    } finally { lock.close(); }
     return;
   }
   const { spawn } = await import("node:child_process");
@@ -1715,4 +1722,36 @@ export function addNeverAutomatic(stateDir: string, entry: NeverAutomatic): void
   const known = neverAutomatic(stateDir);
   if (known.some(one => one.version === entry.version)) return;
   durableJson(neverAutomaticFile(stateDir), [...known, entry]);
+}
+
+// ---- the one-off job is this user's, shared by every database ----------------------------------------------------
+
+/** One launcher at a time for this user's update job (every Toolroll database on this account shares its label). */
+function jobLock(home: string): DatabaseSync {
+  const dir = join(home, "Library", "Application Support", "Toolroll");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const lock = sqliteLock(join(dir, "update-job.sqlite"), 5000);
+  if (!lock) throw Error("Another Toolroll on this computer is starting an update right now. Try again in a moment.");
+  return lock;
+}
+
+const XML_ENTITIES: Record<string, string> = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"", "&apos;": "'" };
+/**
+ * Why this update's job can't take the shared label now, or null when it may: no job is set up, it is this update's
+ * own, or the update it was set up for has finished, been replaced or is gone (a stale job is replaced). A job whose
+ * owner can't be told, or whose update record can't be read, refuses: fail closed rather than stop someone's updater.
+ */
+function jobOwnerProblem(unitPath: string, id: string): string | null {
+  let content: string;
+  try { content = readFileSync(unitPath, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; return `Toolroll couldn't read the update job set up on this computer (${unitPath}), so this update didn't start.`; }
+  const strings = [...content.matchAll(/<string>([^<]*)<\/string>/g)].map(match => match[1]!.replace(/&(?:amp|lt|gt|quot|apos);/g, entity => XML_ENTITIES[entity]!));
+  const after = (flag: string) => { const at = strings.indexOf(flag); return at >= 0 ? strings[at + 1] : undefined; };
+  const owner = after("--id"), db = after("--db");
+  if (owner === id) return null;
+  if (owner === undefined || db === undefined || !/^[a-f0-9-]{36}$/.test(owner) || !isAbsolute(db)) return `Another update job is set up on this computer (${unitPath}) and Toolroll can't tell whose it is, so this update didn't start. If no update is running, remove that file and try again.`;
+  const theirs = dirname(db);
+  let saved: RuntimeUpdateJournal | null;
+  try { saved = readRuntimeUpdate(theirs); } catch { return `Another Toolroll on this computer (${theirs}) has an update record that can't be read, so this update didn't start. Check that one with toolroll update --status --db ${db}.`; }
+  if (saved?.id === owner && !runtimeUpdateTerminal(saved.phase)) return `Another Toolroll on this computer (${theirs}) is updating right now, so this update didn't start. Try again once it finishes.`;
+  return null;
 }
