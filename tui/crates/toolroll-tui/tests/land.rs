@@ -32,7 +32,11 @@ fn screen(app: &mut App, w: u16, h: u16) -> String {
 fn on(select: &str) -> App {
     let mut app = App::new(false, Some("/home/me/shop".into()));
     app.update(Msg::Work(Ok(parse(fake::scenario_work()))));
-    let at = app.items.iter().position(|i| i.id == select).expect("listed");
+    let at = app
+        .items
+        .iter()
+        .position(|i| i.id == select)
+        .expect("listed");
     while app.selected < at {
         app.key(key('j'));
     }
@@ -51,7 +55,9 @@ fn terms(app: &mut App) {
 #[test]
 fn land_on_a_finished_task_shows_the_consoles_lines_and_posts_exactly_that_key() {
     let mut app = on("t-old");
-    assert!(palette::entries(&app).iter().any(|e| e.pick == Pick::Action(Action::Land)));
+    assert!(palette::entries(&app)
+        .iter()
+        .any(|e| e.pick == Pick::Action(Action::Land)));
     let fx = app.run_pick(Pick::Action(Action::Land));
     assert!(
         matches!(&fx[..], [Effect::Act { path, fields, .. }] if path == "/t/t-old/land" && fields.is_empty()),
@@ -86,7 +92,9 @@ fn any_other_key_lands_nothing() {
 #[test]
 fn land_is_not_offered_on_work_that_isnt_finished() {
     let mut app = on("t-live");
-    assert!(!palette::entries(&app).iter().any(|e| e.pick == Pick::Action(Action::Land)));
+    assert!(!palette::entries(&app)
+        .iter()
+        .any(|e| e.pick == Pick::Action(Action::Land)));
     assert_eq!(app.run_pick(Pick::Action(Action::Land)), vec![]);
     // Terms arriving for a selection that isn't finished open nothing.
     terms(&mut app);

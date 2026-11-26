@@ -3880,9 +3880,7 @@ impl App {
                 }
             }
             Mode::ConfirmLand {
-                task,
-                key: landing,
-                ..
+                task, key: landing, ..
             } => {
                 self.mode = Mode::Normal;
                 match key.code {
@@ -5069,7 +5067,9 @@ impl App {
                 }
             }
             // On a thread, `S` saves its committed work as a branch in the project (no pull request, no merge).
-            Action::ThreadSave if self.thread_selected().is_some() => crate::thread::save_branch(self),
+            Action::ThreadSave if self.thread_selected().is_some() => {
+                crate::thread::save_branch(self)
+            }
             Action::ThreadShip | Action::ThreadSave => {
                 self.say(Tone::Refused, crate::thread::NO_THREAD_SELECTED);
                 vec![]
