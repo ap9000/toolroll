@@ -9,7 +9,8 @@
  *   program's install (an agent's) gets one command per failing path.
  * - Paths are single-quoted; a path with a control character gets no command (reinstall instead).
  * - Removing write access doesn't prove nothing was changed while others could write: the repair says to reinstall
- *   when anyone else uses the computer, and how to keep new installs protected (umask 022).
+ *   when anyone else uses the computer, and how to keep new installs protected (umask 022). Each caller says how to
+ *   check again (`toolroll doctor`, `toolroll agents`, or the start itself).
  *
  * Also: protectTree, the explicit mode fix Toolroll applies to an install it makes itself (a staged runtime), whatever
  * the umask it ran under.
@@ -128,7 +129,6 @@ export function trustRepair(paths: string | readonly string[], options: TrustRep
   const depth = (path: string): number => path.split(sep).length;
   // A stable sort: a path's own commands keep their order (an ACL's removal before the mode's).
   commands.push(...planned.map((one, index) => ({ ...one, index })).sort((a, b) => depth(a.at) - depth(b.at) || a.index - b.index).map(one => one.command));
-  if (commands.length > 0) notes.push("Then check again: run `toolroll doctor`.");
   if (faults.some(one => one.kind !== "owner")) {
     notes.push("Others could change these files until now. If anyone else uses this computer, reinstall from a trusted source too.");
     const mask = currentUmask();
@@ -150,11 +150,12 @@ export function trustFaultWords(fault: TrustFault): string {
     : `${fault.path} has an extended ACL`;
 }
 
-/** The repair as lines: what fails, the commands, the notes. */
+/** The repair as lines: the commands (each names its path, so the faults aren't listed again), else what fails (a few),
+ * then the notes. */
 export function trustRepairLines(repair: TrustRepair): string[] {
+  const listed = repair.faults.filter(fault => fault.kind !== "owner").slice(0, 5);
   return [
-    ...repair.faults.map(fault => `  ${trustFaultWords(fault)}`),
-    ...(repair.commands.length === 0 ? [] : ["Fix it with:", ...repair.commands.map(one => `  ${one}`)]),
+    ...(repair.commands.length > 0 ? ["Fix it with:", ...repair.commands.map(one => `  ${one}`)] : listed.map(fault => `  ${trustFaultWords(fault)}`)),
     ...repair.notes,
   ];
 }

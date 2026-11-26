@@ -422,7 +422,7 @@ export function doctorLines(report: DoctorReport): string[] {
   for (const note of report.notes) lines.push("", `Note: ${note}`);
   const optIn = report.sandbox?.repair?.includes(UNCONFINED_OPT_IN) === true;
   if (report.sandbox !== undefined) lines.push("", `Sandbox: ${sandboxRuntimeWords()}${report.sandbox.problem === null ? ", working here." : `, not available here: ${report.sandbox.problem}. Builds don't start ${optIn ? "here." : "unless an instance operator allows unconfined agents."}`}`);
-  if (report.sandbox?.repair !== undefined && report.sandbox.repair.length > 0) lines.push(...report.sandbox.repair);
+  if (report.sandbox?.repair !== undefined && report.sandbox.repair.length > 0) lines.push(...report.sandbox.repair, ...report.sandbox.kind === "trust" ? ["Then run `toolroll doctor` again."] : []);
   for (const agent of report.agents ?? []) lines.push("", `${agent.name}: ${agent.problem}`);
   if (report.checked.length > 0) lines.push("", "Checked:", ...report.checked.map(one => `  ${one}`));
   return lines;
