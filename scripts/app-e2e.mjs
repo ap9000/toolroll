@@ -281,13 +281,16 @@ const none = { instructions: null, planning: null, approver: null, message: null
 async function addCard(title, details) {
   // New card is the flow's primary until cards wait on you (then Review is); otherwise it is in the More menu.
   // The primary can turn from New card into Review between looking and pressing (a subagent's card starts waiting on
-  // you, live): whatever opened then is closed and New card is asked for again.
+  // you, live): whatever opened then is closed and New card is asked for again. Each press is bounded: the button found
+  // as New card can be Review by the press (an unbounded click then waits out its whole 30 s: Journeys run 45835641996),
+  // and a menu opened while New card still holds as the primary has no New card of its own.
   const titleField = page.locator('[data-view="flow-drawer"] input[aria-label="Title"]');
+  const press = one => one.click({ timeout: 5_000 }).then(() => true, () => false);
   for (let attempt = 1; ; attempt += 1) {
     const primary = page.locator('[data-flow-new-card]:visible');
-    if (await primary.count() > 0) await primary.first().click();
-    else { await page.locator("[data-flow-menu]:visible").first().click(); await page.click('.k-menu button:has-text("New card")'); }
-    if (await titleField.waitFor({ timeout: 5_000 }).then(() => true, () => false)) break;
+    const pressed = await primary.count() > 0 ? await press(primary.first())
+      : await press(page.locator("[data-flow-menu]:visible").first()) && await press(page.locator('.k-menu button:has-text("New card")'));
+    if (pressed && await titleField.waitFor({ timeout: 5_000 }).then(() => true, () => false)) break;
     if (attempt === 3) throw new Error(`New card didn't open (tried ${attempt} times)`);
     await page.keyboard.press("Escape");
     await page.locator('[data-view="flow-drawer"]').waitFor({ state: "detached", timeout: 5_000 }).catch(() => undefined);
