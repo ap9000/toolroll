@@ -3015,9 +3015,17 @@ fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
         && !(app.diff_split
             && area.width >= review::SPLIT_MIN_WIDTH
             && area.width.saturating_sub(files_w + 2) < review::SPLIT_MIN_WIDTH);
-    // A result waiting for you: the decision row at the foot, outlined in ink, with Accept and Send back.
-    let waits = app.steps.as_ref().is_some_and(|s| s.review.is_some()) && area.height >= 16;
-    let foot_h: u16 = if waits { 4 } else { 0 };
+    // A result waiting for you: the decision row at the foot, outlined in ink, with Accept and Send back. Only the
+    // selected task's own steps say so (a thread never shows a task's card, whatever steps were read last).
+    let thread_id = app.thread_selected();
+    let waits = thread_id.is_none()
+        && app.steps_here().is_some_and(|s| s.review.is_some())
+        && area.height >= 16;
+    // A thread's committed work: its own act at the foot (Save as branch), never a task's.
+    let saves = thread_id.as_deref().is_some_and(|id| diff.task == id)
+        && !diff.files.is_empty()
+        && area.height >= 16;
+    let foot_h: u16 = if waits || saves { 4 } else { 0 };
     let main = Rect {
         height: area.height.saturating_sub(foot_h),
         ..area
@@ -3128,16 +3136,15 @@ fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
             )));
         }
     }
+    let foot = Rect {
+        y: main.bottom() + 1,
+        height: foot_h.saturating_sub(1),
+        ..area
+    };
     if waits {
-        draw_decision(
-            f,
-            app,
-            Rect {
-                y: main.bottom() + 1,
-                height: foot_h - 1,
-                ..area
-            },
-        );
+        draw_decision(f, app, foot);
+    } else if saves {
+        draw_thread_acts(f, app, foot);
     }
     let area = code_area;
     let body_h = (area.height as usize).saturating_sub(head.len() + 1);
@@ -3385,6 +3392,34 @@ fn draw_decision(f: &mut Frame, app: &App, area: Rect) {
     let mut spans = vec![sheet::chip("Needs you"), Span::raw("  ")];
     let room = (inner.width as usize).saturating_sub(acts_w + 14);
     spans.push(Span::styled(fit("Check this result", room), ink()));
+    let used = sheet::spans_width(&spans);
+    spans.push(Span::raw(
+        " ".repeat((inner.width as usize).saturating_sub(used + acts_w)),
+    ));
+    spans.extend(acts);
+    f.render_widget(Paragraph::new(Line::from(spans)), inner);
+}
+
+/// The foot of a thread's Diff: its committed work and its own act (Save as branch, the one ink verb), in a plain
+/// outline. Ship stays on its key: whether this project can open pull requests is the console's to say.
+fn draw_thread_acts(f: &mut Frame, app: &App, area: Rect) {
+    sheet::outline(f.buffer_mut(), area, line());
+    let inner = Rect {
+        x: area.x + 2,
+        y: area.y + 1,
+        width: area.width.saturating_sub(4),
+        height: 1,
+    };
+    let save = key_name(app, Action::ThreadSave);
+    let acts = if save.is_empty() {
+        vec![]
+    } else {
+        vec![sheet::button("Save as branch", &save, true)]
+    };
+    let acts_w = sheet::spans_width(&acts);
+    let room = (inner.width as usize).saturating_sub(acts_w + 2);
+    let words = fit("The thread's committed work", room);
+    let mut spans = vec![Span::styled(words, ink())];
     let used = sheet::spans_width(&spans);
     spans.push(Span::raw(
         " ".repeat((inner.width as usize).saturating_sub(used + acts_w)),

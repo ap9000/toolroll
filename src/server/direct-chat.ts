@@ -37,6 +37,7 @@ import { soloNow } from "../install-mode.js";
 import { backgroundInstalled } from "../laptop-background.js";
 import type { LiveBus } from "../live-bus.js";
 import { localOwnerStandsNow, type LocalOwnerAct } from "../local-owner.js";
+import { gitCommand, UNSAFE_FOLDER } from "../local-landing.js";
 import { projectName, rowVisible } from "../project.js";
 import type { HandlerContext } from "./handler-context.js";
 import { handlersOf } from "./handler-registry.js";
@@ -650,7 +651,18 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
     const changes = diff.changedFiles.length === 0 ? html`<p class="k-note">No changes in its copy of the project.</p>`
       : html`<p class="k-note">${diff.changedFiles.length} ${diff.changedFiles.length === 1 ? "file" : "files"} changed in its own copy of the project, as of its last turn${running ? " (it's still working)" : ""}.</p><ul>${diff.changedFiles.map(file => html`<li class="k-mono">${file}</li>`)}</ul>${shownDiff === "" ? "" : html`<details><summary>The changes</summary><pre class="k-mono" data-direct-chat-diff>${shownDiff}</pre></details>`}`;
     const ships = listDirectChatShips(store, thread.id);
-    const shipped = ships.length === 0 ? "" : html`<ul>${ships.map(one => html`<li>${one.mode === "keep-branch" ? "Saved as branch" : "Shipped"} <span class="k-mono">${one.branch}</span> · ${one.state}${one.taskId === null ? "" : html` · <a class="k-link" href="/t/${encodeURIComponent(one.taskId)}">Open task</a>`}</li>`)}</ul>`;
+    // A saved branch, as a thread's Save as branch says it: the exact merge to run in the project (its saved commit, so a
+    // branch moved since never changes what it brings in; local-landing.ts gitCommand quotes the recorded folder).
+    const bringIn = (one: (typeof ships)[number]) => {
+      if (one.mode !== "keep-branch" || one.state !== "kept" || !/^[0-9a-f]{40}$/.test(one.candidateSha)) return "";
+      const command = gitCommand(one.repo, ["merge", "--ff-only", one.candidateSha]);
+      return command === null ? html`<br><span class="k-note">${UNSAFE_FOLDER(`git merge --ff-only ${one.candidateSha}`)}</span>`
+        : html`<br>To bring it in: <code class="k-mono" data-direct-chat-merge>${command}</code>`;
+    };
+    const shipped = ships.length === 0 ? "" : html`<ul>${ships.map(one => html`<li>${one.mode === "keep-branch" ? "Saved as branch" : "Shipped"} <span class="k-mono">${one.branch}</span> · ${one.state}${one.taskId === null ? "" : html` · <a class="k-link" href="/t/${encodeURIComponent(one.taskId)}">Open task</a>`}${bringIn(one)}</li>`)}</ul>`;
+    // Back from a review page reloaded after it was left (it does git work, so it is never read again by a GET).
+    const again = ctx.url.searchParams.get("review") === "again" && !running && diff.changedFiles.length > 0
+      ? html`<p class="k-note" data-direct-chat-review-again>That Ship review isn't kept after you leave it. Press Review Ship to see it again.</p>` : "";
     const shipAct = running || diff.changedFiles.length === 0 ? "" : postForm(`/direct-chats/${thread.id}/ship-review`, btn("Review Ship", { variant: "primary", type: "submit" }));
     // Reply (everyday 9 B4): the next message, through the same send the app uses (one request key per page drawn, so a
     // double submit is one turn). While it works, the box waits.
@@ -659,7 +671,7 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
       : running ? html`<p class="k-note">It's working on your last message. Reply when it finishes.</p>`
       : postForm(`/direct-chats/${thread.id}/reply`, html`${field({ id: "direct-chat-reply", label: "Reply", control: textarea({ id: "direct-chat-reply", name: "prompt", rows: 3, attrs: { required: true, maxlength: "20000" } }) })}${btn("Send", { variant: "primary", type: "submit" })}`,
         { hidden: { request: randomBytes(16).toString("hex") } });
-    const body = html`<h1>${thread.title || "Direct Chat"}</h1><p class="k-note">${thread.project} · ${thread.provider}${thread.modelId ? ` · ${thread.modelId}` : ""}${running ? " · Working" : ""}</p>${turnHtml}${reply}<h2>Changes</h2>${changes}<h2>Ship</h2>${shipped}${shipAct === "" && ships.length === 0 ? html`<p class="k-note">${running ? "Ship opens when it finishes." : "Nothing to ship yet."}</p>` : shipAct}<p><a class="k-link" href="/direct-chats">All Direct Chats</a></p>`;
+    const body = html`<h1>${thread.title || "Direct Chat"}</h1><p class="k-note">${thread.project} · ${thread.provider}${thread.modelId ? ` · ${thread.modelId}` : ""}${running ? " · Working" : ""}</p>${turnHtml}${reply}<h2>Changes</h2>${changes}<h2>Ship</h2>${again}${shipped}${shipAct === "" && ships.length === 0 ? html`<p class="k-note">${running ? "Ship opens when it finishes." : "Nothing to ship yet."}</p>` : shipAct}<p><a class="k-link" href="/direct-chats">All Direct Chats</a></p>`;
     return runtime.sendScreen(ctx.response, 200, screen(thread.title || "Direct Chat", body, { chrome: runtime.chromeFor(thread.repo, "tasks") }));
   }
 
@@ -689,10 +701,25 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
     if (!res.ok) return pageRefusal(ctx, res.status, res.error);
     const preview = res.preview;
     const local = gate.who.authority === "local-owner";
-    const facts = html`<ul><li>${preview.mode === "keep-branch" ? "Saved as branch" : "Shipped from branch"} <span class="k-mono">${preview.branch}</span></li><li>${preview.changedFiles.length} ${preview.changedFiles.length === 1 ? "file" : "files"}: ${preview.changedFiles.slice(0, 20).join(", ")}${preview.changedFiles.length > 20 ? "…" : ""}</li><li>${preview.checkCommand === null ? "No check command" : html`Check: <span class="k-mono">${preview.checkCommand}</span>`}</li><li>${preview.mergeSummary}</li>${preview.autoMergeReason === null ? "" : html`<li>${preview.autoMergeReason}</li>`}</ul>`;
+    const facts = html`<ul><li>${preview.mode === "keep-branch" ? "Save the branch" : "Ship from branch"} <span class="k-mono">${preview.branch}</span></li><li>${preview.changedFiles.length} ${preview.changedFiles.length === 1 ? "file" : "files"}: ${preview.changedFiles.slice(0, 20).join(", ")}${preview.changedFiles.length > 20 ? "…" : ""}</li><li>${preview.checkCommand === null ? "No check command" : html`Check: <span class="k-mono">${preview.checkCommand}</span>`}</li><li>${preview.mergeSummary}</li>${preview.autoMergeReason === null ? "" : html`<li>${preview.autoMergeReason}</li>`}</ul>`;
     const form = postForm(`/direct-chats/${threadId}/ship`, html`${local ? "" : html`<label>Password<input type="password" name="password" autocomplete="current-password" required></label>`}${btn(preview.mode === "keep-branch" ? "Save the branch" : "Ship it", { variant: "primary", type: "submit" })} ${btn("Cancel", { variant: "ghost", href: `/direct-chats/${threadId}` })}`,
       { hidden: { mode: preview.mode, termsDigest: preview.termsDigest, title: preview.title, goal: preview.goal } });
     return runtime.sendScreen(ctx.response, 200, screen("Ship", html`<h1>Ship ${preview.title}</h1>${facts}${form}`, { chrome: runtime.chromeFor(thread.repo, "tasks") }));
+  }
+
+  /** A Ship review or a Ship's address read again (a reload or Back after it was left): never its git work or its yes,
+   * only the chat page, which shows what was saved and offers the review again. */
+  async function pageShipReviewAgain(ctx: HandlerContext): Promise<void> {
+    const gate = admit(ctx, null);
+    if (!gate.ok) return pageRefusal(ctx, gate.status, gate.error);
+    const threadId = PAGE_PATH.exec(ctx.url.pathname)?.[1] ?? "";
+    return redirect(ctx.response, `/direct-chats/${threadId}?review=again`);
+  }
+  async function pageShipDone(ctx: HandlerContext): Promise<void> {
+    const gate = admit(ctx, null);
+    if (!gate.ok) return pageRefusal(ctx, gate.status, gate.error);
+    const threadId = PAGE_PATH.exec(ctx.url.pathname)?.[1] ?? "";
+    return redirect(ctx.response, `/direct-chats/${threadId}`);
   }
 
   async function pageShip(ctx: HandlerContext): Promise<void> {
@@ -721,6 +748,8 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
       "direct-chat.page": pageDetail,
       "direct-chat.page-ship-review": pageShipReview,
       "direct-chat.page-ship": pageShip,
+      "direct-chat.page-ship-review-again": pageShipReviewAgain,
+      "direct-chat.page-ship-done": pageShipDone,
       "direct-chat.page-reply": pageReply,
       "direct-chat.list": list,
       "direct-chat.detail": detail,

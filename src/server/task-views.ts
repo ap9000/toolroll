@@ -1,5 +1,5 @@
 import { localOwnerRefusal } from "../local-owner.js";
-import { broughtInOnBranch, landedStanding, landingOf, publishesThroughPullRequests, recognisedOnBranch } from "../local-landing.js";
+import { broughtInOnBranch, keptHandoffOf, landedStanding, landingOf, publishesThroughPullRequests, recognisedOnBranch } from "../local-landing.js";
 import type { TaskLanding } from "./render-tasks.js";
 import { requestContext } from "./request-context.js";
 import { heldFindingCount } from "../findings.js";
@@ -782,7 +782,11 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     // A later commit that exactly reverted it (the person's own revert) is said, and Undo, which would revert it again, isn't offered.
     if (onBranch !== null) return { taskId: rootId, landed: onBranch.words, canLand: false, canUndo: person && !onBranch.reverted && broughtInOnBranch(runtime.store, repo, rootId, baseGit) };
     const standing = landedStanding(runtime.store, rootId, baseGit);
-    return { taskId: rootId, landed: standing?.words ?? null, canLand: person && complete && (record === null || record.undone), canUndo: person && record !== null && !record.undone && standing?.reverted !== true };
+    // A landing commit kept for the person's own merge (their folder had the branch checked out): its exact command,
+    // read from the record, so a reload after Land still shows it.
+    const kept = complete && (record === null || record.undone) ? keptHandoffOf(runtime.store, repo, rootId, assignment?.receipt?.head ?? null) : null;
+    return { taskId: rootId, landed: standing?.words ?? null, canLand: person && complete && (record === null || record.undone), canUndo: person && record !== null && !record.undone && standing?.reverted !== true,
+      ...(kept === null ? {} : { kept }) };
   }
 
   /** What went wrong with the latest finished attempt (whatever its outcome, never an older failure). */

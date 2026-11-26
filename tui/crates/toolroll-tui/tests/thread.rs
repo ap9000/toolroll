@@ -1527,3 +1527,136 @@ fn the_key_bar_names_a_threads_own_keys_for_its_state() {
         "{said}"
     );
 }
+
+/// Move the list's selection to `id` (the list focused): what the moves asked for.
+fn select_row(app: &mut App, id: &str) -> Vec<Effect> {
+    app.focus = toolroll_tui::app::Focus::List;
+    let at = app.items.iter().position(|i| i.id == id).expect("listed");
+    let mut fx = vec![];
+    while app.selected < at {
+        fx.extend(app.key(key('j')));
+    }
+    while app.selected > at {
+        fx.extend(app.key(key('k')));
+    }
+    fx
+}
+
+/// On the Diff tab (tabbing to it when elsewhere), answer the newest diff read asked for (in `asked`, or by the
+/// tabbing) with `diff`, and its first file with `hunks` when it asks for one.
+fn open_diff(app: &mut App, asked: Vec<Effect>, diff: Value, mut hunks: Value) {
+    app.focus = toolroll_tui::app::Focus::Detail;
+    let mut fx = asked;
+    while app.tab != toolroll_tui::app::Tab::Diff {
+        fx.extend(app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+    }
+    let ask = fx
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            Effect::FetchDiff(a) | Effect::FetchThreadDiff(a) => Some(a.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{fx:?}"));
+    let fx = app.update(Msg::Diff(ask, Ok(parse(diff))));
+    let file = fx.iter().find_map(|e| match e {
+        Effect::FetchDiffFile(a) | Effect::FetchThreadDiffFile(a) => Some(a.clone()),
+        _ => None,
+    });
+    if let Some(file) = file {
+        hunks["task"] = json!(file.task);
+        hunks["run"] = json!(file.run);
+        app.update(Msg::DiffFile(file, Ok(parse(hunks))));
+    }
+}
+
+#[test]
+fn a_threads_diff_never_shows_a_tasks_review_card_only_its_own_save() {
+    let state = fake::scenario();
+    let steps = || -> StepCards { parse(state.steps["t-done"].clone()) };
+    let task_diff = || state.diffs["t-done"].clone();
+    let task_file = || state.diff_files["t-done:0"].clone();
+    let thread_file = || fake::fixture("result-diff-file.json");
+    let mut app = thread_app(window());
+    // The task with a result waiting: its Diff has the decision row.
+    let mut asked = select_row(&mut app, "t-done");
+    asked.extend(app.update(Msg::Steps("t-done".into(), Ok(steps()))));
+    open_diff(&mut app, asked, task_diff(), task_file());
+    let shown = screen(&mut app, 120, 30);
+    assert!(shown.contains("Check this result"), "{shown}");
+    assert!(!shown.contains("Save as branch"), "{shown}");
+    // The thread: its own committed work and Save as branch, never the task's Accept and Send back.
+    let mut asked = select_row(&mut app, fake::THREAD);
+    asked.extend(app.update(Msg::Thread(fake::THREAD.into(), Ok(parse(window())))));
+    open_diff(&mut app, asked, thread_diff(None), thread_file());
+    let shown = screen(&mut app, 120, 30);
+    assert!(
+        shown.contains("Changes since the thread started"),
+        "{shown}"
+    );
+    assert!(!shown.contains("Check this result"), "{shown}");
+    assert!(!shown.contains("Send back"), "{shown}");
+    assert!(shown.contains("Save as branch"), "{shown}");
+    // The task's steps answered late, or still held (a list rebuilt under the selection): the thread's own foot.
+    app.update(Msg::Steps("t-done".into(), Ok(steps())));
+    app.steps = Some(steps());
+    let shown = screen(&mut app, 120, 30);
+    assert!(!shown.contains("Check this result"), "{shown}");
+    assert!(shown.contains("Save as branch"), "{shown}");
+    // Back on the task: its decision row again.
+    let mut asked = select_row(&mut app, "t-done");
+    asked.extend(app.update(Msg::Steps("t-done".into(), Ok(steps()))));
+    open_diff(&mut app, asked, task_diff(), task_file());
+    let shown = screen(&mut app, 120, 30);
+    assert!(shown.contains("Check this result"), "{shown}");
+    assert!(!shown.contains("Save as branch"), "{shown}");
+}
+
+#[test]
+fn a_first_message_a_setup_step_sent_back_waits_for_t_after_the_setup_and_never_sends_itself() {
+    let (mut app, fx) = start_app();
+    assert!(
+        fx.iter()
+            .any(|e| matches!(e, Effect::Act { path, .. } if path == "/agents/live/thread")),
+        "{fx:?}"
+    );
+    app.update(Msg::Acted(Ok(ActOutcome::NextStep {
+        words: "This project isn't set up for threads yet.".into(),
+        next: "project-terms".into(),
+    })));
+    assert!(matches!(app.mode, Mode::ThreadNext(_)), "{:?}", app.mode);
+    // c: only the command (its folder quoted) on the copy screen; what was said before is gone.
+    assert_eq!(
+        app.key(key('c')),
+        vec![Effect::Scrollback(vec![
+            "toolroll project flexible enable --repo '/home/me/shop'".into()
+        ])]
+    );
+    assert!(app.status.is_none(), "{:?}", app.status);
+    assert_eq!(app.mode, Mode::Copied);
+    assert_eq!(app.key(key('x')), vec![Effect::ResumeScreen]);
+    // After the setup, T: the message back in its box, sent only by Enter.
+    let fx = app.key(key('T'));
+    assert!(
+        !fx.iter().any(|e| matches!(e, Effect::Act { .. })),
+        "{fx:?}"
+    );
+    assert_eq!(app.mode, Mode::NewThread("Fix the README".into()));
+    // Taken once: Esc and T again is an empty box.
+    app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.key(key('T'));
+    assert_eq!(app.mode, Mode::NewThread(String::new()));
+}
+
+#[test]
+fn the_copied_setup_command_quotes_the_folder_and_leaves_out_one_it_cant_write_safely() {
+    let step = toolroll_tui::thread::next_step("project-terms").unwrap();
+    assert_eq!(
+        step.command(Some("/home/me/it's mine")),
+        "toolroll project flexible enable --repo '/home/me/it'\\''s mine'"
+    );
+    assert_eq!(
+        step.command(Some("/home/me/a\u{202e}b")),
+        "toolroll project flexible enable"
+    );
+}

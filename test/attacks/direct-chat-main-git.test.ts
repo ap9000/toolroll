@@ -13,7 +13,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { cloneIsolatedRepo, cloneIsolatedRepoAsync, fetchTrustedSnapshotIntoMainRepo, runHardenedMainGit, runHardenedMainGitAsync, type TrustedCloneBinding } from "../../src/direct-chat-git.js";
+import { cloneCommitIdentity, cloneIsolatedRepo, cloneIsolatedRepoAsync, fetchTrustedSnapshotIntoMainRepo, runHardenedMainGit, runHardenedMainGitAsync, type TrustedCloneBinding } from "../../src/direct-chat-git.js";
+import { identityEnv } from "../../src/git-identity.js";
 
 let dir: string;
 let repo: string;
@@ -109,5 +110,25 @@ describe("attack: the project's own git config running a program during Direct C
     // A write that could touch HEAD, the index or an editor is never run as a synchronous write.
     expect(() => runHardenedMainGit(["checkout", "main"], repo, { write: true })).toThrow(/can't run as a synchronous write/);
     expect(() => runHardenedMainGit(["branch", "--edit-description"], repo, { write: true })).toThrow(/can't run as a synchronous write/);
+  });
+
+  test("an agent's own commit in a chat's clone carries the project's identity, else a neutral one; never the host's", async () => {
+    const authored = async (name: string): Promise<string> => {
+      const clonePath = join(stateRoot, "direct-chat", "clones", name);
+      const made = await cloneIsolatedRepoAsync({ stateRoot, repo, clonePath, gitDir: join(stateRoot, "direct-chat", "gitdirs", name), branch: `chat/${name}` });
+      const binding = { stateRoot, clonePath, gitDir: made.gitDir, configSha256: made.configSha256 };
+      // As the agent's shell would: the turn's identity over $EMAIL, with no global config of its own.
+      const env = { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: dir, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", EMAIL: "me@host.local", ...identityEnv(cloneCommitIdentity(binding)) };
+      execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "agent"], { cwd: clonePath, env });
+      return execFileSync("git", ["log", "-1", "--format=%an <%ae>|%cn <%ce>"], { cwd: clonePath, encoding: "utf8", env }).trim();
+    };
+    expect(await authored("i1")).toBe("Toolroll Direct Chat <direct-chat@toolroll.local>|Toolroll Direct Chat <direct-chat@toolroll.local>");
+    git(repo, ["config", "user.email", "sam@example.com"]);
+    git(repo, ["config", "user.name", "Sam <sam@evil.local>"]);
+    expect(await authored("i2")).toBe("Toolroll Direct Chat <sam@example.com>|Toolroll Direct Chat <sam@example.com>");
+    git(repo, ["config", "user.name", "Sam Lee"]);
+    expect(await authored("i3")).toBe("Sam Lee <sam@example.com>|Sam Lee <sam@example.com>");
+    // A clone made before its config carried an identity: neutral, never the host's.
+    expect(cloneCommitIdentity(null)).toEqual({ name: "Toolroll Direct Chat", email: "direct-chat@toolroll.local" });
   });
 });

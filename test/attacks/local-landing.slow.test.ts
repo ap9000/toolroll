@@ -22,7 +22,7 @@ import { sealVerificationReceipt } from "../../src/verification-evidence.js";
 import { recordRunCheckLevel } from "../../src/check-levels.js";
 import { acceptAndCompleteAsOperator, assignmentOf } from "../../src/assignment.js";
 import { verifyApproverByPassword, type VerifiedApprover } from "../../src/principal.js";
-import { broughtInOnBranch, gitCommand, handoffsOf, handoffWords, land, landableBranch, landedStanding, landingOf, landingWords, LAND_INTENT, LAND_SETTLED, readLanding, recognisedOnBranch, shownName, unsafeInCommand, type LandAuthority } from "../../src/local-landing.js";
+import { broughtInOnBranch, gitCommand, handoffsOf, handoffWords, keptHandoffOf, land, landableBranch, landedStanding, landingOf, landingWords, LAND_INTENT, LAND_SETTLED, readLanding, recognisedOnBranch, shownName, unsafeInCommand, type LandAuthority } from "../../src/local-landing.js";
 import { readGit } from "../../src/task-base.js";
 import { recordActionWhole } from "../../src/action-ledger.js";
 import { run as execRun } from "../../src/exec.js";
@@ -466,6 +466,18 @@ describe("checked-out main (everyday-9 A1): never touched; a kept commit and the
       expect(await land(store, "t", { key: plan.key, into: "main" }, person, access(), NOW, options())).toMatchObject({ ok: true, replayed: true, commit: landed.commit });
     });
   }
+
+  test("the kept commit and its exact command are read back from the record (the task page after Land's redirect); another result has none", async () => {
+    const { head } = built("t", { "a.txt": "two\n" });
+    git(repo, "checkout", "-q", "main");
+    expect(keptHandoffOf(store, repo, "t", head)).toBeNull();
+    const { landed } = await landNow("t");
+    if (landed?.ok !== true || landed.handoff === null) throw new Error(JSON.stringify(landed));
+    expect(keptHandoffOf(store, repo, "t", head)).toEqual({ commit: landed.commit, branch: "main", command: landed.handoff.command,
+      words: handoffWords(landed.handoff, landed.commit) });
+    expect(keptHandoffOf(store, repo, "t", "0".repeat(40))).toBeNull();
+    expect(keptHandoffOf(store, repo, "t", null)).toBeNull();
+  });
 
   test("main checked out in another folder (an agent's checkout, say): refused with no command to run there; nothing touched", async () => {
     built("t", { "a.txt": "two\n" });

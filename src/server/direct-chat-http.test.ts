@@ -274,6 +274,21 @@ describe("Direct Chat HTTP + SSE routes", () => {
     expect(old.body).toContain("data-direct-chat-read-only");
     expect(old.body).not.toContain(`action="/direct-chats/${legacy}/reply"`);
     expect((await world.post(`/direct-chats/${legacy}/reply`, { prompt: "Go on", request: "c".repeat(32) })).status).toBe(409);
+    // A Ship review or a Ship read again by a GET (a reload, Back): back to the chat page, never their git work or yes.
+    const review = await world.send(`/direct-chats/${started.threadId}/ship-review`, "GET", { cookie: world.cookie });
+    expect([review.status, review.headers.location]).toEqual([303, `/direct-chats/${started.threadId}?review=again`]);
+    const shipAgain = await world.send(`/direct-chats/${started.threadId}/ship`, "GET", { cookie: world.cookie });
+    expect([shipAgain.status, shipAgain.headers.location]).toEqual([303, `/direct-chats/${started.threadId}`]);
+    expect((await world.send(`/direct-chats/${started.threadId}/ship-review`, "GET", { cookie: world.cookie, "x-forwarded-for": "100.64.0.1" })).status).toBe(403);
+    expect(world.store.handle.prepare("SELECT count(*) AS n FROM direct_chat_ship").get()?.["n"]).toBe(0);
+    // A saved branch shows the exact merge of its saved commit, in the recorded folder (quoted).
+    const sha = "c".repeat(40);
+    const repo = String(world.store.handle.prepare("SELECT repo FROM direct_chat_thread WHERE id = ?").get(started.threadId)?.["repo"]);
+    world.store.handle.prepare(`INSERT INTO direct_chat_ship (id, thread_id, seq, repo, mode, base_sha, candidate_sha, branch, terms_json, approved_by, approved_generation, local_generation, proof, state,
+      task_id, scope_digest, pr_url, merge_token, merge_reserved_at, detail, created_at, state_at) VALUES (?, ?, 1, ?, 'keep-branch', ?, ?, 'toolroll/chat-1', '{}', 'alex', 1, NULL, 'solo-session', 'kept',
+      NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`).run("d".repeat(32), started.threadId, repo, "a".repeat(40), sha, T0.toISOString(), T0.toISOString());
+    const saved = await world.send(`/direct-chats/${started.threadId}`, "GET", { cookie: world.cookie });
+    expect(saved.body).toContain(`To bring it in: <code class="k-mono" data-direct-chat-merge>git -C &#39;${repo}&#39; merge --ff-only ${sha}</code>`);
     expect(addApprover(world.store, "jordan", T0, { name: "alex", token: world.token }).ok).toBe(true);
     expect((await world.send("/direct-chats", "GET", { cookie: world.cookie })).status).toBe(403);
   });
