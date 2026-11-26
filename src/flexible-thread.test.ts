@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { flexibleKeepRef, flexibleThread, flexibleThreadCodexProfile, flexibleThreadEnv, flexibleThreadFence, flexibleThreadPaths, flexibleThreadSpawn, prepareFlexibleThread, removeFlexibleThread, threadCredentialPaths } from "./flexible-thread.js";
 import { agentFence, PROTECTED_DIRS, PROTECTED_FILES, srtTermsOf } from "./agent-fence.js";
 import { run, type ExecResult } from "./exec.js";
+import { identityFrom, projectGitIdentity, THREAD_IDENTITY } from "./git-identity.js";
 import { objectsInventory, tgit, threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
 
 vi.mock("./flexible-available.js", async original => ({ ...await original<typeof import("./flexible-available.js")>(), flexibleAvailable: () => true }));
@@ -347,6 +348,36 @@ describe("the thread fence's terms", () => {
     expect(env).toMatchObject({ PATH: "/usr/bin", LANG: "C", TMPDIR: paths.tmp, GIT_TERMINAL_PROMPT: "0", HTTPS_PROXY: "http://x:t@127.0.0.1:41000" });
   });
 
+  test("its commit identity is the project's, half by half, else neutral; never from $EMAIL or the host; an unreadable config refuses", async () => {
+    const { paths } = await made();
+    const hostile = { PATH: "/usr/bin", EMAIL: "me@host.local", GIT_AUTHOR_EMAIL: "me@host.local", GIT_COMMITTER_NAME: "host", USER: "me" };
+    const neutral = { GIT_AUTHOR_NAME: "Toolroll thread", GIT_AUTHOR_EMAIL: "thread@toolroll.local", GIT_COMMITTER_NAME: "Toolroll thread", GIT_COMMITTER_EMAIL: "thread@toolroll.local" };
+    expect(flexibleThreadEnv(paths, {}, hostile)).toMatchObject(neutral);
+    expect(flexibleThreadEnv(paths, {}, hostile)["EMAIL"]).toBeUndefined();
+    const identity = async () => { const read = await projectGitIdentity(world.project, THREAD_IDENTITY); return read.ok ? read.identity : read.why; };
+    // [project config, expected identity]: absent, partial, both, and values git would mangle.
+    const rows: [Record<string, string>, { name: string; email: string }][] = [
+      [{}, THREAD_IDENTITY],
+      [{ "user.email": "sam@example.com" }, { name: "Toolroll thread", email: "sam@example.com" }],
+      [{ "user.name": "Sam Lee", "user.email": "sam@example.com" }, { name: "Sam Lee", email: "sam@example.com" }],
+      [{ "user.name": "Sam <sam@evil.local>", "user.email": "sam@example.com" }, { name: "Toolroll thread", email: "sam@example.com" }],
+    ];
+    for (const [config, expected] of rows) {
+      for (const key of ["user.name", "user.email"]) unsetConfig(world.project, key);
+      for (const [key, value] of Object.entries(config)) tgit(world.project, "config", key, value);
+      expect(await identity(), JSON.stringify(config)).toEqual(expected);
+    }
+    tgit(world.project, "config", "include.path", join(world.dir, "elsewhere"));
+    expect(typeof await identity()).toBe("string");
+    // The person's global file fills a half the project leaves out; an include there is never followed.
+    const home = join(world.dir, "home");
+    mkdirSync(home);
+    writeFileSync(join(world.dir, "included"), "[user]\n\temail = included@evil.local\n");
+    writeFileSync(join(home, ".gitconfig"), `[user]\n\tname = Sam Global\n[include]\n\tpath = ${join(world.dir, "included")}\n`);
+    expect(identityFrom("user.email\nsam@example.com\0", THREAD_IDENTITY, home, {})).toEqual({ name: "Sam Global", email: "sam@example.com" });
+    expect(identityFrom("", THREAD_IDENTITY, home, {})).toEqual({ name: "Sam Global", email: "thread@toolroll.local" });
+  });
+
   test("no sandbox here: the thread refuses to start, even where an operator allowed unconfined agents (D7)", async () => {
     const { thread } = await made();
     world.store.setUnfencedAgentsAllowed(true, "alex", NOW);
@@ -366,3 +397,7 @@ describe("the thread fence's terms", () => {
   });
 });
 
+/** `git config --unset key` in `repo`, absent or not. */
+function unsetConfig(repo: string, key: string): void {
+  try { tgit(repo, "config", "--unset-all", key); } catch { /* it wasn't set */ }
+}

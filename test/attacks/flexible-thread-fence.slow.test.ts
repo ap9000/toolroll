@@ -6,7 +6,8 @@
  * the Mac's. Codex's own sandbox isn't a backend for threads: it can't deny what is made after it starts, so a Codex
  * thread is refused (flexible-thread.test.ts).
  *
- * Rows: ordinary work in the thread's own repository still works and leaves the project's objects as they were; every
+ * Rows: ordinary work in the thread's own repository still works and leaves the project's objects as they were; an
+ * agent's own commit carries the project's identity or a neutral one, never the host's; every
  * write to the project's repository (objects, alternates, refs, packed-refs, config, hooks, worktrees, its files) and
  * to the thread's own config, hooks, alternates and protected names is refused; another thread's folder is unreadable
  * and unwritable; credential files, the keychain (a synthetic item in a throwaway keychain, never the person's), a
@@ -123,6 +124,20 @@ describe("attack: a Flexible thread leaving its fence", () => {
     expect(out.stdout.trim().split("\n"), out.stderr).toEqual(["status-ok", "second", "commit-ok", "blame-ok", "gc-ok", "tmp-ok", "node-ok"]);
     expect(tgit(paths.repo, "log", "--format=%s", "-1")).toBe("work");
     expect(objectsInventory(world.objects)).toEqual(before);
+  }, 60_000);
+
+  test("native: an agent's own commit carries the project's identity, else a neutral one; never the host's, even with $EMAIL set", async ctx => {
+    needs(ctx, osFence());
+    const { id } = await thread();
+    const commit = (message: string) => `EMAIL="me@$(hostname).local" git -c commit.gpgsign=false commit -q --allow-empty -m ${message} && git log -1 --format='%an <%ae>|%cn <%ce>'`;
+    const first = await inThread(id, commit("one"));
+    expect(first.stdout.trim(), first.stderr).toBe("Toolroll thread <thread@toolroll.local>|Toolroll thread <thread@toolroll.local>");
+    tgit(world.project, "config", "user.email", "sam@example.com");
+    const second = await inThread(id, commit("two"));
+    expect(second.stdout.trim(), second.stderr).toBe("Toolroll thread <sam@example.com>|Toolroll thread <sam@example.com>");
+    tgit(world.project, "config", "user.name", "Sam Lee");
+    const third = await inThread(id, commit("three"));
+    expect(third.stdout.trim(), third.stderr).toBe("Sam Lee <sam@example.com>|Sam Lee <sam@example.com>");
   }, 60_000);
 
   test("native: the project's repository and the thread's own config, hooks, alternates and protected names are never written", async ctx => {
