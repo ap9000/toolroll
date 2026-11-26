@@ -221,6 +221,29 @@ describe("a completion stays complete when the check command changes", () => {
     expect(taskWorkSummaryOf(store, "t-recheck", LATER, access)!.status.label).not.toBe("Complete");
   });
 
+  test("an earlier version's open question or unsettled build keeps the family from Complete, in the list and the raw reading alike (review round 2)", async () => {
+    const access = { principal: "operator" as const, repos: [REPO] };
+    for (const [name, wait] of [["q", (run: number) => {
+      store.handle.prepare("INSERT INTO decision (run, urgency, recap, question, options, recommendation, created_at) VALUES (?, 'blocking', 'r', 'Which file?', '[]', 'a', ?)").run(run, LATER.toISOString());
+    }], ["custody", (run: number) => {
+      store.handle.prepare("UPDATE run SET provider_started_at = ? WHERE id = ?").run(NOW.toISOString(), run);
+    }]] as const) {
+      // An earlier finished version, then its revision, accepted.
+      const earlier = built(`old-${name}`);
+      const id = `new-${name}`;
+      built(id);
+      const brief = Number(store.handle.prepare("INSERT INTO artifact (run, kind, key, bytes_original, bytes_stored, sha256, capture, created_at) VALUES (?, 'revision-brief', ?, 0, 0, ?, 'fixture', ?)")
+        .run(earlier, `brief-${name}`, "0".repeat(64), NOW.toISOString()).lastInsertRowid);
+      store.handle.prepare("UPDATE task_ref SET revision_of = ?, revision_brief_artifact = ? WHERE backend = 'built-in' AND external_id = ?").run(`old-${name}`, brief, id);
+      await complete(id);
+      expect(workIndexTask(store, id, LATER, access, root())!.assignmentState, name).toBe("complete");
+      expect(taskWorkSummaryOf(store, id, LATER, access)!.status.label, name).toBe("Complete");
+      wait(earlier);
+      expect(workIndexTask(store, id, LATER, access, root())!.assignmentState, name).not.toBe("complete");
+      expect(taskWorkSummaryOf(store, id, LATER, access)!.status.label, name).not.toBe("Complete");
+    }
+  });
+
   test("changed scope or damaged evidence still reopens it", async () => {
     built("t-scope");
     await complete("t-scope");

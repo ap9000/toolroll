@@ -7,6 +7,9 @@ import { machineChecked } from "./machine-check.js";
 import { FOLLOW_UP_LOG, FOLLOW_UP_RECEIPT, resultCheckLevel } from "./result-follow-ups.js";
 import { COMPLETER_ACTOR, COMPLETION_ACTION } from "./result-completion.js";
 import { approvalOf } from "./scope.js";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { MARKER } from "./worktree.js";
 import { projectCheckSet } from "./check-levels.js";
 import { diagnoseTaskDispatch, type DispatchAction } from "./dispatch.js";
 import { isAlive } from "./runner.js";
@@ -181,8 +184,11 @@ export function completionStands(store: Store, taskId: string, now: Date): boole
     const busy = (refId: number) => store.currentLiveLease(refId, now) !== null || store.runsFor(refId).some(run => run.outcome === null && run.role !== "reviewer");
     if (family.versions.some(version => version.id !== current.id && ((version.state === "queued" && !refArchived(store, version.refId)) || version.state === "running" || busy(version.refId)))) return false;
     if (busy(current.refId) || store.activeHolds(current.refId, now).length > 0 || store.applicableStopFor(result.id) !== null) return false;
-    const custody = stopFactOf(store, result.id);
-    if (custody !== null && custody.kind !== "open") return false;
+    // The family's own waits, as the list reads them (work-index.ts `questions` and `custody`, review round 2): an
+    // unanswered question on any of its versions not put away (the current one's always), and a build of any of them
+    // Toolroll can't yet confirm stopped.
+    const counted = family.versions.filter(version => version.id === current.id || !refArchived(store, version.refId));
+    if (counted.some(version => openQuestionOn(store, version.refId) || custodyUnresolved(store, version.refId, version.state))) return false;
     const ids = JSON.stringify(family.versions.map(version => version.id));
     const one = (sql: string, ...values: (string | number)[]) => store.handle.prepare(sql).get(...values);
     const updated = String(one("SELECT MAX(updated_at) AS v FROM task WHERE id IN (SELECT value FROM json_each(?))", ids)?.["v"] ?? "");
@@ -201,4 +207,27 @@ export function completionStands(store: Store, taskId: string, now: Date): boole
         && one("SELECT 1 AS hit FROM proof_acceptance WHERE run = ? AND accepted_at > ?", result.id, at) === undefined;
     });
   } catch { return false; }
+}
+
+/** An unanswered question on any run of this task version (work-index.ts `questions`). */
+function openQuestionOn(store: Store, refId: number): boolean {
+  return store.handle.prepare(`SELECT 1 AS hit FROM decision d JOIN run r ON r.id = d.run
+    WHERE r.task_ref = ? AND d.state <> 'answered' AND d.answered_at IS NULL LIMIT 1`).get(refId) !== undefined;
+}
+
+/** A build of this task version Toolroll can't yet confirm stopped, as the list reads it (work-index.ts `custody` and
+ * custodyReadings): a started run with no process record, an unsettled process, or a finished task's last build whose
+ * workspace note is still there; settled when none of its runs has an open-ended stop fact. */
+function custodyUnresolved(store: Store, refId: number, state: string): boolean {
+  const recorded = store.handle.prepare(`SELECT 1 AS hit FROM run r WHERE r.task_ref = ? AND r.provider_started_at IS NOT NULL
+      AND NOT EXISTS(SELECT 1 FROM run_process p WHERE p.run = r.id) AND NOT EXISTS(SELECT 1 FROM run_process_summary s WHERE s.run = r.id)
+    UNION SELECT 1 FROM run_process p JOIN run r ON r.id = p.run WHERE r.task_ref = ? AND p.exited_at IS NULL AND p.container_empty_at IS NULL
+    LIMIT 1`).get(refId, refId) !== undefined;
+  const noted = state === "done" && (() => {
+    const last = store.handle.prepare(`SELECT worktree FROM run WHERE task_ref = ? AND role IN ('builder','scout') AND finished_at IS NOT NULL
+      ORDER BY id DESC LIMIT 1`).get(refId)?.["worktree"];
+    return typeof last === "string" && existsSync(join(last, MARKER));
+  })();
+  if (!recorded && !noted) return false;
+  return store.runsFor(refId).some(run => { const fact = stopFactOf(store, run.id); return fact !== null && fact.kind !== "open"; });
 }
