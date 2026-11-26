@@ -25,3 +25,15 @@ test("--allow-downgrade to such a release is refused before anything runs; on an
   expect(await runUpdateCommand(["--version", "0.9.104", "--allow-downgrade"], line => preview.push(line), { ...deps, sqlite: "3.50.4" })).toBe(0);
   expect(preview[0]).toBe("Update Toolroll 0.9.106 → 0.9.104.");
 });
+
+test("the release server out of reach (offline, blocked): said in words, never a bare \"fetch failed\", and nothing runs", async () => {
+  const deps = { current: { version: "0.9.106", dist: "/nowhere/dist" }, method: { kind: "managed" as const, updateCommand: "toolroll update" }, databaseFile: join(tmpdir(), "so-update-old-release", "orders.db") };
+  const offline: string[] = [];
+  const latest = async (): Promise<{ version: string }> => { throw new TypeError("fetch failed", { cause: { code: "ENOTFOUND" } }); };
+  expect(await runUpdateCommand([], line => offline.push(line), { ...deps, latest })).toBe(1);
+  expect(offline).toEqual(["Couldn't reach the release server: its address couldn't be looked up (this computer may be offline). Nothing was changed."]);
+  // An answer read and rejected keeps its own words.
+  const answered: string[] = [];
+  expect(await runUpdateCommand([], line => answered.push(line), { ...deps, latest: async () => { throw new Error("npm answered 503"); } })).toBe(1);
+  expect(answered).toEqual(["Could not read the latest release: npm answered 503. Nothing was changed."]);
+});

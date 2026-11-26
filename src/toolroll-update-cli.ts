@@ -10,6 +10,7 @@ import { createRequire } from "node:module";
 import { installMethod } from "./install-method.js";
 import { isNewer, latestVersionNow } from "./releases.js";
 import { databasePath } from "./store.js";
+import { neverAnswered, unreachableWhy } from "./unreachable.js";
 import { PACKAGE_VERSION } from "./version.js";
 import {
   currentRuntime, lastCompletedUpdate, machineSystem, readRuntimeUpdate, requestRuntimeUpdateCancel, resumeRuntimeUpdate, retireUpdateJob,
@@ -112,7 +113,10 @@ export async function runUpdateCommand(args: readonly string[], write: (line: st
   let version = value("version");
   if (version === undefined) {
     try { version = (await (deps.latest ?? latestVersionNow)()).version; }
-    catch (error) { write(`Could not read the latest release: ${(error as Error).message}`); return 1; }
+    catch (error) {
+      write(neverAnswered(error) ? `Couldn't reach the release server: ${unreachableWhy(error, 10)}. Nothing was changed.` : `Could not read the latest release: ${(error as Error).message}. Nothing was changed.`);
+      return 1;
+    }
   }
   if (version === current.version) { write(`Toolroll ${version} is current.`); return 0; }
   const downgrade = !isNewer(version, current.version);

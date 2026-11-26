@@ -257,6 +257,14 @@ describe("bare toolroll at a terminal", () => {
     expect(warm.calls).toEqual(["signed-in browser", "wait for the browser"]);
     expect(warm.lines).toEqual(["Toolroll is on http://127.0.0.1:4999", "Opening Toolroll in your browser…"]);
     expect(warm.lines.join("\n")).not.toContain("/login/once/");
+    // The browser opener failed: the way on is said (this terminal, or a password), never a link to paste.
+    const failed = scripted({ proofs: [LIVE] });
+    failed.seams.openSignedIn = async () => ({ ok: false, message: "the browser opener didn't start or failed" });
+    expect(await runEasyStart("open", { web: true, projectRoot: null }, failed.seams)).toBe(3);
+    expect(failed.lines).toEqual([
+      "Toolroll is on http://127.0.0.1:4999, but it couldn't sign you in: the browser opener didn't start or failed.",
+      "Run `toolroll` to use it in this terminal. To use a browser, run `toolroll password set` and sign in with that password.",
+    ]);
   });
 });
 

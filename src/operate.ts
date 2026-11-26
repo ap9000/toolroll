@@ -4,7 +4,7 @@ import { readStoredGeminiStatus, refreshSubscriptions } from "./subscription-usa
 import { liveCommandsShown } from "./live-detail.js";
 import { flexibleArmedPass } from "./flexible-ship.js";
 import { directChatArmedPass } from "./direct-chat-ship.js";
-import { saveFlexibleBranch } from "./flexible-save.js";
+import { flexibleSavedWords, flexibleUncommittedFiles, saveFlexibleBranch } from "./flexible-save.js";
 import { closeFlexibleThread, flexibleShipNeedsFor, flexibleThreadRecords, flexibleThreadShipTerms, flexibleThreadTitleOf, latestFlexibleShip, removeFlexibleThreadCopy, shipFlexibleThread, stopFlexibleThreadsEverywhere, type FlexibleStopReport } from "./flexible-session.js";
 import { runCardCommand } from "./card-cli.js";
 import { mintSecret } from "./secret-mint.js";
@@ -106,6 +106,7 @@ import { passwordFreeOwner, passwordFreeShell, passwordFreeShellWords, proveTask
 import { applyPendingAgentChanges, planAgainAsLocalOwner, requestPlanAsLocalOwner, retryAsLocalOwner } from "./local-owner-acts.js";
 import { withTaskAlias } from "./task-aliases.js";
 import { checklistLines, landedNowOf, mergeChecklistOf } from "./merge-checklist.js";
+import { landedRowsOf } from "./landed-rows.js";
 import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
 /**
  * The commands that actually move work: authoring tasks, and the claim loop.
@@ -160,7 +161,8 @@ import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { parseMachLookup, parseReadDeny, readDenyWords, type ProjectSandbox } from "./project-sandbox.js";
 import { LOCAL_POLICY } from "./surface.js";
-import { handoffWords, land, landedLine, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding, type LandAuthority } from "./local-landing.js";
+import { handoffWords, land, landedLine, landingBranchOf, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding, type LandAuthority } from "./local-landing.js";
+import { catchUpMergeOf, catchUpRevision, recordCatchUp, type CatchUp } from "./revision-catch-up.js";
 import { asLocalOwner, currentLocalOwner, localActNow, LOCAL_MODE_CONFINES, localModeOn, localOwnerRefusal, localOwnerRequested, type LocalOwnerAct, type LocalPrincipal } from "./local-owner.js";
 import { CHECK_ACCESS_WARNINGS, checkAccessRunsAs, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
@@ -333,7 +335,8 @@ import { workIndexPage, workIndexTask, WorkIndexCursorError, type WorkIndexPage 
 import { readExecutorOf } from "./read-executor.js";
 import { parseWorkView } from "./workspace-ui.js";
 import { taskWorkSummaryOf } from "./work-summary.js";
-import { assignmentOf, assignmentBrief, syncAssignmentHandoffs } from "./assignment.js";
+import { assignmentOf, assignmentBrief, syncAssignmentHandoffs, type AssignmentSnapshot } from "./assignment.js";
+import { completedByOf } from "./task-status.js";
 import { createScheduledFlow, describeSchedule, parseSchedule } from "./flow-schedule.js";
 import { fileTaskProposal, validateTaskText } from "./proposal.js";
 import { TEMPLATES, templateByName } from "./templates.js";
@@ -3675,16 +3678,34 @@ async function tickCommand(
     );
 
     let buildBase = base;
+    // A revision's new branch starts from its source head with the project's main merged in, when main moved on
+    // (revision-catch-up.ts): so the work can land, and its checks run on the combined tree.
+    let caughtUp: { head: string; onto: string; result: CatchUp } | null = null;
     if (ref.revisionOf !== null) {
       const source = revisionSourceHead(store, context.evidenceRoot, ref.id, ref.revisionOf);
       let problem: string | null = source.ok ? null : source.problem;
       if (source.ok) {
-        if (exists.code !== 0 && text(flags, "base") === undefined) buildBase = source.head;
-        else {
+        if (exists.code !== 0 && text(flags, "base") === undefined) {
+          buildBase = source.head;
+          if (!publishesThroughPullRequests(store, repo)) {
+            const onto = landingBranchOf(store, repo, base);
+            const result = await catchUpRevision(hardenedGit(git, "build", { repo }), repo, source.head, onto, id, clock());
+            caughtUp = { head: source.head, onto, result };
+            // The branch is made at the merge commit by the lease below; the move is recorded only once it stands there.
+            if (result.kind === "merged") buildBase = result.commit;
+          }
+        } else {
           const descendant = exists.code === 0 ? branch : base;
           // On a git without --no-lazy-fetch, through a frozen read view that refuses a partial clone (lazyFetchSafeGit).
           const ancestry = await lazyFetchSafeGit(git)("git", [...noLazyFetch(), "-c", "protocol.allow=never", "--no-replace-objects", "merge-base", "--is-ancestor", source.head, descendant], { cwd: repo });
           if (ancestry.code !== 0) problem = ancestry.stderr.includes(PARTIAL_CLONE_REFUSAL) ? PARTIAL_CLONE_REFUSAL : "the requested revision base does not contain its source head";
+          // A branch made at a catch-up merge whose first attempt never opened (its read-back couldn't confirm it): the
+          // move is recorded now, from the branch as it stands, before this attempt opens.
+          else if (exists.code === 0 && store.latestBranchBaseMove(ref.id, branch) === null && store.firstBuilderBase(ref.id, branch) === null && !publishesThroughPullRequests(store, repo)) {
+            const tip = exists.stdout.trim();
+            const main = await catchUpMergeOf(hardenedGit(git, "build", { repo }), repo, tip, source.head, landingBranchOf(store, repo, base));
+            if (main !== null) store.recordBranchBaseMove(ref.id, branch, tip, main, clock());
+          }
         }
       }
       if (problem !== null) {
@@ -3704,6 +3725,23 @@ async function tickCommand(
       reclaim: { evidenceRoot: context.evidenceRoot },
       ...(exists.code === 0 ? freshBaseFor(store, id, branch, base) : {}),
     });
+    // A revision made at Toolroll's merge of main: recorded (from the merge commit to main's) only once the new branch is
+    // proved to stand at exactly that commit, before its attempt opens, so the family's whole change runs from main's
+    // commit (familyStartOf). A lease that failed, or a branch anywhere else, records nothing and says no merge.
+    if (caughtUp !== null && caughtUp.result.kind === "merged") {
+      const merged = caughtUp.result;
+      const at = leased.ok && leased.created ? await hardenedGit(git, "build", { repo })("git", ["rev-parse", "--verify", "-q", `refs/heads/${branch}^{commit}`], { cwd: repo }) : null;
+      if (at !== null && at.code === 0 && at.stdout.trim() === merged.commit) store.recordBranchBaseMove(ref.id, branch, merged.commit, merged.main, clock());
+      else if (leased.ok && leased.created) {
+        // Made at the merge, but not proved there: no attempt opens on an unrecorded base. The next pass finds the branch
+        // and records the move from the merge it stands at (above), or builds on whatever it is.
+        await worktrees.release(leased.worktree.path, clock());
+        release(store, lease, clock());
+        dispatched.push({ id, outcome: "failed", reason: "git", detail: "Toolroll couldn't confirm the new branch stands at its merge of main; it tries again." });
+        broke++;
+        continue;
+      } else caughtUp = { ...caughtUp, result: { kind: "unavailable" } };
+    }
     if (!leased.ok) {
       // The task is fine; this machine's pool is not. Hand the claim back so
       // a healthier pass can take it, and let the exit code say we broke.
@@ -3761,6 +3799,7 @@ async function tickCommand(
       continue;
     }
     noteBaseStanding(store, runId, leased.base, base, clock());
+    if (caughtUp !== null && leased.created) recordCatchUp(store, { repo, taskId: id, runId, branch, head: caughtUp.head, onto: caughtUp.onto }, caughtUp.result, clock());
     if (leased.resumedFromRun !== undefined) {
       store.addRunNote(
         runId,
@@ -6101,6 +6140,7 @@ async function verifyCommand(
     if (repo === undefined) return fail(write, json, "verify level", "usage", "which repo? --repo <path>", EXIT.usage);
     const wanted = positional[1];
     if (!isCheckLevel(wanted)) return fail(write, json, "verify level", "usage", "`toolroll verify level quick|full|off --repo <path> --as <you> --token <t>`", EXIT.usage);
+    if (passwordFreeInstall(store, flags, context.principal !== undefined)) return fail(write, json, "verify level", "local-owner", "Changing a check needs a password. Run `toolroll password set` first.", EXIT.refused);
     const acting = await askCredentials(flags, context);
     if (acting === null) return fail(write, json, "verify level", "usage", "changing a project's checks takes `--as <you> --token <t>`", EXIT.usage);
     const authenticated = authenticateApprover(store, acting.name, acting.token, repo);
@@ -6120,6 +6160,8 @@ async function verifyCommand(
   const quickClear = action === "clear" && text(flags, "level") === "quick";
   const grantKey = repo === undefined ? undefined : quickValue !== undefined || quickClear ? quickVerifyKey(repo) : repo;
   if (repo === undefined) return fail(write, json, `verify ${action}`, "usage", "which repo? --repo <path>", EXIT.usage);
+  // A password-free install has no password to give: say so as the browser does, before any prompt.
+  if (passwordFreeInstall(store, flags, context.principal !== undefined)) return fail(write, json, `verify ${action}`, "local-owner", `${action === "set" ? "Setting" : "Clearing"} a check needs a password. Run \`toolroll password set\` first.`, EXIT.refused);
 
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
@@ -10154,7 +10196,9 @@ function listTasks(flags: Map<string, string | true>, context: Context): number 
     return fail(write, json, 'task list', 'usage', 'Invalid page cursor. Start again without --cursor.', EXIT.usage);
   };
   const show = (page: WorkIndexPage): number => {
-    const tasks = page.items.map(item => ({ ...item, id: item.rootId }));
+    // Complete work already on its branch carries where it landed (display only), as the workbench's rows do.
+    const landed = landedRowsOf(store, page.items);
+    const tasks = page.items.map(item => ({ ...item, id: item.rootId, ...(landed.has(item.rootId) ? { landed: landed.get(item.rootId)! } : {}) }));
     if (json) {
       write(envelopeJson({ ok: true, command: 'task list', count: tasks.length, tasks,
         totals: page.totals, nextCursor: page.nextCursor, limit: page.limit, view: page.view, evidence: 'recorded' }));
@@ -10162,7 +10206,13 @@ function listTasks(flags: Map<string, string | true>, context: Context): number 
     }
     if (tasks.length === 0) write(wanted === undefined ? 'The task list is empty.' : `Nothing is ${wanted}.`);
     const width = Math.max(0, ...tasks.map(task => task.id.length));
-    for (const task of tasks) write(task.archived === undefined ? `  ${task.id.padEnd(width)}  ${task.status.label.padEnd(16)}  ${task.title}`
+    // The same short marks as the workbench's rows: where Complete work landed, and a check since acceptance that holds it.
+    const AFTER: Readonly<Record<string, string>> = { failed: 'checks failed after acceptance', stale: 'checks out of date', unreadable: "checks couldn't be read" };
+    const marks = (task: (typeof tasks)[number]): string => {
+      const said = [...('landed' in task ? [`${task.landed.charAt(0).toLowerCase()}${task.landed.slice(1)}`] : []), ...(task.check === undefined ? [] : [AFTER[task.check]!])];
+      return said.length === 0 ? '' : ` · ${said.join(' · ')}`;
+    };
+    for (const task of tasks) write(task.archived === undefined ? `  ${task.id.padEnd(width)}  ${task.status.label.padEnd(16)}  ${task.title}${marks(task)}`
       : `  ${task.id.padEnd(width)}  ${'Archived'.padEnd(16)}  ${task.title} — by ${task.archived.byKind === 'tidy' ? 'tidy' : task.archived.by}: ${task.archived.reason}`);
     if (page.nextCursor !== null) write(`Next page: --cursor ${page.nextCursor}`);
     return EXIT.ok;
@@ -10277,6 +10327,8 @@ function showTask(positional: readonly string[], context: Context): number {
     // One status word, the one every surface says (the raw lifecycle state stays in --json as `state`).
     `${task.id}  ${shared?.headline ?? detail.work?.status.label ?? task.state}${ref.deliverable === "report" ? "  (scout — delivers a report)" : ""}`,
     `  ${task.title}`,
+    // Where its work landed comes first, right under the title (the task page leads with it too).
+    ...(landedNow === null ? [] : [`  landing: ${landedNow}`]),
     ...(detail.work === null ? [] : [
       `  status: ${shared?.headline ?? detail.work.status.label}${shared === null ? "" : `${shared.headline === "On hold" ? " · " : " — "}${shared.sentence}`}`,
       // Accepted work has no "open the result" step left (stranger 13): the next line says only what is still to do.
@@ -10288,6 +10340,12 @@ function showTask(positional: readonly string[], context: Context): number {
     // gives every other surface, so the CLI and the console agree.
     ...(task.state !== "done" || detail.proofVerdict === null
       ? []
+      // Accepted (Complete): the person's yes is the check now, never a verdict still waiting (stranger 17).
+      : shared?.headline === "Complete" && current?.completion?.person !== undefined ? [
+          `  checked: ${acceptedWords(current?.completion ?? null)}`,
+          ...matrixWords(shownMatrix),
+          ...(detail.semanticCoverage === null ? [] : coverageWords(detail.semanticCoverage).map(line => `  ${line}`)),
+        ]
       : [
           `  checked: ${proofVerdictWords(current?.receipt?.runId === latestFinished?.id ? current?.readiness?.verdict ?? detail.proofVerdict : detail.proofVerdict, detail.proofReasons).word}${detail.proofAccepted ? " (accepted)" : ""}`,
           ...(shownReasons.length > 0 ? [`    ${shownReasons.map(plainReasonWords).join(" ")}`] : []),
@@ -10304,7 +10362,6 @@ function showTask(positional: readonly string[], context: Context): number {
           ]
         : [`  report: ${detail.report.problem} (build #${detail.report.run})`]),
     ...pullRequestLines(detail.pullRequest),
-    ...(landedNow === null ? [] : [`  landing: ${landedNow}`]),
     ...(base === null ? [] : [`  base: ${baseStandingWords(base, landedNow !== null)}`]),
     ...(detail.blockedBy.length > 0 ? [`  waits for ${detail.blockedBy.join(", ")}`] : []),
     ...(detail.position === null
@@ -15647,9 +15704,7 @@ async function flexibleSignInConfig(action: string, extra: readonly string[], re
  * changes either way.
  */
 function passwordFreeRefusal(store: Store, flags: Map<string, string | true>, key: string, remote: boolean): string | null {
-  if (remote || ["as", "token", "token-file", "token-env"].some(name => flags.has(name)) || localOwnerRequested() || envValue(process.env, "LEAD_TOKEN") !== undefined) return null;
-  const binding = localOwnerBinding(store);
-  if (binding === null || store.accountOf(binding.account)?.passwordSet === true) return null;
+  if (!passwordFreeInstall(store, flags, remote)) return null;
   return `This Toolroll has no password yet, so this runs from Toolroll itself: run \`toolroll\`, select the task and press ${key}, or open it in the browser.`;
 }
 
@@ -15783,15 +15838,18 @@ async function threadCommand(positional: readonly string[], flags: Map<string, s
     // closes the rest); no other thread is touched.
     if (done.stopPending) await stopFlexibleThreadsEverywhere(store, { reason: "its owner ended the thread", thread, clock });
     const keeps = flexibleShipNeedsFor(store, thread) === null ? "ship its work, or save it as a branch," : `save its work as a branch (\`toolroll thread save ${thread.slice(0, 8)}\`)`;
-    return succeed(write, json, command, { thread, already: done.already }, () => [done.already ? "This thread had already ended." : `Ended. You can still ${keeps} for a week; then its copy is tidied.`]);
+    // Edits its agent left uncommitted are said, with the save that keeps them (stranger 17).
+    const left = done.already ? 0 : (await flexibleUncommittedFiles(store, { thread })).length;
+    const leftWords = `Ended. Its agent left uncommitted edits in ${left} file${left === 1 ? "" : "s"}: \`toolroll thread save ${thread.slice(0, 8)}\` saves them with its work as a branch. Its copy is kept for a week.`;
+    return succeed(write, json, command, { thread, already: done.already }, () => [done.already ? "This thread had already ended." : left > 0 ? leftWords : `Ended. You can still ${keeps} for a week; then its copy is tidied.`]);
   }
   // save: its committed work as the branch toolroll/code-<id> in its project (flexible-save.ts: the controlled import, no
   // pull request, task or merge). The same proof End takes, asked again inside the save's own transaction.
   if (verb === "save") {
     const saved = await saveFlexibleBranch(store, { thread, by: { name: who.name, generation: account.generation }, now: clock(), prove: proveNow });
     if (!saved.ok) return fail(write, json, command, saved.reason, saved.message, EXIT.refused);
-    return succeed(write, json, command, { thread, branch: saved.branch, commit: saved.candidate, already: saved.already, files: saved.changedPaths, next: saved.next },
-      () => [saved.already ? `Already saved as ${saved.branch} (commit ${saved.candidate.slice(0, 12)}).` : `Saved as ${saved.branch} (commit ${saved.candidate.slice(0, 12)}, ${saved.changedPaths.length} file${saved.changedPaths.length === 1 ? "" : "s"}).`, saved.next]);
+    return succeed(write, json, command, { thread, branch: saved.branch, commit: saved.candidate, already: saved.already, files: saved.changedPaths, next: saved.next,
+      leftover: saved.leftover, uncommitted: saved.uncommitted }, () => [flexibleSavedWords(saved), saved.next]);
   }
   // remove: the thread's own copy (its repository and keep-ref), refused while anything of its agent may run or a Ship is open.
   const removed = await removeFlexibleThreadCopy(store, { thread, by: who.name, now: clock(), prove: proveNow });
@@ -16070,3 +16128,17 @@ function verifyRepoOf(store: Store, raw: string): string {
 
 /** Where landing works on an install with no password yet (everyday-9 C3). */
 const LAND_NEEDS_PASSWORD = "Land it from the workbench (B) or the task page in the browser; from a shell it needs a Toolroll password (`toolroll password set`).";
+
+/** passwordFreeRefusal's test: a password-free install (local mode on, its owner without a password), typed in a shell
+ * with no credentials named and no remote principal. Only ever says where an act is; it decides no authority. */
+function passwordFreeInstall(store: Store, flags: Map<string, string | true>, remote: boolean): boolean {
+  if (remote || ["as", "token", "token-file", "token-env"].some(name => flags.has(name)) || localOwnerRequested() || envValue(process.env, "LEAD_TOKEN") !== undefined) return false;
+  const binding = localOwnerBinding(store);
+  return binding !== null && store.accountOf(binding.account)?.passwordSet !== true;
+}
+
+/** `task show`'s checked line for work a person completed: who accepted it ("accepted by sam"). */
+function acceptedWords(completion: AssignmentSnapshot["completion"]): string {
+  const by = completedByOf(completion);
+  return by === null ? "accepted" : `accepted by ${by}`;
+}

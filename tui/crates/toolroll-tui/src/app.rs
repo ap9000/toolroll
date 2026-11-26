@@ -294,6 +294,8 @@ pub struct Item {
     pub waiting: Option<toolroll_api::Waiting>,
     /// Complete work whose check since it was accepted failed, is out of date or can't be read (Work's `check`).
     pub check: Option<String>,
+    /// Complete work already on its branch: "Landed on main (abc1234)" (Work's `landed`).
+    pub landed: Option<String>,
 }
 
 impl Item {
@@ -455,7 +457,8 @@ pub enum Mode {
     ThreadNext(String),
     /// An act's answer that names a command (Land's handoff, Save as branch, Ship's refusal with its save offer,
     /// everyday-9 C2): the words whole and the command on its own line, scrolled with j/k; `c` puts the command's exact
-    /// bytes in the terminal's scrollback to copy, and any other key closes it. It reads only: it acts on nothing.
+    /// bytes in the terminal's scrollback to copy, and any other key closes it. It reads only: it acts on nothing. A
+    /// refusal too long for the status line comes here too, with no command (nothing to copy).
     CommandSheet {
         words: String,
         command: String,
@@ -682,12 +685,19 @@ pub fn current_build_of(steps: &StepCards) -> Option<i64> {
 /// A build's attempt number on its task (1: the task's first build), from the build card's builds, newest first. The
 /// console's build ids count across every task, so a person reads this one: a task's first build is "attempt 1".
 pub fn attempt_of(steps: &StepCards, run: i64) -> Option<usize> {
-    let runs = &steps
+    // Every build of the task, its revisions' included (the task page numbers its results the same); an older console
+    // sends only this version's builds, on its build card.
+    let card = &steps
         .cards
         .iter()
         .flatten()
         .find(|c| c.key == "build")?
         .runs;
+    let runs = if steps.family_builds.is_empty() {
+        card
+    } else {
+        &steps.family_builds
+    };
     match runs.iter().position(|r| *r == run) {
         Some(at) => Some(runs.len() - at),
         // The live build before the card lists it: the next attempt.
@@ -1809,6 +1819,21 @@ impl App {
             .map(|i| i.id.clone())
     }
 
+    /// The selected task's work already on its branch, said as a fact for Land: "Already landed on main (abc1234)." (a later
+    /// commit that reverted it is said as the task page says it). None when its step cards don't say it landed.
+    pub fn landed_here(&self) -> Option<String> {
+        let landing = self.steps_here()?.landing.as_ref()?;
+        let words = clean(&landing.words);
+        let words = words.trim_end_matches('.');
+        if words.is_empty() {
+            return None;
+        }
+        Some(match words.strip_prefix("Landed ") {
+            Some(rest) if !landing.reverted => format!("Already landed {rest}."),
+            _ => format!("{words}."),
+        })
+    }
+
     /// What Run checks again posts for the selected task: its task, the build and the level its step cards offer (when its
     /// checks failed, are out of date, couldn't be read or didn't run). The console decides who may, at the post.
     pub fn run_checks_here(&self) -> Option<(String, i64, String)> {
@@ -1866,6 +1891,12 @@ impl App {
         self.steps_here().is_some_and(|s| s.review.is_some())
     }
 
+    /// Accepted work behind main, which Send back (r) builds again with main merged in.
+    pub fn behind_main_here(&self) -> bool {
+        self.steps_here()
+            .is_some_and(|s| s.review.is_none() && s.behind_main.is_some())
+    }
+
     /// What Retry would post for the selected task (a failed task whose approval stands as it is).
     pub fn retry_pins(&self) -> Option<(String, toolroll_api::RetryPins)> {
         let task = self.selected_item().filter(|i| i.is_task)?.id.clone();
@@ -1885,6 +1916,13 @@ impl App {
                 .flat_map(|c| c.runs.first().copied())
                 .next()
         })
+    }
+
+    /// Whether a refusal's words would be cut on the status line as last drawn (unknown before a first frame: no).
+    pub(crate) fn cut_on_status_line(&self, words: &str) -> bool {
+        self.last_width > 0
+            && crate::text::width(&clean(words)) + "Refused: ".len()
+                > usize::from(crate::view::status_width(self.last_width))
     }
 
     pub(crate) fn say(&mut self, tone: Tone, words: impl Into<String>) {
@@ -2457,10 +2495,22 @@ impl App {
                 vec![]
             }
             Msg::Acted(Ok(ActOutcome::Refused(words))) => {
-                self.say(Tone::Refused, words);
+                // Too long for the status line (stranger 17): said there, and shown whole on the sheet a command's
+                // answer uses, with nothing to copy.
+                let cut = self.cut_on_status_line(&words);
+                self.say(Tone::Refused, words.clone());
                 crate::thread::keep_refused_reply(self);
                 self.sent_thread();
-                self.refresh()
+                let fx = self.refresh();
+                if cut && matches!(self.mode, Mode::Normal | Mode::Sending(_)) {
+                    self.mode = Mode::CommandSheet {
+                        words,
+                        command: String::new(),
+                        refused: true,
+                        scroll: 0,
+                    };
+                }
+                fx
             }
             Msg::Acted(Ok(ActOutcome::Commanded {
                 words,
@@ -2891,6 +2941,9 @@ impl App {
             }
         }
         let mut before = self.selected_id();
+        // What was selected as this read arrived: a thread just started here is selected below, and that is a change of
+        // selection like any other (stranger 17: started from a task, the thread's Diff tab kept showing the task's diff).
+        let was = before.clone();
         // The thread being looked at now has its news seen; any other thread with news unseen takes the unread mark.
         if let Some(id) = before.as_deref() {
             self.mark_thread_seen(id);
@@ -2931,7 +2984,7 @@ impl App {
             .and_then(|id| self.items.iter().position(|i| &i.id == id))
             .unwrap_or(self.selected)
             .min(self.items.len().saturating_sub(1));
-        if self.selected_id() != before {
+        if self.selected_id() != was {
             return self.selection_changed();
         }
         self.poll_thread()
@@ -3951,7 +4004,7 @@ impl App {
                     KeyCode::Char('k') | KeyCode::Up => scroll.saturating_sub(1),
                     KeyCode::Char(' ') | KeyCode::PageDown => scroll + 5,
                     KeyCode::PageUp => scroll.saturating_sub(5),
-                    KeyCode::Char('c') => {
+                    KeyCode::Char('c') if !command.is_empty() => {
                         self.mode = Mode::Copied;
                         return vec![Effect::Scrollback(vec![command])];
                     }
@@ -5357,6 +5410,14 @@ impl App {
             Action::SendBack if !self.review_waiting() && self.retry_pins().is_some() => {
                 self.run_action(Action::Retry)
             }
+            // Accepted work behind main: Send back builds it again with main merged in, the feedback prefilled as the
+            // task page prefills it.
+            Action::SendBack if !self.review_waiting() && self.behind_main_pin().is_some() => {
+                let (pin, note) = self.behind_main_pin().unwrap();
+                self.status = None;
+                self.mode = Mode::SendBack(pin, note);
+                vec![]
+            }
             Action::Retry => match self.retry_pins() {
                 Some((task, pins)) => {
                     self.status = None;
@@ -5406,6 +5467,12 @@ impl App {
                 }
             },
             Action::Land => match self.land_here() {
+                // Already on its branch: a plain fact, never a refusal (its step cards say where it landed).
+                Some(_) if self.landed_here().is_some() => {
+                    let words = self.landed_here().unwrap_or_default();
+                    self.say(Tone::Said, &words);
+                    vec![]
+                }
                 Some(task) => {
                     self.say(Tone::Said, "Reading what lands…");
                     self.act(
@@ -6841,9 +6908,49 @@ impl App {
                 })
     }
 
+    /// Accepted work behind main (StepCards.behind_main) pinned for Send back, with the feedback to prefill.
+    fn behind_main_pin(&self) -> Option<(ReviewPin, String)> {
+        let task = self.selected_item().filter(|i| i.is_task)?.id.clone();
+        let steps = self.steps_here()?;
+        let behind = steps.behind_main.as_ref()?;
+        Some((
+            ReviewPin {
+                version: self.version_here().unwrap_or_else(|| task.clone()),
+                task,
+                run: behind.run,
+                receipt: behind.receipt.clone(),
+                source: behind.source.clone(),
+                totals: None,
+            },
+            behind.note.clone(),
+        ))
+    }
+
+    /// Whether a pinned Send back still stands: the result waiting (review_pin_stands), or the same accepted result still
+    /// behind main.
+    fn send_back_pin_stands(&self, pin: &ReviewPin) -> bool {
+        self.review_pin_stands(pin)
+            || (self.selected_item().is_some_and(|i| i.id == pin.task)
+                && self.version_here().as_deref() == Some(pin.version.as_str())
+                && self
+                    .steps
+                    .as_ref()
+                    .filter(|s| s.review.is_none())
+                    .and_then(|s| s.behind_main.as_ref())
+                    .is_some_and(|b| {
+                        b.run == pin.run && b.receipt == pin.receipt && b.source == pin.source
+                    }))
+    }
+
     /// After a refresh: a dialog whose pinned facts no longer stand closes, saying so (nothing is sent).
     fn check_pins(&mut self) {
         let changed = match &self.mode {
+            // Accepted work behind main: nothing on screen to agree with but the same result, still behind.
+            Mode::SendBack(pin, _) | Mode::SendReview { pin, .. }
+                if !self.review_pin_stands(pin) && self.send_back_pin_stands(pin) =>
+            {
+                None
+            }
             Mode::ConfirmAccept(pin) | Mode::SendBack(pin, _) | Mode::SendReview { pin, .. }
                 if self.review_pin_stands(pin) =>
             {
@@ -7024,7 +7131,7 @@ impl App {
 
     /// Send back's words are typed: freeze the whole text it would post, and show it to be read to the end.
     fn review_send_back(&mut self, pin: ReviewPin, general: String) -> Vec<Effect> {
-        if !self.review_pin_stands(&pin) {
+        if !self.send_back_pin_stands(&pin) {
             self.say(Tone::Refused, RESULT_CHANGED);
             return vec![];
         }
@@ -7053,7 +7160,7 @@ impl App {
     /// Send back with exactly the text the review showed to its end, as one revise act (POST /r/<run>/comment
     /// intent=revise, the result page's own Send back): pinned exactly as Accept is, under one request identity per text.
     fn send_back_with_notes(&mut self, pin: ReviewPin, typed: String, text: String) -> Vec<Effect> {
-        if !self.review_pin_stands(&pin) {
+        if !self.send_back_pin_stands(&pin) {
             self.say(Tone::Refused, RESULT_CHANGED);
             return vec![];
         }
@@ -7576,6 +7683,7 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
         thread: false,
         waiting: r.waiting.clone(),
         check: r.check.clone(),
+        landed: r.landed.as_deref().map(clean),
     };
     for r in &rows.rows {
         let section = section_of(r);
@@ -7625,6 +7733,7 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
                 thread: false,
                 waiting: None,
                 check: None,
+                landed: None,
             });
         }
     }

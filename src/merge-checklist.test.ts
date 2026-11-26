@@ -13,9 +13,16 @@ import { storeEvidence } from "./evidence.js";
 import { sealVerificationReceipt } from "./verification-evidence.js";
 import { createDecisionServer } from "./serve.js";
 import { runOperate } from "./operate.js";
-import { assignmentOf } from "./assignment.js";
+import { acceptAndCompleteAsOperator, assignmentOf, checkAssignmentAsOperator } from "./assignment.js";
+import { verifyApproverByPassword } from "./principal.js";
+import { withActor } from "./actor.js";
+import { assignmentStatusFacts, statusOf } from "./task-status.js";
+import { recordActionWhole } from "./action-ledger.js";
+import { LAND_INTENT, LAND_SETTLED } from "./local-landing.js";
+import { landedRowsOf } from "./landed-rows.js";
 import { checklistFromAssignment, checklistLines, mergeChecklistOf, noCheckSetWords, NOT_RECORDED, NOT_RECORDED_LOCAL, type ChecklistKey, type MergeChecklist } from "./merge-checklist.js";
 import { revisionFormOf, workspaceOf } from "../test/serve-kit.js";
+import { stepCardsOf } from "./engine-reads.js";
 
 const NOW = new Date("2026-11-05T12:00:00.000Z");
 const ago = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000);
@@ -232,6 +239,10 @@ describe("one checklist on every surface", () => {
     expect(family.versions.length).toBe(2);
     const consumed = store.allDiffComments(runs["refuted"]!).filter(one => one.consumedBy === family.current.id);
     expect(consumed.map(one => one.note)).toEqual([fix.note]);
+    // The revision hasn't built yet: its attempts still count the family's builds (attempt N is the Nth build of the task).
+    const cards = stepCardsOf({ store, family, now: NOW, access: { principal: "operator", repos: [REPO] }, evidenceRoot: ev });
+    expect(cards.cards?.find(one => one.key === "build")?.runs ?? []).toEqual([]);
+    expect(cards.familyBuilds).toEqual([runs["refuted"]]);
   });
 });
 
@@ -241,7 +252,7 @@ describe("a project with no check set", () => {
     try {
       store.clearVerifyCommand(REPO, "sam", ago(30));
       built("no-check", ago(25), "attested");
-      expect(rowOf("no-check", "checks")).toEqual({ key: "checks", label: "Project checks passed on this commit", mark: "no",
+      expect(rowOf("no-check", "checks")).toEqual({ key: "checks", label: "Project checks passed on this commit", mark: "note",
         say: "No check is set for merge-ready. Set one in Settings → Projects → merge-ready → Checks.", act: null });
       expect(noCheckSetWords(REPO)).toBe("No check is set for merge-ready. Set one in Settings → Projects → merge-ready → Checks.");
       // Never says a check passed or ran when none did.
@@ -252,5 +263,130 @@ describe("a project with no check set", () => {
     // The same result, now that the project has a check: it didn't run on this commit, so Run checks stays.
     expect(rowOf("no-check", "checks")).toMatchObject({ mark: "no", act: { kind: "run-checks", run: runs["no-check"] } });
     expect(rowOf("no-check", "checks").say).not.toMatch(/No check is set/);
+  });
+});
+
+describe("accepted work reads as accepted (stranger 17)", () => {
+  // A project without pull requests, as Land needs (an earlier test granted publishing here).
+  beforeAll(() => { store.revokePublicationGrant(REPO, "sam", ago(20)); });
+  function accept(id: string, at: Date): void {
+    const who = verifyApproverByPassword(store, "sam", password, [REPO]);
+    if (!who.ok) throw new Error("who");
+    const read = assignmentOf(store, id, NOW, { principal: "operator", repos: [REPO] }, ev)!;
+    const done = acceptAndCompleteAsOperator(store, id, { runId: read.receipt!.runId, receiptDigest: read.receipt!.digest, note: null }, who.who, at, ev);
+    if (!done.ok) throw new Error(done.message);
+  }
+
+  test("the acceptance answers its \"You check\" requirement; Can I merge? agrees with Land; out-of-date checks still say Not yet", () => {
+    built("accepted", ago(15), "person");
+    expect(rowOf("accepted", "requirements").mark).toBe("waiting");
+    accept("accepted", ago(14));
+    expect(rowOf("accepted", "requirements")).toMatchObject({ mark: "yes", say: "Accepted by sam.", act: null });
+    expect(listOf("accepted").answer).toBe("yes");
+    // The check command changed since: Land refuses until they run again, and so does the answer, with the reason.
+    const live = store.liveVerifyCommand(REPO)!;
+    try {
+      store.setVerifyCommand({ repo: REPO, command: "npm test && node -e 1", timeoutMs: live.timeoutMs, approvedBy: "sam" }, ago(10));
+      const list = listOf("accepted");
+      expect(list.answer).toBe("no");
+      expect(list.rows.find(one => one.key === "checks")).toMatchObject({ mark: "no", act: { kind: "run-checks" } });
+      expect(list.rows.find(one => one.key === "requirements")).toMatchObject({ mark: "yes", say: "Accepted by sam." });
+    } finally {
+      store.setVerifyCommand({ repo: REPO, command: live.command, timeoutMs: live.timeoutMs, approvedBy: "sam" }, ago(9));
+    }
+  });
+
+  test("the result page offers no Looks right / Not right on accepted work, and the page's panel says it is accepted", async () => {
+    const open = await http(`/t/person?tab=result&run=${runs["person"]}`);
+    expect(open.body).toContain('"youCheck":{');
+    // Marked complete with no acceptance of its own on record (Mark complete, the terminal's a): still accepted.
+    built("marked", ago(8.9), "person");
+    const who = verifyApproverByPassword(store, "sam", password, [REPO]);
+    if (!who.ok) throw new Error("who");
+    const marked = checkAssignmentAsOperator(store, "marked", assignmentOf(store, "marked", NOW, { principal: "operator", repos: [REPO] }, ev)!.receipt!.digest, who.who, ago(8.8), ev);
+    expect(marked.ok).toBe(true);
+    expect(rowOf("marked", "requirements")).toMatchObject({ mark: "yes", say: "Accepted by sam." });
+    expect((await http(`/t/marked?tab=result&run=${runs["marked"]}`)).body).not.toContain('"youCheck":{');
+    const page = await http(`/t/accepted?tab=result&run=${runs["accepted"]}`);
+    expect(page.status).toBe(200);
+    expect(page.body).not.toContain('"youCheck":{');
+    const task = workspaceOf((await http("/t/accepted")).body).view as { mergeReady?: { answer: string; rows: { key: string; mark: string; say: string }[] } };
+    expect(task.mergeReady?.rows.find(one => one.key === "requirements")).toMatchObject({ mark: "yes", say: "Accepted by sam." });
+  });
+
+  test("work the lead's token completed keeps the person's own check open: not met, no \"Accepted by\", Looks right still offered (review round 1)", async () => {
+    built("machine-done", ago(8.7), "person");
+    const who = verifyApproverByPassword(store, "sam", password, [REPO]);
+    if (!who.ok) throw new Error("who");
+    const digest = assignmentOf(store, "machine-done", NOW, { principal: "operator", repos: [REPO] }, ev)!.receipt!.digest;
+    expect(withActor({ account: "sam", lead: true }, () => checkAssignmentAsOperator(store, "machine-done", digest, who.who, ago(8.6), ev)).ok).toBe(true);
+    const read = assignmentOf(store, "machine-done", NOW, { principal: "operator", repos: [REPO] }, ev)!;
+    expect(read.state).toBe("complete");
+    expect(read.completion?.person).toBeUndefined();
+    expect(rowOf("machine-done", "requirements")).toMatchObject({ mark: "waiting", say: "You check 1 requirement." });
+    expect(listOf("machine-done").answer).toBe("not-yet");
+    expect((await http(`/t/machine-done?tab=result&run=${runs["machine-done"]}`)).body).toContain('"youCheck":{');
+    const requirements = (id: string) => statusOf(assignmentStatusFacts(assignmentOf(store, id, NOW, { principal: "operator", repos: [REPO] }, ev)!)).details.find(one => one.key === "requirements")?.text;
+    expect(requirements("machine-done")).toBe("0 of 1 met · You check 1");
+    // The person's own Accept on it (offered on the result, review round 2) records their yes to this exact receipt.
+    const page = await http(`/t/machine-done?tab=result&run=${runs["machine-done"]}`);
+    expect(page.body).toContain('"action":"/t/machine-done/complete"');
+    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(page.body)![1]!;
+    const posted = await http("/t/machine-done/complete", { method: "POST", body: new URLSearchParams({ csrf, run: String(runs["machine-done"]), receipt: read.receipt!.digest, accept: "1" }).toString() });
+    expect(posted.status).toBe(303);
+    const confirmed = assignmentOf(store, "machine-done", NOW, { principal: "operator", repos: [REPO] }, ev)!;
+    expect(confirmed).toMatchObject({ state: "complete", completion: { person: "sam", digest: read.receipt!.digest } });
+    expect(rowOf("machine-done", "requirements")).toMatchObject({ mark: "yes", say: "Accepted by sam." });
+    expect(requirements("machine-done")).toBe("1 of 1 met");
+    // A person's own completion (the terminal's a, Mark complete) answers it.
+    expect(assignmentOf(store, "marked", NOW, { principal: "operator", repos: [REPO] }, ev)!.completion?.person).toBe("sam");
+    expect(requirements("marked")).toBe("1 of 1 met");
+  });
+
+  test("landed work: the workbench's rows carry where it landed; work never landed carries nothing", async () => {
+    const head = store.getRun(runs["accepted"]!)!.headRevision!;
+    const commit = "c".repeat(40);
+    const at = ago(9.5).toISOString();
+    const intent = recordActionWhole(store.handle, { at, actor: "operator:sam", repo: REPO, taskId: "accepted", runId: runs["accepted"]!, action: LAND_INTENT, outcome: "pending", source: "request" },
+      { v: 1, kind: "land", key: "k", ref: "refs/heads/main", old: "1".repeat(40), commit, mode: "ref", policy: "squash", candidate: head });
+    recordActionWhole(store.handle, { at, actor: "toolroll", repo: REPO, taskId: "accepted", runId: runs["accepted"]!, action: LAND_SETTLED, outcome: `${intent}:landed`, source: "work" }, { v: 1 });
+    const none = () => null;
+    const rows = [{ rootId: "accepted", repo: REPO, resultRunId: runs["accepted"]!, assignmentState: "complete" },
+      { rootId: "marked", repo: REPO, resultRunId: runs["marked"]!, assignmentState: "complete" },
+      { rootId: "person", repo: REPO, resultRunId: runs["person"]!, assignmentState: "ready-to-check" }];
+    expect([...landedRowsOf(store, rows, none)]).toEqual([["accepted", "Landed on main (ccccccc)"]]);
+    const answer = await http("/work/rows", { method: "GET" });
+    expect(answer.status).toBe(200);
+    const listed = (JSON.parse(answer.body) as { rows: { id: string; landed?: string }[] }).rows;
+    expect(listed.find(one => one.id === "accepted")?.landed).toBe("Landed on main (ccccccc)");
+    expect(listed.find(one => one.id === "marked")).not.toHaveProperty("landed");
+    // `toolroll task list` says it with the same short mark.
+    const out: string[] = [];
+    await runOperate("task", ["list", "--db", file], line => { out.push(line); }, { now: NOW });
+    expect(out.find(line => line.includes("Task accepted"))).toMatch(/Complete\s+Task accepted · landed on main \(ccccccc\)$/);
+    expect(out.find(line => line.includes("Task marked"))).toMatch(/Complete\s+Task marked$/);
+    // `toolroll task show`: where it landed first, under the title; checked says who accepted it, nothing pending.
+    const shown: string[] = [];
+    await runOperate("task", ["show", "accepted", "--db", file], line => { shown.push(line); }, { now: NOW });
+    const lines = shown.join("\n").split("\n");
+    expect(lines.slice(0, 3)).toEqual(["accepted  Complete", "  Task accepted", "  landing: Landed on main (ccccccc)."]);
+    expect(lines).toContain("  checked: accepted by sam");
+    expect(lines.join("\n")).not.toMatch(/awaiting|not all requirements shown yet|doesn't match/);
+  });
+
+  test("no check set is a note, not a blocker: accepted work with no check answers yes, as Land lands it", () => {
+    const live = store.liveVerifyCommand(REPO)!;
+    try {
+      store.clearVerifyCommand(REPO, "sam", ago(8.5));
+      built("accepted-no-check", ago(8), "attested");
+      expect(rowOf("accepted-no-check", "checks")).toMatchObject({ mark: "note", say: noCheckSetWords(REPO), act: null });
+      accept("accepted-no-check", ago(7));
+      const list = listOf("accepted-no-check");
+      expect(list.rows.filter(one => one.mark === "no")).toEqual([]);
+      expect(list.answer).toBe("yes");
+      expect(checklistLines(list).join("\n")).toContain(`– Project checks passed on this commit: ${noCheckSetWords(REPO)}`);
+    } finally {
+      store.setVerifyCommand({ repo: REPO, command: live.command, timeoutMs: live.timeoutMs, approvedBy: "sam" }, ago(5));
+    }
   });
 });

@@ -13,7 +13,8 @@ import { codexOfflineDependencySuggestion, failedAttemptSentence, latestFinished
 import { pendingAgentChangeOf, planSourceOf, retryPinsOf } from "./local-owner-acts.js";
 import { assignmentOf, owedAcceptance, personCompletionRefusal, type AssignmentSnapshot } from "./assignment.js";
 import { assignmentCardOf } from "./assignment-ui.js";
-import { landedNowOf } from "./merge-checklist.js";
+import { behindMainOf, landedNowOf, upToDateNote } from "./merge-checklist.js";
+import { publishesThroughPullRequests } from "./local-landing.js";
 import { liveQuickCommand } from "./check-levels.js";
 import { assignmentStageOf, stageOfCode } from "./task-status.js";
 import { taskRoad, type RoadChecks } from "./first-run.js";
@@ -178,8 +179,20 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
     // check that ran again), out of date (its command changed) or unreadable. A terminal marks only a failure as one.
     ...(card?.status.check === "failed" || card?.status.check === "stale" || card?.status.check === "unreadable" ? { check: card.status.check } : {}),
     ...(() => { const offer = runChecksOfferOf(store, assignment, card?.status.check ?? null); return offer === null ? {} : { runChecks: offer }; })(),
+    // An accepted result behind main (stranger 17): Send back brings it up to date, so a terminal's r offers it too.
+    ...(() => { const offer = assignment === null || assignment.receipt?.taskId !== current.id ? null : behindMainOfferOf(store, assignment, scope?.digest ?? null); return offer === null ? {} : { behindMain: offer }; })(),
+    // Every build of this task, its revisions' included, newest first: "attempt N" is the Nth of them, as the task page
+    // numbers its results (one count the person reads everywhere; the console's build ids count across tasks).
+    familyBuilds: familyBuildsOf(store, family, current.refId, runs),
     room: `task:${encodeURIComponent(root.id)}`,
   };
+}
+
+/** The builds of every version of a task, newest first (the current version's runs already read are reused). */
+function familyBuildsOf(store: Store, family: TaskFamily, currentRef: number, currentRuns: readonly Run[]): number[] {
+  const isBuild = (run: Run) => run.role === "builder" || run.role === "scout" || run.role === "repair";
+  return family.versions.flatMap(version => version.refId === currentRef ? currentRuns : store.runsFor(version.refId))
+    .filter(isBuild).map(run => run.id).sort((a, b) => b - a);
 }
 
 /** What Run checks again posts (POST /r/<run>/checks `level`, the task page's own Run checks): the current result's build
@@ -192,6 +205,18 @@ function runChecksOfferOf(store: Store, assignment: AssignmentSnapshot | null, c
   if (receipt === null || receipt.head === null || receipt.completionKind === "research-report" || assignment!.repo === null || store.isDemo()) return null;
   const level = store.liveVerifyCommand(assignment!.repo) !== null ? "full" as const : liveQuickCommand(store, assignment!.repo) !== null ? "quick" as const : null;
   return level === null ? null : { run: receipt.runId, level };
+}
+
+/** What Send back posts for an accepted result behind its project's main (StepCards.behindMain): only in a project
+ * without pull requests, not landed, and not after a catch-up that conflicted with main as it is now (then sending it
+ * back can't help). Display only: the post proves everything again. Null otherwise. */
+function behindMainOfferOf(store: Store, assignment: AssignmentSnapshot, scopeDigest: string | null): NonNullable<StepCards["behindMain"]> | null {
+  const receipt = assignment.receipt;
+  if (assignment.state !== "complete" || receipt === null || receipt.head === null || receipt.completionKind === "research-report" || assignment.repo === null || store.isDemo()) return null;
+  if (publishesThroughPullRequests(store, assignment.repo) || landedNowOf(store, assignment) !== null) return null;
+  const standing = behindMainOf(store, assignment, undefined);
+  if (standing === null || standing.main === null || standing.behind === null || standing.behind === 0 || standing.conflict !== null) return null;
+  return { run: receipt.runId, receipt: receipt.digest, source: revisionSourceOf(scopeDigest), main: standing.main, behind: standing.behind, note: upToDateNote(standing.main) };
 }
 
 /** The words Open build shell is refused with when its build has nothing to open on, as the start itself says them
@@ -773,8 +798,9 @@ const HIDDEN_NAME = "[a name was hidden]";
 export function threadDiffOf(thread: string, turn: number, changes: ThreadChanges, seen: { edited?: boolean } = {}): ResultDiff {
   const empty = (problem: string): ResultDiff => ({ version: ENGINE_API_VERSION, task: thread, run: turn, totals: null, files: [], patchTruncated: false, problem });
   if (!changes.ok) return empty(`This thread's changes can't be read: ${cleanLiveText(changes.message)}`);
-  // The agent edited files but committed none of it (everyday 9, B2): said as what to do, since Ship and Save take commits.
-  if ("none" in changes && seen.edited === true) return empty("The agent has uncommitted edits. Ask it to commit them: Ship and Save as branch take committed work only.");
+  // The agent edited files but committed none of it (everyday 9, B2): said as what to do. Ship takes commits; Save as
+  // branch commits what the agent left once its agent has stopped (stranger 17).
+  if ("none" in changes && seen.edited === true) return empty("The agent has uncommitted edits. Ask it to commit them, or end the thread and save it as a branch: that saves them too.");
   if ("none" in changes) return empty("No committed changes yet. Ask the agent to commit its work: Ship sends committed work only.");
   const files = patchFiles(changes.patch).map((text, index) => {
     const parsed = parseReviewDiff(text).files[0];

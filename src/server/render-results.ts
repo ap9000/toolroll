@@ -869,7 +869,11 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   // button would phrase it as one.
   const owed = accepted ? null : youCheck?.accept != null || shared === "person-check" ? { note: null }
     : shared === "exception" || blocked === ACCEPT_NEEDS_REASON ? { note: "Why is this safe to accept?" } : null;
-  const complete = hardStop === null && assignment?.state === "ready-to-check" && assignment.receipt !== null && canRetryReview && csrf !== ""
+  // Completed exactly this receipt by a machine or the lead only, with checks only a person gives still open: the
+  // person's own Accept records their yes (assignment.ts acknowledgeCurrent), never a second completion of anything else.
+  const confirm = assignment?.state === "complete" && assignment.completion !== null && assignment.completion.person === undefined && assignment.completion.historical !== true
+    && assignment.completion.landed === undefined && assignment.receipt !== null && assignment.completion.digest === assignment.receipt.digest && youCheck != null;
+  const complete = hardStop === null && (assignment?.state === "ready-to-check" || confirm) && assignment?.receipt != null && canRetryReview && csrf !== ""
     ? { action: `${taskHref(view.taskId)}/complete`, receipt: assignment.receipt.digest, run: run.id, accept: owed, ...(host.kind === "task" ? { returnTo: at() } : {}) } : null;
   if (complete !== null) parts.push(completionForm(view.taskId, run.id, complete.receipt, view.detail?.pullRequestTo ?? null, owed));
   // The one decision, after the evidence: Accept and finish only when every requirement is met and the checks passed.
@@ -2111,7 +2115,9 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
   // Requirements only a person can confirm: plain words and one Accept,
   // in neutral ink — nothing failed. Accepting records the person's
   // decision and leaves the recorded checks as they are.
-  const personChecks = proof === null || proof.accepted !== null || detail.landed === true ? [] : [
+  // A person's own completion (today's or history's) is their yes already: nothing to answer again. Work a machine or
+  // the lead completed keeps the person's checks open.
+  const personChecks = proof === null || proof.accepted !== null || detail.landed === true || (detail.assignment?.state === "complete" && detail.assignment.completion?.person !== undefined) ? [] : [
     ...proof.matrix.filter(row => row.state === "manual-review").map(row => personCheckWords(row.statement)),
     ...(proof.matrix.length > 0 ? [] : proof.reasons.filter(reason => manualReviewCriterionOf(reason) !== null).map(() => personCheckWords(null))),
   ];

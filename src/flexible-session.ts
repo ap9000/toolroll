@@ -55,7 +55,7 @@ import { flexibleThread, prepareFlexibleThread, removeFlexibleThread, stopFlexib
 import { admitFlexibleTurn, finishFlexibleTurn, flexibleTurn, interruptFlexibleThreadTurns, interruptFlexibleTurnsOf, withdrawFlexibleTurn, type FlexibleClock } from "./flexible-turns.js";
 import { userFrame } from "./live-input.js";
 import { cleanLiveText, createLiveRecorder, HIDDEN_LINE, liveSecretHit, type LiveRecord, type LiveRecorder } from "./live-records.js";
-import { flexibleConversationOf, flexibleTurnMessage, recordFlexibleFiles, recordFlexibleReply, recordFlexibleSaid, recordFlexibleStartTip, saidLines } from "./flexible-conversation.js";
+import { flexibleConversationOf, flexibleTurnMessage, flexibleTurnRecordsOf, keepFlexibleTurnRecords, recordFlexibleFiles, recordFlexibleReply, recordFlexibleSaid, recordFlexibleStartTip, saidLines, sayTextOf } from "./flexible-conversation.js";
 import { flexibleThreadTip, readFlexibleChanges } from "./flexible-import.js";
 import type { FlexibleLauncher } from "./flexible-launcher.js";
 import { primaryResultEvent } from "./stream-scope.js";
@@ -569,10 +569,25 @@ export function attachFlexibleAgent(store: Store, sessions: FlexibleSessions, in
   session.agent = link;
   // The turn the agent's output belongs to: kept after the turn's link is cleared, so its last lines are judged by it.
   let outputTurn: string | null = input.turn;
+  // What each turn showed of the agent (its words and steps), kept when it ends so the thread's later views (after End
+  // or a restart, from Toolroll's records) show the same conversation, not just its result line (stranger 17).
+  const shown = new Map<string, LiveRecord[]>();
+  const kept = new Set<string>();
+  const keepShown = (turn: string | null) => {
+    if (turn === null || kept.has(turn)) return;
+    kept.add(turn);
+    try { keepFlexibleTurnRecords(thread.folder, turn, shown.get(turn) ?? []); } catch { /* the reply in the record still shows */ }
+    shown.delete(turn);
+  };
   const keep = (given: LiveRecord[]) => {
     if (link.turn !== null) outputTurn = link.turn;
     const records = withoutRefusedLines(store, outputTurn, given);
     if (records.length === 0) return;
+    if (outputTurn !== null && !kept.has(outputTurn)) {
+      const mine = shown.get(outputTurn) ?? [];
+      if (mine.length < FLEXIBLE_RECORDS_KEPT) mine.push(...records);
+      shown.set(outputTurn, mine);
+    }
     session.records.push(...records);
     if (session.records.length > FLEXIBLE_RECORDS_KEPT) {
       const drop = session.records.length - FLEXIBLE_RECORDS_KEPT;
@@ -612,8 +627,12 @@ export function attachFlexibleAgent(store: Store, sessions: FlexibleSessions, in
     if (primaryResultEvent(raw) && link.turn !== null) {
       // A result that is an error isn't a finished turn: it ends `unknown`, in Toolroll's words.
       const failed = raw["is_error"] === true;
-      // The turn's final reply, kept for the next turn's agent (the conversation so far) and the person's view.
-      if (!failed && typeof raw["result"] === "string") { try { recordFlexibleReply(store, { turn: link.turn, reply: raw["result"] }); } catch { /* the conversation goes without it */ } }
+      // The turn's reply, kept for the next turn's agent (the conversation so far) and the person's view: the words the
+      // person saw the agent say in this turn, else its result line.
+      const said = sayTextOf(shown.get(link.turn) ?? []);
+      const reply = said.trim() !== "" ? said : typeof raw["result"] === "string" ? raw["result"] : null;
+      if (!failed && reply !== null) { try { recordFlexibleReply(store, { turn: link.turn, reply }); } catch { /* the conversation goes without it */ } }
+      keepShown(link.turn);
       void endFlexibleThreadTurn(store, sessions, { thread: input.thread, turn: link.turn, outcome: failed ? "unknown" : "finished", ...(failed ? { detail: "The agent stopped with an error." } : {}), ...clocked });
     }
   };
@@ -633,6 +652,8 @@ export function attachFlexibleAgent(store: Store, sessions: FlexibleSessions, in
   });
   input.exited(() => {
     if (session.agent === link) { keep(link.recorder.end()); session.agent = null; }
+    // A turn the agent left without a result (stopped, ended): what it showed is kept all the same.
+    keepShown(outputTurn);
     revokeFlexibleAnswers(store, sessions.catalog, { thread: input.thread, connection: link.launch, reason: "the agent stopped", ...clocked });
     bump(sessions, input.thread);
   });
@@ -1481,10 +1502,15 @@ const RECORDED_EPOCH = "0".repeat(16);
 function conversationRecords(store: Store, thread: string): ThreadRecord[] {
   let turns: ReturnType<typeof flexibleConversationOf>;
   try { turns = flexibleConversationOf(store, thread); } catch { return []; }
-  return turns.filter(one => one.status !== "admitted" && one.status !== "running").flatMap((one): ThreadRecord[] => [
-    { k: "you", at: one.saidAt, t: saidLines(one.said) },
-    ...(one.reply === null ? [] : [{ k: "say" as const, at: one.saidAt, t: saidLines(one.reply, 400) }]),
-  ]);
+  const folder = flexibleThread(store, thread)?.folder ?? "";
+  return turns.filter(one => one.status !== "admitted" && one.status !== "running").flatMap((one): ThreadRecord[] => {
+    // What the turn showed live (its words and steps), where it was kept; else its recorded reply.
+    const shown = folder === "" ? [] : flexibleTurnRecordsOf(folder, one.turn);
+    return [
+      { k: "you", at: one.saidAt, t: saidLines(one.said) },
+      ...(shown.length > 0 ? shown : one.reply === null ? [] : [{ k: "say" as const, at: one.saidAt, t: saidLines(one.reply, 400) }]),
+    ];
+  });
 }
 
 /** Earlier turns whose changed paths are read at most per new turn (a quarantined read each, under the thread's lock):

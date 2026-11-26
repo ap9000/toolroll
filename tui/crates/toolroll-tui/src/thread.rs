@@ -206,6 +206,7 @@ impl Threads {
                     thread: true,
                     waiting: None,
                     check: None,
+                    landed: None,
                 }
             })
             .collect()

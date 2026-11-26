@@ -432,6 +432,9 @@ pub struct WorkRow {
     /// changed, never a failure) or can't be read ("unreadable"); absent on every other row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check: Option<String>,
+    /// Complete work already on its branch: its landing words ("Landed on main (abc1234)"); absent on every other row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landed: Option<String>,
     pub detail: Option<String>,
     pub problem: Option<String>,
     pub need: Option<NeedRow>,
@@ -626,6 +629,10 @@ pub struct StepCards {
     /// The task's newest run, live or finished: the run a cancel names as the one it showed.
     #[serde(default)]
     pub latest_run: Option<i64>,
+    /// Every build of the task's versions (its revisions included), newest first: "attempt N" is the Nth of them, as the
+    /// task page numbers its results. Empty from an older console.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub family_builds: Vec<i64>,
     /// The agent each step of this task runs (its route); null without an exact route.
     #[serde(default)]
     pub models: Option<Vec<TaskStepModel>>,
@@ -672,7 +679,23 @@ pub struct StepCards {
     /// What Run checks again posts (POST /r/<run>/checks `level`); absent when it isn't offered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_checks: Option<RunChecksOffer>,
+    /// An accepted result behind its project's main: what Send back posts (its next attempt starts with main merged in).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behind_main: Option<BehindMain>,
     pub room: String,
+}
+
+/// An accepted result behind main (StepCards.behind_main): the Send back post's run and source, the receipt it was read
+/// at, the branch, how far behind, and the feedback the task page prefills.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct BehindMain {
+    pub run: i64,
+    pub receipt: String,
+    pub source: String,
+    pub main: String,
+    pub behind: i64,
+    pub note: String,
 }
 
 /// Run checks again on a result (StepCards.run_checks): its build and the level its project has a command for.

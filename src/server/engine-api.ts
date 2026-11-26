@@ -29,7 +29,7 @@ import { flexibleAvailable } from "../flexible-available.js";
 import { laptopShipProblem } from "../flexible-laptop.js";
 import { threadsStatusNote, tidyFlexibleSignIns } from "../flexible-sign-in.js";
 import { FLEXIBLE_UNAVAILABLE } from "../flexible.js";
-import { saveFlexibleBranch } from "../flexible-save.js";
+import { flexibleSavedWords, flexibleUncommittedFiles, saveFlexibleBranch } from "../flexible-save.js";
 import { admitFlexibleThreadOwner, answerFlexibleRequest, cancelFlexibleThreadShip, closeFlexibleSessions, closeFlexibleThread, continueFlexibleThread, flexibleShipNeedsFor, flexibleThreadShipTerms, latestFlexibleShip, sendBackFlexibleThread, shipFlexibleThread, tidyEndedFlexibleThreads, flexibleThreadChangeOf, flexibleThreadEdited, flexibleThreadLiveOf, flexibleThreadsOf, FLEXIBLE_WAIT_MS, flexibleThreadsExist, flexibleWorkOpen, openFlexibleSessions,
   recoverFlexibleHolders, startFlexibleThread, settleFlexibleStops, tickFlexibleSessions, waitFlexibleThreadChange, flexibleThreadChanges, flexibleThreadTipOf, type FlexibleChoice, type FlexibleSessions } from "../flexible-session.js";
 import { createFlexibleLauncher, type FlexibleLauncher } from "../flexible-launcher.js";
@@ -42,7 +42,7 @@ import { defaultChainOf, installModeNow } from "../install-mode.js";
 import { packageVersion } from "../monitoring.js";
 import { readChildWindow, type ChildWindow } from "../live-children-read.js";
 import { readMainWindow, type MainWindow } from "../live-main-read.js";
-import { runLiveCommands, type Run } from "../store.js";
+import { runLiveCommands, typedNotesFor, type Run } from "../store.js";
 import { agentsReadOf, resultDiffContextOf, resultDiffFileOf, resultDiffOf, resultRunsOf, stepCardsOf, taskResultOf, threadDiffFileOf, threadDiffOf, type ThreadChanges } from "../engine-reads.js";
 import { leadChatOf } from "../engine-chat.js";
 import { remoteAllows } from "../operate-remote.js";
@@ -438,6 +438,9 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const taskId = family.current.id;
     const none = (problem: string) => sendChecked(response, 200, "approvalCard", { version: ENGINE_API_VERSION, task: taskId, key: null, digest: null, nonce: null, terms: [], problem });
     const waits = (view: NonNullable<ReturnType<typeof runtime.taskViewData>>) => view.nonce !== "" && view.approvalDigest != null && view.approvalSummary != null;
+    // The words people typed into the notes this revision was sent back with (read only when there is a revision).
+    const sentBackTyped = (view: NonNullable<ReturnType<typeof runtime.taskViewData>>) => view.revision == null || "problem" in view.revision ? []
+      : typedNotesFor(runtime.store, taskId, 100).filter(one => one.kind === "sent-back");
     // Read without minting (the page's own conditions say whether a yes can be taken); only a yes this session can give
     // here gets a nonce, the one held for this person, task and digest if there is one. Clients with native password
     // step-up UI (the Mac app) pass ?stepup=1 to still receive terms, digest, and a single-use nonce while POST /approve
@@ -461,12 +464,12 @@ export function createEngineHandlers(runtime: ServerRuntime) {
         key: view.approvalSummary!.key,
         digest: view.approvalDigest,
         nonce: runtime.heldApprovalNonce(who.name, taskId, view.approvalDigest!),
-        terms: approvalTermsOf(view.approvalSummary!, view.planContract ?? null, view.revision ?? null),
+        terms: approvalTermsOf(view.approvalSummary!, view.planContract ?? null, view.revision ?? null, sentBackTyped(view)),
         problem,
       });
     }
     return sendChecked(response, 200, "approvalCard", { version: ENGINE_API_VERSION, task: taskId, key: view.approvalSummary!.key, digest: view.approvalDigest,
-      nonce: runtime.heldApprovalNonce(who.name, taskId, view.approvalDigest!), terms: approvalTermsOf(view.approvalSummary!, view.planContract ?? null, view.revision ?? null), problem: null });
+      nonce: runtime.heldApprovalNonce(who.name, taskId, view.approvalDigest!), terms: approvalTermsOf(view.approvalSummary!, view.planContract ?? null, view.revision ?? null, sentBackTyped(view)), problem: null });
   }
 
   /** GET /t/<task>/diff[?run=<id>[&file=<n>[&from=<line>&count=<n>]]]: the result's files, one file's hunks (which needs
@@ -652,8 +655,11 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     if (held === null || !held()) return acted(response, 403, "refused", "Only a person signed in here can do that.");
     const done = await closeFlexibleThread(store, flexible, { thread: id, by: { name: who.name, generation: who.session.generation }, act });
     if (!done.ok) return acted(response, 409, "refused", done.message);
+    // Edits its agent left uncommitted are said, with the save that keeps them (stranger 17), once its agent has stopped.
+    const left = act === "end" && !done.already && !done.stopPending ? (await flexibleUncommittedFiles(store, { thread: id })).length : 0;
     const words = act === "end"
       ? done.already ? "This thread had already ended." : done.stopPending ? "Ended. Stopping its agent…"
+        : left > 0 ? `Ended. Its agent left uncommitted edits in ${left} file${left === 1 ? "" : "s"}: save its work as a branch (S on the thread) to keep them.`
         // Ship promised only where this project can take one; Save as branch works everywhere.
         : flexibleShipNeedsFor(store, id) === null ? "Ended. You can still ship its work, or save it as a branch." : "Ended. You can still save its work as a branch (S on the thread)."
       : done.stopPending ? "Stopping its agent…" : "Stopped. Reply to go on.";
@@ -754,7 +760,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     if (held === null || !held()) return acted(response, 403, "refused", "Only a person signed in here can save a thread's work.");
     const saved = await saveFlexibleBranch(store, { thread: id, by: { name: who.name, generation: who.session.generation }, now: new Date(), prove: held });
     if (!saved.ok) return acted(response, 409, "refused", saved.message);
-    return acted(response, 200, "done", `${saved.already ? `Already saved as ${saved.branch}.` : `Saved as ${saved.branch} (commit ${saved.candidate.slice(0, 12)}).`} ${saved.next}`, undefined, saved.command);
+    return acted(response, 200, "done", `${flexibleSavedWords(saved)} ${saved.next}`, undefined, saved.command);
   }
 
   /** GET /engine/chat[?project=]: the person's central Lead conversation as structured data (never HTML), admitted as
@@ -922,7 +928,10 @@ export const APPROVE_IN_BROWSER = "Press w to open it in your browser.";
 /** The approval card's terms: the summary whose key the form's digest binds (summaryLines, read as Build's offer reads its
  * terms), then what the plan changed from the terms before it (the task page's amendment, said before the yes), then the
  * notes a revision was sent back with (the page's revision card). */
-export function approvalTermsOf(summary: ApprovalSummary, contract: PlanContractView | null, revision: RevisionView | null): { label: string; words: string }[] {
+export function approvalTermsOf(summary: ApprovalSummary, contract: PlanContractView | null, revision: RevisionView | null,
+  /** What people typed into the notes that made this revision (store.ts typedNotesFor, by each note's id): a note shows
+   * its person's own words, never what the page filled in ahead of them (a quoted requirement, a check's failure). */
+  typed: readonly { id: number; author: string; note: string }[] = []): { label: string; words: string }[] {
   const terms = termsOfLines(summaryLines(summary));
   if (contract !== null && "problem" in contract) terms.push({ label: "Plan record", words: contract.problem });
   else if (contract !== null && (contract.filed || contract.revision === true) && contract.changes.length > 0) {
@@ -932,7 +941,10 @@ export function approvalTermsOf(summary: ApprovalSummary, contract: PlanContract
   }
   if (revision !== null && "problem" in revision) terms.push({ label: "Sent back", words: revision.problem });
   else if (revision !== null && revision.comments.length > 0) {
-    terms.push({ label: "Sent back", words: revision.comments.map(one => `${one.path === null ? "" : `${one.path}${one.line === null ? "" : `:${one.line}`} — `}${one.note} (${one.author})`).join("\n") });
+    // Each note by its own saved id (never by its words: one note can hold another's), only while it still holds them.
+    const said = (one: { id?: number | null; note: string; author: string }) =>
+      typed.find(words => one.id != null && words.id === one.id && words.author === one.author && words.note !== "" && one.note.includes(words.note))?.note ?? one.note;
+    terms.push({ label: "Sent back", words: revision.comments.map(one => `${one.path === null ? "" : `${one.path}${one.line === null ? "" : `:${one.line}`} — `}${said(one)} (${one.author})`).join("\n") });
   }
   return terms;
 }

@@ -219,6 +219,9 @@ const workRowSchema = z.object({
    * again since it ran: `stale`, never a failure) or can't be read (work-index.ts AfterCheck): the fact its Complete
    * headline doesn't say. Absent on every other row. */
   check: z.enum(["failed", "stale", "unreadable"]).optional(),
+  /** Complete work already on its branch (merge-checklist.ts landedRowsOf): its landing words, "Landed on main (abc1234)".
+   * Absent on every other row. Display only. */
+  landed: z.string().optional(),
   detail: z.string().nullable(),
   problem: z.string().nullable(),
   /** What this waiting row asks; absent when it waits on nobody. */
@@ -298,6 +301,9 @@ export const stepCardsSchema = z.object({
   liveRun: z.number().int().nullable(),
   /** The task's newest run, live or finished (null: none yet): the `run` a cancel names as the build it showed. */
   latestRun: z.number().int().nullable(),
+  /** Every build of the task's versions (its revisions included), newest first: "attempt N" is the Nth of them, the count
+   * the task page's results use. */
+  familyBuilds: z.array(z.number().int()).optional(),
   /** The agent each step of this task runs: its approved route, else the proposed or recommended one. `chosen` says
    * whether a person overrode the recommendation for this task. Null when the task has no exact route to show. */
   models: z.array(z.object({ phase: z.string(), provider: z.string(), model: z.string(), chosen: z.enum(["recommended", "override", "pinned"]) })).nullable(),
@@ -381,6 +387,12 @@ export const stepCardsSchema = z.object({
    * result's build and the level its project has a command for, when its check failed, is out of date, can't be read or
    * didn't run. Display only: the console decides who may at the post, as for the page. Absent otherwise. */
   runChecks: z.object({ run: z.number().int(), level: z.enum(["quick", "full"]) }).optional(),
+  /** An accepted result behind its project's main, not landed, in a project without pull requests (merge-checklist.ts
+   * behindMainOf): Send back is the way on, since its next attempt starts with main merged in (revision-catch-up.ts).
+   * What that send back posts to POST /r/<run>/comment intent=revise (`run`, `source`), the `receipt` it was read at, the
+   * branch and how far behind, and the feedback the task page prefills (`note`). Absent otherwise, and when the last such
+   * merge conflicted with main as it is now. Read facts only: the post proves them again. */
+  behindMain: z.object({ run: z.number().int(), receipt: z.string().regex(/^[0-9a-f]{64}$/), source: z.string(), main: z.string(), behind: z.number().int(), note: z.string() }).optional(),
   room: z.string(),
 });
 

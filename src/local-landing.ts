@@ -11,7 +11,8 @@
  *   (everyday-9 A1, "squash"): exactly the tree its checks passed on, its only parent the destination's current commit,
  *   so rejected attempts' commits never reach the branch. Only when the destination's commit is an ancestor of the
  *   candidate (the fast-forward condition), so nothing on the branch is ever dropped; when the branch moved past the
- *   work's start, nothing lands and the person is told to bring the task up to date first. The commit is deterministic
+ *   work's start, nothing lands and the person is told to send it back (a revision starts with the branch's current
+ *   commit merged in: revision-catch-up.ts), or, when that merge conflicted, to merge it themselves. The commit is deterministic
  *   (fixed identity, the completion's own time, the message shown): its id is computed at the look, before anything is
  *   written, and is part of what the person says yes to, with its tree, the tree the checks ran on, the candidate, the
  *   family's start and "squash". The yes writes exactly those bytes (`hash-object`, checked back to the same id and
@@ -52,6 +53,7 @@ import { reproveApprover, verifyApproverStanding, type VerifiedApprover } from "
 import { localActNow, LOCAL_OWNER_LAPSED } from "./local-owner.js";
 import { publishingOf } from "./pull-request-flow.js";
 import { readGit, wholeChangeBaseOf } from "./task-base.js";
+import { catchUpConflictOf } from "./revision-catch-up.js";
 
 export const LAND_DESTINATION = "land destination";
 export const LAND_INTENT = "land intent";
@@ -286,6 +288,25 @@ export function publishesThroughPullRequests(store: Store, repo: string): boolea
 export const PULL_REQUESTS_INSTEAD = "This project publishes through pull requests; open one from the task instead.";
 
 const ALREADY_MSG = (ref: string, commit: string) => `Already on ${ref.replace(/^refs\/heads\//, "")} (${short(commit)}).`;
+/** Work behind its destination (stranger 17): a send back is the way on, because Toolroll merges the destination's
+ * current commit into the revision before its agent starts (revision-catch-up.ts). */
+const MOVED_MSG = (branch: string, old: string) => `${branch} moved on since this work started (it's at ${short(old)} now). `
+  + `Send it back: Toolroll builds it again on the current ${branch} with this work merged in, and its checks run on both together.`;
+/** Work whose last catch-up conflicted with exactly the destination's commit now: another send back would conflict
+ * again, so the words say how to bring the two together by hand. */
+const CONFLICT_MSG = (branch: string, old: string, files: readonly string[], candidate: string) => {
+  const named = files.slice(0, 3).map(one => shownName(one)).join(", ");
+  return `${branch} moved on since this work started (it's at ${short(old)} now), and its newer changes conflict with this work${named === "" ? "" : ` in ${named}${files.length > 3 ? ", …" : ""}`}. `
+    + `Toolroll can't merge them by itself. To land it, merge ${short(candidate)} into ${branch} yourself and resolve the conflicts, or file a new task on the current ${branch}.`;
+};
+
+/** The branch a project's work lands on, as Land reads it with no --into and as a send back merges it in
+ * (revision-catch-up.ts), for every surface that says how far behind it work is: its recorded destination when that is
+ * this project's own repository, else `fallback` (the branch the project folder stands on). From Toolroll's records. */
+export function landingBranchOf<T extends string | null>(store: Store, repo: string, fallback: T): string | T {
+  const recorded = recordedDestination(store, repo);
+  return recorded !== null && recorded.common === commonDirOf(repo) ? recorded.ref.slice("refs/heads/".length) : fallback;
+}
 
 /**
  * What landing this task's accepted result would do, read now; nothing is written. `into` names another branch than
@@ -337,6 +358,14 @@ export async function readLanding(store: Store, taskId: string, access: { repos:
   if (!read.ok && read.reason === "nothing") {
     const seen = recognisedOnBranch(store, project.repo, assignment.rootId, candidate, readGit);
     if (seen !== null && seen.reverted) return refuse("nothing", `${seen.words}.`);
+  }
+  // Behind its destination after a catch-up that conflicted with exactly the commit it's at now: said so, instead of
+  // advising a send back that would conflict again. Display only: it stays the same refusal.
+  if (!read.ok && read.reason === "moved") {
+    const now = await git(["rev-parse", "--verify", "-q", `${destination.ref}^{commit}`]);
+    const old = now.stdout.trim();
+    const files = now.code === 0 && OID.test(old) ? catchUpConflictOf(store, receipt.taskId, old) : null;
+    if (files !== null) return refuse("moved", CONFLICT_MSG(destination.ref.slice("refs/heads/".length), old, files, candidate));
   }
   return read;
 }
@@ -411,8 +440,7 @@ async function planFor(git: Git, project: { repo: string; common: string }, dest
     }
     const ancestor = await git(["merge-base", "--is-ancestor", old, fixed.candidate]);
     if (ancestor.code === 1) {
-      return refuse("moved", `${branch} moved on since this work started (it's at ${short(old)} now): bring this task up to date first. `
-        + `Send it back to build on the current ${branch}; landing it as it is would drop or mix in changes nobody checked together.`);
+      return refuse("moved", MOVED_MSG(branch, old));
     }
     if (ancestor.code !== 0) return refuse("git", "Toolroll couldn't compare the commits.");
     const problem = await treeProblem(git, fixed.candidate) ?? await treeProblem(git, old);

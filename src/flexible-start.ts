@@ -111,7 +111,9 @@ export function flexibleStartCard(store: Store, input: { repo: string; by: { nam
         FLEXIBLE_UNKNOWN_COST_WORDS,
       ], fields: ["flexible.caps"], ...(caps.measuredMicrousdPerDay === null ? { risky: true } : {}) },
     shipNeeds === null ? { label: "Ship", words: FLEXIBLE_SHIP_WORDS, fields: ["flexible.ship"] }
-      : { label: "Ship", words: shipNeeds.short, lines: [`After that: ${lowerFirst(FLEXIBLE_SHIP_WORDS)}`], fields: ["flexible.ship"] },
+      // Save as branch works on any project (stranger 17: the card named only what Ship lacks).
+      : { label: "Ship", words: shipNeeds.short, lines: ["Until then, you can save its work as a branch in your repository instead (S on the thread, or `toolroll thread save <id>`).",
+        `After that: ${lowerFirst(FLEXIBLE_SHIP_WORDS)}`], fields: ["flexible.ship"] },
     { label: "Terms", words: `this project's Flexible terms, turned on by ${terms.signer}`, lines: [`They last until someone turns them off or lowers them, or ${terms.signer}'s account or access changes.`], fields: ["flexible.terms"] },
   ];
   if (runtime === "interactive") {

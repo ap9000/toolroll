@@ -16,8 +16,10 @@
  *
  * Nothing here decides anything: it is what was said, read back.
  */
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, mkdirSync, openSync, readSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { fence } from "./brief-fence.js";
-import { cleanLiveText, HIDDEN_LINE, liveSecretHit } from "./live-records.js";
+import { cleanLiveText, HIDDEN_LINE, liveSecretHit, parseLiveRecords, serializeLiveRecord, type LiveRecord } from "./live-records.js";
 import type { Store } from "./store.js";
 
 const ID = /^[0-9a-f]{32}$/;
@@ -96,6 +98,73 @@ export function recordFlexibleFiles(store: Store, input: { turn: string; files: 
   let files = [...input.files];
   while (files.length > 0 && JSON.stringify(files).length > 20_000) files = files.slice(0, Math.floor(files.length / 2));
   store.handle.prepare("UPDATE flexible_turn_said SET files = ? WHERE turn = ? AND files IS NULL").run(JSON.stringify(files), input.turn);
+}
+
+// ---- what a turn showed, kept for its thread's later views ---------------------------------------------------------
+
+/** The folder, in a thread's own folder (beside its repository, temp, caches and home: never granted to its agent, read
+ * or write), where each turn's shown records are kept: the agent's words and its work steps as the live view showed
+ * them, so an ended thread, or one read after a restart, shows the same conversation (stranger 17: it showed the
+ * agent's raw result line instead, and its "Worked · Edited" lines were gone). Display only: nothing reads it to decide. */
+export const TURN_RECORDS_DIR = "turns";
+/** The most of one turn's shown records kept, in bytes: past it the rest is left out and a `cap` record says so. */
+export const TURN_RECORDS_BYTES = 512 * 1024;
+const TURN_KINDS: ReadonlySet<string> = new Set(["say", "step", "done", "cut", "cap"]);
+
+/** Whether `path` is this user's own private folder, really itself (no link at it or on the way from its parent). */
+function privateFolder(path: string): boolean {
+  try {
+    const held = lstatSync(path);
+    const uid = process.getuid?.();
+    return held.isDirectory() && !held.isSymbolicLink() && (uid === undefined || held.uid === uid) && (held.mode & 0o077) === 0;
+  } catch { return false; }
+}
+
+/** A turn's shown records (what its live view showed of the agent: words and steps), as one file written once in the
+ * thread's own folder (`folder`, from Toolroll's record of the thread). Bounded; anything that can't be written is left
+ * out (the reply in the record still shows). */
+export function keepFlexibleTurnRecords(folder: string, turn: string, records: readonly LiveRecord[]): void {
+  if (!ID.test(turn) || basename(folder) === "" || !privateFolder(folder) || !privateFolder(dirname(folder))) return;
+  const lines: string[] = [];
+  // Counted as the file holds them (UTF-8 bytes, each line's newline, and room kept for the closing `cap` record), as
+  // the reader counts them: a long transcript in a script of wide characters is never written past what is read back.
+  const size = (line: string) => Buffer.byteLength(line, "utf8") + 1;
+  let bytes = 0;
+  for (const record of records) {
+    if (!TURN_KINDS.has(record.k)) continue;
+    const line = serializeLiveRecord(record);
+    const cap = serializeLiveRecord({ k: "cap", at: record.at });
+    if (bytes + size(line) + size(cap) > TURN_RECORDS_BYTES) { lines.push(cap); break; }
+    lines.push(line);
+    bytes += size(line);
+  }
+  if (lines.length === 0) return;
+  const dir = join(folder, TURN_RECORDS_DIR);
+  try {
+    try { mkdirSync(dir, { mode: 0o700 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") return; }
+    if (!privateFolder(dir)) return;
+    writeFileSync(join(dir, `${turn}.jsonl`), `${lines.join("\n")}\n`, { mode: 0o600, flag: "wx" });
+  } catch { /* already kept, or it can't be: the reply in the record still shows */ }
+}
+
+/** A turn's shown records as kept (keepFlexibleTurnRecords), parsed strictly and cleaned again; empty when there are
+ * none or they can't be read safely (a link, anything but a plain file, too large). */
+export function flexibleTurnRecordsOf(folder: string, turn: string): LiveRecord[] {
+  if (!ID.test(turn) || !privateFolder(folder) || !privateFolder(join(folder, TURN_RECORDS_DIR))) return [];
+  let fd: number;
+  try { fd = openSync(join(folder, TURN_RECORDS_DIR, `${turn}.jsonl`), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW); } catch { return []; }
+  try {
+    const held = fstatSync(fd);
+    if (!held.isFile() || held.size > TURN_RECORDS_BYTES) return [];
+    const bytes = Buffer.alloc(held.size);
+    const read = readSync(fd, bytes, 0, bytes.length, 0);
+    return parseLiveRecords(bytes.subarray(0, read).toString("utf8")).filter(one => TURN_KINDS.has(one.k));
+  } catch { return []; } finally { closeSync(fd); }
+}
+
+/** The agent's words in a turn's shown records, as one reply: what the person saw it say, line by line. */
+export function sayTextOf(records: readonly LiveRecord[]): string {
+  return records.flatMap(one => one.k === "say" ? one.t : []).join("\n");
 }
 
 // ---- read back --------------------------------------------------------------------------------------------------------
