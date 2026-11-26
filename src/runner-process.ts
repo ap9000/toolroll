@@ -67,7 +67,9 @@ export function credentialDigest(credentialHash: string): string {
 }
 
 /** `ps -o lstart=` (LC_ALL=C, TZ=UTC) as an ISO second, or null when it isn't exactly that shape. */
-export const parseProcessStart = lstartToIso;
+export function parseProcessStart(raw: string): string | null {
+  return lstartToIso(raw);
+}
 
 /** The identity of the process holding `pid` (process-identity.ts: `proc:<boot id>:<start ticks>` on Linux, else ps's
  * start as an ISO second), by `provider` when given; null when there is no such process or it can't be read. */
