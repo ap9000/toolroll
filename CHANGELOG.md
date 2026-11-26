@@ -4,6 +4,10 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.125 — 2026-11-26
+
+Everything in 0.9.124, which was tagged but never reached npm.
+
 ## 0.9.124 — 2026-11-26
 
 Thread commits stop carrying your computer's name, Skills is in Settings, and saving a Direct Chat tells you how to
