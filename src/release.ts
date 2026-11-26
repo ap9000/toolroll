@@ -101,6 +101,14 @@ export const ADVISORY_PR_CHECKS: Readonly<Record<string, string>> = {
   // The install smoke (scripts/install-smoke.mjs): advisory until it has a run of green pull requests behind it.
   "install smoke · ubuntu-24.04": ".github/workflows/install-smoke.yml",
   "install smoke · macos-latest": ".github/workflows/install-smoke.yml",
+  // Its container lanes: the first terminal start on the Linux machines people have (scripts/container-smoke.sh).
+  "install smoke · ubuntu umask 0002": ".github/workflows/install-smoke.yml",
+  "install smoke · ubuntu umask 0002 · arm64": ".github/workflows/install-smoke.yml",
+  "install smoke · no user namespaces": ".github/workflows/install-smoke.yml",
+  "install smoke · alpine": ".github/workflows/install-smoke.yml",
+  "install smoke · fedora": ".github/workflows/install-smoke.yml",
+  "install smoke · debian 12": ".github/workflows/install-smoke.yml",
+  "install smoke · debian 13": ".github/workflows/install-smoke.yml",
   // The wire budgets (test/perf/wire.wire.test.ts): bytes and queries per page, measured; never a release's question.
   "wire budgets": ".github/workflows/wire-budgets.yml",
   // The terminal workbench's Rust checks (tui/): advisory until the workbench ships in the package.
