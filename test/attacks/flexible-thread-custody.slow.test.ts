@@ -12,8 +12,8 @@
  * token, and interrupts its turn; replies after finished turns, twice in a row, each start a fresh agent on their own
  * proxy, and the replaced agent's own exit never stops the newer launch (stranger test round 11). No model is called.
  */
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, chmodSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync, chmodSync, rmSync } from "node:fs";
+import { delimiter, isAbsolute, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { flexibleThread, flexibleThreadSpawn, prepareFlexibleThread, stopFlexibleThreadAgent, type FlexibleThreadPaths } from "../../src/flexible-thread.js";
 import { flexibleLaunch, relayGrantLive, unsettledLaunch, watchLaunch } from "../../src/flexible-launch.js";
@@ -50,6 +50,16 @@ async function until(test: () => boolean, why?: () => string): Promise<void> {
   expect(test(), why?.()).toBe(true);
 }
 const sleep = (ms: number) => new Promise(done => setTimeout(done, ms));
+/** A stand-in agent's PATH: its own folder and the system's (no real agent program can be found), with a link there to
+ * the git this run already uses, so Toolroll's own git reads stay on that git. Without it, a Mac whose git is Homebrew's
+ * switched mid-file to /usr/bin/git, Xcode's shim, whose first lookup for a fresh CI user on a loaded runner took longer
+ * than the hardened config read's bound (CI macOS shard 4/4 after #502: "its git config couldn't be read" at 15.7 s). */
+function standInPath(bin: string): string {
+  const git = (process.env["PATH"] ?? "").split(delimiter).filter(dir => isAbsolute(dir)).map(dir => join(dir, "git"))
+    .find(file => { try { accessSync(file, fsConstants.X_OK); return true; } catch { return false; } });
+  if (git !== undefined) symlinkSync(realpathSync(git), join(bin, "git"));
+  return `${bin}:/usr/bin:/bin`;
+}
 /** Whether a heartbeat file is still being written (its size grows within a second). */
 async function beating(file: string): Promise<boolean> {
   const size = () => { try { return statSync(file).size; } catch { return -1; } };
@@ -195,7 +205,7 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
       ].join("\n"));
       chmodSync(join(bin, "claude"), 0o755);
       // Only the stand-in and the system's own folders: no real agent program can be found.
-      process.env["PATH"] = `${bin}:/usr/bin:/bin`;
+      process.env["PATH"] = standInPath(bin);
       const { id, paths } = await thread();
       const made = await startFlexibleRelay(world.store, { thread: id });
       if ("ok" in made) throw new Error(made.message);
@@ -254,7 +264,7 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
       mkdirSync(bin);
       writeFileSync(join(bin, "claude"), ["#!/bin/sh", 'while IFS= read -r line; do echo \'{"type":"result","subtype":"success","is_error":false}\'; done'].join("\n"));
       chmodSync(join(bin, "claude"), 0o755);
-      process.env["PATH"] = `${bin}:/usr/bin:/bin`;
+      process.env["PATH"] = standInPath(bin);
       const { id } = await thread();
       const opened = openFlexibleSessions(world.store);
       if (!opened.ok) throw new Error(opened.message);
