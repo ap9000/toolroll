@@ -362,7 +362,7 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
           try { if ((await proveLiveConsole(second, store, packageVersion())).ok) break; } finally { store.close(); }
         }
         if (Date.now() > deadline) throw Error(`the first console never proved live:\n${ownLines.join("\n")}`);
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await new Promise(resolve => setTimeout(resolve, 200)); // guard: bound — polling loop moved verbatim from src/up.slow.test.ts
       }
       lines = [];
       const again = await runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--for", "1200", "--json"], line => lines.push(line), {
@@ -397,7 +397,7 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
     try {
       for (const deadline = Date.now() + 60_000; !said.includes('"port"');) {
         if (served.exitCode !== null || Date.now() > deadline) throw Error(`serve never started:\n${said}`);
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 100)); // guard: bound — polling loop moved verbatim from src/up.slow.test.ts
       }
       const localRows = (): number => { const store = openStore(file); try { return Number(store.handle.prepare("SELECT count(*) AS n FROM local_mode").get()!["n"]); } finally { store.close(); } };
       // A person's laptop start with no --port, the served port first in line: refused, nothing bound or made.
@@ -479,7 +479,7 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
     lines = [];
     let settled = false;
     const serving = runOperate("serve", ["--port", String(p84), "--json"], line => lines.push(line), { databaseFile: file }).finally(() => { settled = true; });
-    for (const deadline = Date.now() + 10_000; !settled && Date.now() < deadline;) await new Promise(resolve => setTimeout(resolve, 50));
+    for (const deadline = Date.now() + 10_000; !settled && Date.now() < deadline;) await new Promise(resolve => setTimeout(resolve, 50)); // guard: bound — polling loop moved verbatim from src/up.slow.test.ts
     // Before the fix it serves on (until a signal): stop it so the test can say so.
     if (!settled) process.emit("SIGINT");
     expect(settled).toBe(true);
@@ -507,7 +507,7 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
       child.stderr!.on("data", chunk => { said += String(chunk); });
       for (const deadline = Date.now() + 60_000; !said.includes('"port"');) {
         if (child.exitCode !== null || Date.now() > deadline) throw Error(`serve on ${host} never started:\n${said}`);
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 100)); // guard: bound — polling loop moved verbatim from src/up.slow.test.ts
       }
     };
     try {
