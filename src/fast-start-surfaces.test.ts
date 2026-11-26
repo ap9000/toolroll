@@ -93,4 +93,34 @@ describe("task new", () => {
     }
     expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"]).toBe(before);
   });
+
+  test("with a password set, it asks for it at the terminal, then shows the exact terms; a cancel or a wrong password files nothing (everyday-9 C5)", async () => {
+    const typing = (...answers: string[]) => async () => answers.shift() ?? "";
+    const db = join(world.configDir, "state.db");
+    const set = await runOperate("password", ["set", "--db", db], () => {}, { easySeams: { terminal: true, askHidden: typing("correct horse battery", "correct horse battery") } });
+    expect(set).toBe(EXIT.ok);
+    const asked = async (password: string, yes: boolean) => {
+      const lines: string[] = [];
+      const code = await runOperate("task", ["new", "Fix the typo in the footer", "--repo", world.repo, "--db", db], line => { lines.push(line); },
+        { easySeams: { terminal: true, agent: false, ask: typing(""), askHidden: typing(password), confirm: async () => yes } });
+      return { code, out: lines.join("\n") };
+    };
+    const count = () => world.store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"];
+    const before = count();
+    for (const password of ["", "not my password"]) {
+      const { code, out } = await asked(password, true);
+      expect(code, out).toBe(EXIT.refused);
+      expect(out).toContain("Nothing was filed.");
+      expect(count()).toBe(before);
+    }
+    // The right password: the exact terms, then the yes. No yes: nothing.
+    const declined = await asked("correct horse battery", false);
+    expect(declined.out).toContain("Build approves exactly this:");
+    expect(count()).toBe(before);
+    const built = await asked("correct horse battery", true);
+    expect(built.code, built.out).toBe(EXIT.ok);
+    const id = /Building (\S+)\. It starts next\./.exec(built.out)?.[1] ?? "";
+    expect(fastStarted(world.store, id)).toBe(true);
+    expect(approvalOf(world.store.getScope(id)).approved).toBe(true);
+  });
 });

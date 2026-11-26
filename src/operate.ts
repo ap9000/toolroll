@@ -9728,6 +9728,8 @@ async function addTask(
   positional: readonly string[],
   flags: Map<string, string | true>,
   context: Context,
+  /** Filed by `task new` after it couldn't build now: its reply never sends the person back to `task new`. */
+  fromNew = false,
 ): Promise<number> {
   const { store, write, json, now } = context;
   const title = positional.join(" ").trim();
@@ -9869,7 +9871,7 @@ async function addTask(
   // the same for everyone. `task add` is unauthenticated, so nothing about accounts or passwords may change its reply.
   // Words only; who may ask is unchanged.
   const next = filedRef !== null && filedRef.repo !== null && filedRef.plan === null && !flags.has("report")
-    ? "Next: run `toolroll`, select it and press p to ask for a plan. To build without a plan, file it with `toolroll task new` instead." : null;
+    ? `Next: run \`toolroll\`, select it and press p to ask for a plan.${fromNew ? "" : " To build without a plan, file it with `toolroll task new` instead."}` : null;
   return succeed(
     write,
     json,
@@ -14589,7 +14591,7 @@ async function newTaskCommand(positional: readonly string[], flags: Map<string, 
   const local = currentLocalOwner();
   if (context.principal !== undefined || machineActing()) return fail(write, json, command, "person-only", "Only a person starts a build this way. File it with `task add`.", EXIT.refused);
   if (local === null && (json || !personAtTerminal(context))) return fail(write, json, command, "person-only", "`task new` asks a person at a terminal. Use `task add` from a script or an agent.", EXIT.refused);
-  const { name, token } = credentialsFrom(flags, context);
+  let { name, token } = credentialsFrom(flags, context);
   const passwordFree = token !== undefined && (local !== null || sessionStandsIn(store));
   const facts: PasswordFacts = { passwordless: local === null && passwordFree, localOwner: local !== null, freshAt: null, returnTo: "/" };
   const buildNow = (preview: string, digest: string): FastBuild => fastStartBuild(store, { preview, digest, actor: name ?? "", via: local === null ? "cli" : "terminal-ui", password: facts,
@@ -14608,6 +14610,19 @@ async function newTaskCommand(positional: readonly string[], flags: Map<string, 
   const repo = text(flags, "repo");
   if (words === "" || repo === undefined) return fail(write, json, command, "usage", "`toolroll task new \"<what should change>\" --repo <project>`", EXIT.usage);
   const placed = canonicalProject(repo) ?? resolve(repo);
+  // With a password set and none remembered, ask for it here, as every person's act at a terminal does (everyday-9 C5):
+  // a password typed now and checked is fresh for this one yes. Approve still checks it again with the exact terms, in
+  // Build's own transaction. A cancel or a wrong password files nothing.
+  if (local === null && token === undefined && !passwordFreeOwner(store)) {
+    const usual = name === undefined ? soloOperatorOf(store) : null;
+    if (name === undefined) { const answered = await (context.easySeams?.ask ?? ask)(usual === null ? "username: " : `username [${usual}]: `); name = answered === "" && usual !== null ? usual : answered; }
+    const typed = await (context.easySeams?.askHidden ?? askHidden)("password: ");
+    if (name === "" || typed === "") { write("Nothing was filed."); return EXIT.refused; }
+    const proved = verifyApproverByPassword(store, name, typed, store.knownRepos().filter(one => store.accountCanAccess(name!, one)));
+    if (!proved.ok) return fail(write, json, command, "unauthenticated", "That username and password didn't work. Nothing was filed.", EXIT.refused);
+    token = typed;
+    facts.freshAt = clock().getTime();
+  }
   const prepared = name === undefined || token === undefined ? { eligible: false as const, reason: "password" as const }
     : await prepareFastStart(store, { actor: name, repo: placed, title: words, via: local === null ? "cli" : "terminal-ui", password: facts }, clock());
   const terms = prepared.eligible ? fastTermsLines(store, prepared.scope, placed) : [];
@@ -14617,7 +14632,7 @@ async function newTaskCommand(positional: readonly string[], flags: Map<string, 
   }
   if (!prepared.eligible) {
     write(`${fastRefusalWords(prepared.reason)} Filing it for a plan.`);
-    return addTask([words], flags, context);
+    return addTask([words], flags, context, true);
   }
   write("Build approves exactly this:");
   write("");
