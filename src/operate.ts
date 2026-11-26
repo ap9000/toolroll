@@ -315,7 +315,7 @@ import {
   type Runner as RunnerRow,
 } from "./runner.js";
 import { processIdentityProblem } from "./process-identity.js";
-import { startOpener } from "./browser-open.js";
+import { openAddress } from "./browser-open.js";
 import { credentialDigest, recordedHolderProvedGone, processGone, processStart, readRunnerProcessRecord, runnerProcessFile, sealRunnerProcessRecord, writeRunnerProcessRecord, type RunnerProcessRecord, type RunnerProcessRole } from "./runner-process.js";
 import { stopProcessTree } from "./process-tree.js";
 import { mintCoordinator, revokeCoordinator, listCoordinators } from "./coordinator.js";
@@ -7887,15 +7887,9 @@ async function resolveUpApprover(
 /** The platform browser opener — detached, silent, never load-bearing (browser-open.ts: nothing starts without a
  * display or over SSH, and a missing opener is never a crash). True when an opener was started. */
 export function openBrowser(url: string): boolean {
-  // TOOLROLL_BROWSER_COMMAND names another program to open it with (it gets the address as its one argument).
-  const chosen = envValue(process.env, "BROWSER_COMMAND");
-  const command =
-    chosen !== undefined && chosen !== "" ? [chosen, url]
-    : process.platform === "darwin" ? ["open", url]
-    : process.platform === "win32" ? ["cmd", "/c", "start", "", url]
-    : ["xdg-open", url];
-  // A browser that will not open is a URL the greeting already printed.
-  return startOpener(command[0] as string, command.slice(1));
+  // TOOLROLL_BROWSER_COMMAND (or BROWSER) names another program to open it with (browser-open.ts browserCommand). A
+  // browser that will not open is a URL the greeting already printed.
+  return openAddress(url);
 }
 
 

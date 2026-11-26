@@ -4,7 +4,7 @@
  *
  * - Nothing is started where no browser can show it: on Linux (and other Unix) with neither DISPLAY nor WAYLAND_DISPLAY,
  *   and on any computer reached over SSH (SSH_CONNECTION or SSH_TTY) unless a display is forwarded. An explicit choice
- *   wins: TOOLROLL_BROWSER_COMMAND (or BROWSER, which xdg-open itself honours) always starts.
+ *   wins and is what runs: TOOLROLL_BROWSER_COMMAND, or on Linux BROWSER's program (browserCommand).
  * - A program that isn't there (no xdg-open) is reported by the child's 'error' event after spawn returns: a listener
  *   is always attached, so it is never an uncaught error.
  *
@@ -19,11 +19,42 @@ const set = (env: Env, name: string): boolean => (env[name] ?? "") !== "";
 
 /** Why no browser can be shown here (null when one may): no display on Linux, or a session over SSH. */
 export function noBrowserReason(env: Env = process.env, platform: NodeJS.Platform = process.platform): string | null {
-  if (set(env, "TOOLROLL_BROWSER_COMMAND") || set(env, "STANDING_ORDERS_BROWSER_COMMAND") || set(env, "BROWSER")) return null;
+  if (chosenCommand(env) !== null || (platform !== "darwin" && platform !== "win32" && browserEntry(env) !== null)) return null;
   const display = set(env, "DISPLAY") || set(env, "WAYLAND_DISPLAY");
   if ((set(env, "SSH_CONNECTION") || set(env, "SSH_TTY")) && !display) return "this is an SSH session";
   if (platform !== "darwin" && platform !== "win32" && !display) return "there is no display here";
   return null;
+}
+
+/** The browser command a person chose for Toolroll: TOOLROLL_BROWSER_COMMAND (or its name before the rename). */
+function chosenCommand(env: Env): string | null {
+  for (const name of ["TOOLROLL_BROWSER_COMMAND", "STANDING_ORDERS_BROWSER_COMMAND"]) if (set(env, name)) return env[name]!;
+  return null;
+}
+
+/** BROWSER's first entry when it is a plain program name or path (no arguments, no %s); null otherwise. */
+function browserEntry(env: Env): string | null {
+  const first = (env["BROWSER"] ?? "").split(":")[0]!.trim();
+  return first !== "" && /^[A-Za-z0-9._/+-]+$/.test(first) ? first : null;
+}
+
+/**
+ * What opens `url` here, as the program and its arguments, the one choice every opener of an address shares
+ * (operate.ts openBrowser, `toolroll connect`): the command chosen for Toolroll, else the platform's opener (on Linux
+ * and other Unix, BROWSER's program when it names one, else xdg-open). The address is always its last argument alone.
+ */
+export function browserCommand(url: string, env: Env = process.env, platform: NodeJS.Platform = process.platform): [string, ...string[]] {
+  const chosen = chosenCommand(env);
+  if (chosen !== null) return [chosen, url];
+  if (platform === "darwin") return ["open", url];
+  if (platform === "win32") return ["cmd", "/c", "start", "", url];
+  return [browserEntry(env) ?? "xdg-open", url];
+}
+
+/** Open an address with browserCommand's choice (startOpener: never without a display or over SSH unless chosen). */
+export function openAddress(url: string, options: { env?: Env; platform?: NodeJS.Platform; spawn?: Spawner } = {}): boolean {
+  const [command, ...args] = browserCommand(url, options.env ?? process.env, options.platform ?? process.platform);
+  return startOpener(command, args, options);
 }
 
 /**

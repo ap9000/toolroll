@@ -6,7 +6,7 @@
 import { expect, test } from "vitest";
 import { once } from "node:events";
 import { spawn, type ChildProcess } from "node:child_process";
-import { noBrowserReason, startOpener, type Spawner } from "./browser-open.js";
+import { browserCommand, noBrowserReason, openAddress, startOpener, type Spawner } from "./browser-open.js";
 
 test("an opener that isn't there (ENOENT) is reported to a listener, never thrown", async () => {
   const started: ChildProcess[] = [];
@@ -34,4 +34,26 @@ test.each([
   expect(startOpener("xdg-open", ["http://127.0.0.1:4180"], { env, platform, spawn: fake })).toBe(starts);
   expect(calls.length).toBe(starts ? 1 : 0);
   expect(noBrowserReason(env, platform) === null).toBe(starts);
+});
+
+const URL = "http://127.0.0.1:4180";
+test.each([
+  ["a chosen command wins everywhere", "linux", { TOOLROLL_BROWSER_COMMAND: "/usr/local/bin/open-in-firefox" }, ["/usr/local/bin/open-in-firefox", URL]],
+  ["its name before the rename", "darwin", { STANDING_ORDERS_BROWSER_COMMAND: "/opt/b" }, ["/opt/b", URL]],
+  ["Linux, BROWSER names a program", "linux", { BROWSER: "w3m:lynx" }, ["w3m", URL]],
+  ["Linux, BROWSER with arguments is left to xdg-open", "linux", { BROWSER: "firefox %s", DISPLAY: ":0" }, ["xdg-open", URL]],
+  ["Linux", "linux", {}, ["xdg-open", URL]],
+  ["a Mac (BROWSER is Unix's, not its)", "darwin", { BROWSER: "w3m" }, ["open", URL]],
+  ["Windows", "win32", {}, ["cmd", "/c", "start", "", URL]],
+] as const)("what opens an address: %s", (_, platform, env, command) => {
+  expect(browserCommand(URL, env, platform)).toEqual(command);
+});
+
+test("headless with a chosen browser and no xdg-open: the chosen program is what runs, with the address alone (operate and connect share this)", () => {
+  const calls: { command: string; args: readonly string[] }[] = [];
+  const fake: Spawner = (command, args) => { calls.push({ command, args }); return { on: () => undefined, unref: () => undefined } as unknown as ChildProcess; };
+  expect(openAddress(URL, { env: { TOOLROLL_BROWSER_COMMAND: "/home/dev/bin/open-url" }, platform: "linux", spawn: fake })).toBe(true);
+  expect(openAddress(URL, { env: { BROWSER: "w3m", SSH_TTY: "/dev/pts/1" }, platform: "linux", spawn: fake })).toBe(true);
+  expect(openAddress(URL, { env: {}, platform: "linux", spawn: fake })).toBe(false);
+  expect(calls).toEqual([{ command: "/home/dev/bin/open-url", args: [URL] }, { command: "w3m", args: [URL] }]);
 });
