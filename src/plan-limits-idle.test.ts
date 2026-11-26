@@ -3,6 +3,7 @@ import { scheduleLimitsLoop } from "./codex-limits.js";
 import { agentWorkActive, notePlanLimitsViewed, PLAN_LIMITS_VIEW_WINDOW_MS } from "./plan-limits-demand.js";
 import type { LimitReading } from "./provider-limits.js";
 import { openStore, type Store } from "./store.js";
+import { fakePid } from "../test/fake-pid.js";
 
 // Everyday 9, B3: reading Claude's plan limits is a real model turn (`claude -p . --model haiku`). An idle Toolroll asks
 // no provider anything; while work runs, or for ten minutes after a person opens Spend, usage still refreshes.
@@ -135,10 +136,11 @@ describe("no idle model spend (everyday 9, B3)", () => {
     store = openStore(":memory:");
     const old = new Date(START - 3 * 24 * HOUR).toISOString();
     store.handle.prepare("INSERT INTO task (id, title, state, created_at, updated_at) VALUES ('t2', 'Parked', 'queued', ?, ?)").run(old, old);
-    const loop = harness(store, (pid, start) => pid === 4242 && start === "s4242");
+    const agent = fakePid(1);
+    const loop = harness(store, (pid, start) => pid === agent && start === "s4242");
     await vi.advanceTimersByTimeAsync(3 * HOUR);
     expect(loop.total()).toBe(0);
-    threadTurn(store, "a", 4242, "s4242");
+    threadTurn(store, "a", agent, "s4242");
     await vi.advanceTimersByTimeAsync(10 * 60_000);
     expect(loop.calls.claude).toBe(1);
     loop.stop();
@@ -150,16 +152,17 @@ describe("no idle model spend (everyday 9, B3)", () => {
     const live = new Set<string>();
     const loop = harness(store, (pid, start) => live.has(`${pid}:${start}`));
     // Each path's stale rows: its process is gone (or another process now has its pid), or nothing runs its turn.
-    threadTurn(store, "a", 501, "s501");
+    const [thread, chat, later] = [fakePid(2), fakePid(3), fakePid(4)];
+    threadTurn(store, "a", thread, "s501");
     threadTurn(store, "c", null, null);
-    directChatTurn(store, "dc-1", 502, "s502");
+    directChatTurn(store, "dc-1", chat, "s502");
     leadMessage(store, 1, null);
     leadMessage(store, 2, { state: "running", deadline: new Date(START - 60_000) });
     leadMessage(store, 3, { state: "answered", deadline: new Date(START + HOUR) });
     await vi.advanceTimersByTimeAsync(2 * HOUR);
     expect(loop.total()).toBe(0);
     // Actual execution on each path reads usage.
-    for (const [index, start] of [() => { live.add("502:s502"); }, () => { threadTurn(store!, "e", 503, "s503"); live.add("503:s503"); },
+    for (const [index, start] of [() => { live.add(`${chat}:s502`); }, () => { threadTurn(store!, "e", later, "s503"); live.add(`${later}:s503`); },
       () => { leadMessage(store!, 4, { state: "running", deadline: new Date(Date.now() + HOUR) }); }].entries()) {
       live.clear();
       store.handle.prepare("DELETE FROM provider_limit").run();
@@ -177,13 +180,13 @@ describe("no idle model spend (everyday 9, B3)", () => {
   test("every eligible turn is asked about (review round 2): eight stale rows never hide the ninth, which runs", () => {
     store = openStore(":memory:");
     const now = new Date();
-    for (let i = 1; i <= 9; i++) directChatTurn(store, `dc-${i}`, 600 + i, `s${600 + i}`);
-    expect(agentWorkActive(store, now, (pid, start) => pid === 609 && start === "s609")).toBe(true);
+    for (let i = 1; i <= 9; i++) directChatTurn(store, `dc-${i}`, fakePid(10 + i), `s${600 + i}`);
+    expect(agentWorkActive(store, now, (pid, start) => pid === fakePid(19) && start === "s609")).toBe(true);
     expect(agentWorkActive(store, now, () => false)).toBe(false);
     store.close();
     store = openStore(":memory:");
-    for (let i = 1; i <= 9; i++) threadTurn(store, String(i), 700 + i, `s${700 + i}`);
-    expect(agentWorkActive(store, now, (pid, start) => pid === 709 && start === "s709")).toBe(true);
+    for (let i = 1; i <= 9; i++) threadTurn(store, String(i), fakePid(20 + i), `s${700 + i}`);
+    expect(agentWorkActive(store, now, (pid, start) => pid === fakePid(29) && start === "s709")).toBe(true);
     expect(agentWorkActive(store, now, () => false)).toBe(false);
   });
 
