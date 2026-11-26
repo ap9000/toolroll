@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { isNewer, RELEASES_PAGE } from "./releases.js";
 import type { Store } from "./store.js";
 import type { InstallKind } from "./install-method.js";
-import { abandonRuntimeUpdate, prepareRuntimeUpdate, readRuntimeUpdate, requestRuntimeUpdateCancel, runtimeUpdateTerminal, type RuntimeRef, type RuntimeUpdateJournal } from "./toolroll-update.js";
+import { abandonRuntimeUpdate, addNeverAutomatic, neverAutomatic, prepareRuntimeUpdate, readRuntimeUpdate, requestRuntimeUpdateCancel, runtimeUpdateTerminal, type RuntimeRef, type RuntimeUpdateJournal } from "./toolroll-update.js";
 
 /** The ledger's action for a change of the switch. */
 export const AUTO_UPDATE_ACTION = "automatic updates";
@@ -84,6 +84,12 @@ const ATTEMPT_COLUMNS = "id, version, from_version, enabled_by, policy_revision,
 export function autoUpdateAttempts(store: Pick<Store, "handle">, limit = 20): AutoUpdateAttempt[] | null {
   try { return store.handle.prepare(`SELECT ${ATTEMPT_COLUMNS} FROM auto_update_attempt ORDER BY id DESC LIMIT ?`).all(limit).map(attemptOf); }
   catch { return null; }
+}
+
+/** Whether `version` is on the list kept beside the journal (an automatic attempt, or a version a person rolled back),
+ * or null when that list can't be read. The list outlives any database a restore or rollback puts back. */
+export function neverAutomaticListed(stateDir: string, version: string): boolean | null {
+  try { return neverAutomatic(stateDir).some(one => one.version === version); } catch { return null; }
 }
 
 /** Whether an automatic update was ever reserved for `version`, or null when the history can't be read. */
@@ -274,16 +280,22 @@ export async function autoUpdatePass(store: AutoUpdateStore, o: AutoUpdatePassOp
     if (open !== undefined) { try { notifyAutoUpdate(store, open, "needs-attention", o.now()); } catch { /* shown on Settings → Updates */ } }
   }
   const decided = autoUpdateDecision({ policy, enablerStands: policy?.by != null && store.isInstanceOperator(policy.by), kind: o.kind, current: o.current.version, latest: o.latest,
-    attempted: o.latest === null ? false : autoUpdateAttempted(store, o.latest), journal });
+    attempted: o.latest === null ? false : attemptedAnywhere(store, o.stateDir, o.latest), journal });
   if (!decided.go) return { held: decided.why };
   const version = decided.version;
   let attempt: AutoUpdateAttempt | null = null, held: AutoUpdateHold | null = null;
   // Reserved inside the prepare lock, once nothing is under way, and bound to its journal before the lock is let go.
   const prepared = prepareRuntimeUpdate({ stateDir: o.stateDir, databaseFile: o.databaseFile, current: o.current, actor: autoUpdateActor(policy!.by!), version, when: "when-idle", at: null }, o.now(), {
     reserve: () => {
+      // The list beside the journal first: a restored or rolled-back database may no longer hold this version's row.
+      const listed = neverAutomaticListed(o.stateDir, version);
+      if (listed !== false) { held = listed === null ? "history-unreadable" : "attempted"; return `Not reserved: ${held}.`; }
       const reserved = reserveAutoUpdate(store, { version, from: o.current.version, now: o.now() });
       if (!reserved.ok) { held = reserved.why; return `Not reserved: ${reserved.why}.`; }
       attempt = reserved.attempt;
+      // Written before the journal: from here on, no database a restore puts back can make this version eligible again.
+      try { addNeverAutomatic(o.stateDir, { version, why: "automatic-attempt", at: o.now().toISOString(), journal: null }); }
+      catch (error) { return `The list of versions never installed automatically can't be written (${(error as Error).message}).`; }
       return null;
     },
     prepared: j => { if (attempt === null || !linkAutoUpdateJournal(store, attempt.id, j.id)) throw new Error("its attempt record could not be written"); },
@@ -369,4 +381,10 @@ export function notifyAutoUpdate(store: Pick<Store, "accountFacts" | "isInstance
         : { subject: line, body: "Settings → Updates shows what happened.", pushClass: "attention" as const }) }, now)) queued++;
   }
   return queued;
+}
+
+/** Tried before: a row in this database, or on the list beside the journal; null when either can't be read. */
+function attemptedAnywhere(store: Pick<Store, "handle">, stateDir: string, version: string): boolean | null {
+  const here = autoUpdateAttempted(store, version), listed = neverAutomaticListed(stateDir, version);
+  return here === null || listed === null ? null : here || listed;
 }

@@ -5,7 +5,7 @@
  * history or journals record nothing and reserve nothing. Isolated temp stores and state folders; no updater runs.
  */
 import { afterEach, describe, expect, test } from "vitest";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { durableJson } from "./desktop-update.js";
@@ -324,5 +324,35 @@ describe("what a person is told", () => {
     save({ ...readRuntimeUpdate(w.dir)!, phase: "complete" });
     await run(w, "0.9.121", new Date(2026, 10, 26, 3, 4));
     expect(notices(w.store)[1]).toEqual({ dedupe_key: "auto-update:0.9.121:complete:alex", subject: "Updated to 0.9.121 at 03:04 — what's new", push_class: null });
+  });
+});
+
+describe("versions never tried again, whatever database is put back", () => {
+  const run = (w: { dir: string; databaseFile: string; store: Store }, latest: string, current = "0.9.120", launch: (args: { id: string }) => Promise<void> = async () => undefined) =>
+    autoUpdatePass(w.store, { stateDir: w.dir, databaseFile: w.databaseFile, current: { version: current, dist: join(w.dir, "dist") }, kind: "managed", latest, now: () => T0, launch });
+  /** A database put back from before `version` was attempted: its row is gone (as a restore or rollback leaves it). */
+  const restoredWithout = (store: Store, version: string) => {
+    store.handle.exec("DROP TRIGGER auto_update_attempt_no_delete");
+    store.handle.prepare("DELETE FROM auto_update_attempt WHERE version = ?").run(version);
+  };
+
+  test("A installs, automatic B fails, a rollback to A's backup drops B's row: the next pass still refuses B", async () => {
+    const w = world();
+    expect(await run(w, "0.9.121")).toMatchObject({ started: "0.9.121" });
+    save({ ...readRuntimeUpdate(w.dir)!, phase: "complete" });
+    expect(await run(w, "0.9.122", "0.9.121", async () => { throw new Error("launchctl said no"); })).toMatchObject({ failed: expect.any(String) });
+    restoredWithout(w.store, "0.9.122");
+    expect(await run(w, "0.9.122", "0.9.121")).toEqual({ held: "attempted" });
+    expect(readRuntimeUpdate(w.dir)?.to.version).toBe("0.9.122");
+  });
+
+  test("a list beside the journal that can't be read holds every automatic update", async () => {
+    const w = world();
+    writeFileSync(join(w.dir, "toolroll-update.never-automatic.json"), "{ not json", { mode: 0o600 });
+    expect(await run(w, "0.9.121")).toEqual({ held: "history-unreadable" });
+    writeFileSync(join(w.dir, "toolroll-update.never-automatic.json"), "[]");
+    chmodSync(join(w.dir, "toolroll-update.never-automatic.json"), 0o644);
+    expect(await run(w, "0.9.121")).toEqual({ held: "history-unreadable" });
+    expect(autoUpdateAttempts(w.store)).toEqual([]);
   });
 });
