@@ -967,6 +967,10 @@ export async function startRuntimeRollback(o: { stateDir: string; databaseFile: 
       const now = system.now();
       const j = newJournal("rollback", { stateDir: o.stateDir, databaseFile: o.databaseFile, from: last.to, to: last.from, when: o.when, at: null, actor: o.actor }, now);
       j.restoreFrom = { path: last.backupPath, hash: last.backupHash, updateId: last.id, ...(last.codingBackupPath && last.codingBackupHash ? { codingPath: last.codingBackupPath, codingHash: last.codingBackupHash } : {}) };
+      // A person is going back from this version, however it was installed: automatic updates never install it again.
+      // Recorded beside the journal before anything is stopped, so no database put back can forget it.
+      try { addNeverAutomatic(o.stateDir, { version: last.to.version, why: "rolled-back", at: now.toISOString(), journal: last.id }); }
+      catch (error) { throw new Refusal(`Toolroll couldn't record that ${last.to.version} must not be installed again automatically (${(error as Error).message}). Nothing was changed.`); }
       save(j, "scheduled", "Starting.", now);
       return j;
     });

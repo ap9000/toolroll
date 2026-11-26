@@ -113,3 +113,16 @@ test("a rollback puts back a backup taken while automatic updates were on: they 
     expect(store.handle.prepare("SELECT actor, outcome, detail FROM action_ledger WHERE action = 'automatic updates' ORDER BY id DESC LIMIT 1").get()).toEqual({ actor: "alex", outcome: "off", detail: "a database backup was put back: off until a person turns them on again" });
   } finally { store.close(); f.close(); }
 });
+
+test("a version a person installed by hand and then rolled back is never installed again automatically", async () => {
+  const f = fixture();
+  let store: Store | null = null;
+  try {
+    const update = await f.start();
+    expect(update).toMatchObject({ ok: true, phase: "complete" });
+    expect(await startRuntimeRollback({ stateDir: f.stateDir, databaseFile: f.databaseFile, current: update.journal!.to, actor: "ada", when: "when-idle" }, f.system)).toMatchObject({ ok: true, phase: "complete" });
+    store = turnedOn(f);
+    expect(await passOnce(f, store)).toEqual({ held: "attempted" });
+    expect(readRuntimeUpdate(f.stateDir)).toMatchObject({ kind: "rollback", phase: "complete" });
+  } finally { store?.close(); f.close(); }
+});
