@@ -5,10 +5,13 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { sizingOn } from "../test/sizing-on.js";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { mkdirSync, rmSync } from "node:fs";
+import { savedLoginFile } from "./login-secrets.js";
+import { PASSWORDLESS_ACTION } from "./passwordless.js";
 import { installFilingSizer } from "./task-sizing.js";
 import { openLocalWorld, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../test/local-owner-world.js";
-import { runOperate, EXIT } from "./operate.js";
+import { runOperate, EXIT, writeLoginFileDurably } from "./operate.js";
 import { fastStarted } from "./fast-start.js";
 import { fileGithubItem } from "./github-import.js";
 import { approvalOf } from "./scope.js";
@@ -122,5 +125,48 @@ describe("task new", () => {
     const id = /Building (\S+)\. It starts next\./.exec(built.out)?.[1] ?? "";
     expect(fastStarted(world.store, id)).toBe(true);
     expect(approvalOf(world.store.getScope(id)).approved).toBe(true);
+  });
+
+  test("a password on the command is checked, a remembered login still asks, and no refusal files anything (review round 1)", async () => {
+    const typing = (...answers: string[]) => async () => answers.shift() ?? "";
+    const db = join(world.configDir, "state.db");
+    expect(await runOperate("password", ["set", "--db", db], () => {}, { easySeams: { terminal: true, askHidden: typing("correct horse battery", "correct horse battery") } })).toBe(EXIT.ok);
+    // Passwordless off: a session or a remembered login never stands in for a password given now.
+    world.store.recordAction({ at: new Date().toISOString(), actor: "alex", repo: null, taskId: null, runId: null, action: PASSWORDLESS_ACTION, outcome: "off", source: "access" });
+    const asks: string[] = [];
+    const newTask = async (extra: string[], typed: string) => {
+      const lines: string[] = [];
+      const code = await runOperate("task", ["new", "Fix the typo in the footer", "--repo", world.repo, "--db", db, ...extra], line => { lines.push(line); },
+        { easySeams: { terminal: true, agent: false, ask: typing(""), askHidden: async question => { asks.push(question); return typed; }, confirm: async () => true } });
+      return { code, out: lines.join("\n") };
+    };
+    const count = () => world.store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"];
+    const before = count();
+    // A wrong password on the command: refused, nothing filed, nothing asked.
+    const wrong = await newTask(["--as", "alex", "--token", "not my password"], "");
+    expect(wrong.code, wrong.out).toBe(EXIT.refused);
+    expect(wrong.out).toContain("Nothing was filed.");
+    expect(count()).toBe(before);
+    expect(asks).toEqual([]);
+    // A remembered login whose password is stale (changed since): asked, and a wrong answer files nothing.
+    const saved = savedLoginFile(world.configDir);
+    mkdirSync(dirname(saved), { recursive: true, mode: 0o700 });
+    writeLoginFileDurably(saved, "alex", "an old password");
+    const stale = await newTask([], "still wrong");
+    expect(stale.code, stale.out).toBe(EXIT.refused);
+    expect(count()).toBe(before);
+    expect(asks).toEqual(["password: "]);
+    // A remembered login that still works names the person, but Build asks for the password given now.
+    rmSync(saved, { force: true });
+    writeLoginFileDurably(saved, "alex", "correct horse battery");
+    const remembered = await newTask([], "correct horse battery");
+    expect(remembered.code, remembered.out).toBe(EXIT.ok);
+    expect(asks).toEqual(["password: ", "password: "]);
+    // The right password on the command builds without asking.
+    rmSync(saved, { force: true });
+    const given = await newTask(["--as", "alex", "--token", "correct horse battery"], "");
+    expect(given.code, given.out).toBe(EXIT.ok);
+    expect(asks).toHaveLength(2);
+    for (const one of [remembered, given]) expect(fastStarted(world.store, /Building (\S+)\. It starts next\./.exec(one.out)?.[1] ?? "")).toBe(true);
   });
 });

@@ -14610,17 +14610,23 @@ async function newTaskCommand(positional: readonly string[], flags: Map<string, 
   const repo = text(flags, "repo");
   if (words === "" || repo === undefined) return fail(write, json, command, "usage", "`toolroll task new \"<what should change>\" --repo <project>`", EXIT.usage);
   const placed = canonicalProject(repo) ?? resolve(repo);
-  // With a password set and none remembered, ask for it here, as every person's act at a terminal does (everyday-9 C5):
-  // a password typed now and checked is fresh for this one yes. Approve still checks it again with the exact terms, in
-  // Build's own transaction. A cancel or a wrong password files nothing.
-  if (local === null && token === undefined && !passwordFreeOwner(store)) {
-    const usual = name === undefined ? soloOperatorOf(store) : null;
-    if (name === undefined) { const answered = await (context.easySeams?.ask ?? ask)(usual === null ? "username: " : `username [${usual}]: `); name = answered === "" && usual !== null ? usual : answered; }
-    const typed = await (context.easySeams?.askHidden ?? askHidden)("password: ");
-    if (name === "" || typed === "") { write("Nothing was filed."); return EXIT.refused; }
-    const proved = verifyApproverByPassword(store, name, typed, store.knownRepos().filter(one => store.accountCanAccess(name!, one)));
+  // A password given on this command (`--token`) is checked before anything is shown, whatever the mode: a wrong one
+  // files nothing and says so (review round 1). With a password set and Passwordless off, Build takes a password given
+  // now (everyday-9 C5): that one, else one typed here, hidden — a remembered login names the person but is never a
+  // password given now, so it asks too. A password given now and checked is fresh for this one yes, and Approve checks
+  // it again with the exact terms in Build's own transaction. A cancel files nothing either.
+  if (local === null && (flags.has("token") || (!facts.passwordless && !passwordFreeOwner(store)))) {
+    let given = flags.has("token") ? token : undefined;
+    if (given === undefined) {
+      const usual = name === undefined ? soloOperatorOf(store) : null;
+      if (name === undefined) { const answered = await (context.easySeams?.ask ?? ask)(usual === null ? "username: " : `username [${usual}]: `); name = answered === "" && usual !== null ? usual : answered; }
+      given = await (context.easySeams?.askHidden ?? askHidden)("password: ");
+    } else if (name === undefined) name = soloOperatorOf(store) ?? undefined;
+    if (name === undefined || name === "" || given === "") { write("Nothing was filed."); return EXIT.refused; }
+    const person = name;
+    const proved = verifyApproverByPassword(store, person, given, store.knownRepos().filter(one => store.accountCanAccess(person, one)));
     if (!proved.ok) return fail(write, json, command, "unauthenticated", "That username and password didn't work. Nothing was filed.", EXIT.refused);
-    token = typed;
+    token = given;
     facts.freshAt = clock().getTime();
   }
   const prepared = name === undefined || token === undefined ? { eligible: false as const, reason: "password" as const }
