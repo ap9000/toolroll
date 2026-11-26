@@ -80,6 +80,8 @@ async function nextWords(store: Store, thread: string, candidate: string, branch
   if (hint === null) return { next: `To use it: merge ${branch} in your repository.`, command: null };
   const ff = gitCommand(hint.repo, ["merge", "--ff-only", branch]), merge = gitCommand(hint.repo, ["merge", branch]);
   if (hint.branch === null) return { next: `To use it: check out the branch you want it on, then ${ff === null ? UNSAFE_FOLDER(`git merge --ff-only ${branch}`) : `run \`${ff}\`.`}`, command: ff };
+  // Already merged into the checked-out branch (everyday-9 E5): nothing to bring in, and no command to run.
+  if (hint.contained) return { next: `It's already in ${hint.branch}: nothing to merge.`, command: null };
   if (hint.fastForward) return { next: ff === null ? `To put it on ${hint.branch}: ${UNSAFE_FOLDER(`git merge --ff-only ${branch}`)}` : `To put it on ${hint.branch}: \`${ff}\`.`, command: ff };
   return { next: `${hint.branch} moved since the thread started, so it won't fast-forward. ${merge === null ? UNSAFE_FOLDER(`git merge ${branch}`) : `To merge it: \`${merge}\`.`}`, command: merge };
 }

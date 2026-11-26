@@ -15,6 +15,21 @@ import { shipChecksForTask, type Store } from "./store.js";
 import { approvedCheckStateOf, requirementWordOf } from "./task-status.js";
 import { projectCheckSet } from "./check-levels.js";
 import { projectName } from "./project.js";
+import { landingHistoryOf, publishesThroughPullRequests } from "./local-landing.js";
+import { recentGitReads, type GitRead, type TaskBaseView } from "./task-base.js";
+
+/** The bounded git reads a checklist's landing history uses (display only, answers kept for a moment). */
+const landingReads: GitRead = recentGitReads();
+
+/** A task's landing history when its work is on its branch now (landingHistoryOf), else null: what the checklist says in
+ * place of "Not yet" for work that already landed. Projects that publish through pull requests have none. */
+export function landedNowOf(store: Store, assignment: AssignmentSnapshot, read: GitRead = landingReads): { words: string; reverted: boolean } | null {
+  // Only accepted work lands: anything else reads nothing more (no statement, no git read).
+  const head = assignment.state === "complete" ? assignment.receipt?.head ?? null : null;
+  if (head === null || assignment.repo === null || publishesThroughPullRequests(store, assignment.repo)) return null;
+  const history = landingHistoryOf(store, assignment.repo, assignment.rootId, head, read);
+  return history !== null && history.landed ? { words: history.words, reverted: history.reverted } : null;
+}
 
 export const CHECKLIST_KEYS = ["plan", "build", "checks", "requirements", "pull-request", "pr-ci", "up-to-date", "conflicts", "comments", "release"] as const;
 export type ChecklistKey = (typeof CHECKLIST_KEYS)[number];
@@ -26,8 +41,10 @@ export type ChecklistAct = { kind: "run-checks"; run: number } | { kind: "retry"
 export type ChecklistRow = { key: ChecklistKey; label: string; mark: ChecklistMark; say: string; act: ChecklistAct | null };
 export type MergeChecklist = {
   taskId: string; activeTaskId: string; run: number | null; head: string | null;
-  /** yes: nothing Toolroll records is in the way; no: something is (the first `no` row); not-yet: only waiting rows. */
-  answer: "yes" | "no" | "not-yet" | "merged";
+  /** yes: nothing Toolroll records is in the way; no: something is (the first `no` row); not-yet: only waiting rows.
+   * landed: its work is already on the branch (local-landing.ts landingHistoryOf): the sentence is that history and
+   * there are no rows, since nothing is left to merge (everyday-9 E1). */
+  answer: "yes" | "no" | "not-yet" | "merged" | "landed";
   sentence: string;
   rows: ChecklistRow[];
 };
@@ -59,12 +76,19 @@ export const noCheckSetWords = (repo: string): string => `No check is set for ${
 export function mergeChecklistOf(store: Store, taskId: string, now: Date, access: AssignmentAccess, root?: string): MergeChecklist | null {
   const assignment = assignmentOf(store, taskId, now, access, root);
   if (assignment === null) return null;
-  return checklistFromAssignment(store, taskId, assignment);
+  return checklistFromAssignment(store, taskId, assignment, landedNowOf(store, assignment)?.words ?? null);
 }
 
-/** The checklist from an assignment snapshot already read (the task page reads one). */
-export function checklistFromAssignment(store: Store, taskId: string, assignment: AssignmentSnapshot): MergeChecklist {
+/** The checklist from an assignment snapshot already read (the task page reads one). `landed`: the task's landing
+ * history words when its work is already on the branch (landedNowOf): the answer is then that history, with no rows. */
+export function checklistFromAssignment(store: Store, taskId: string, assignment: AssignmentSnapshot, landed: string | null = null,
+  /** The project's main as the task's Base line names it (task-base.ts taskBaseOf), when the caller read it already (the
+   * task page). Undefined: read here, for a project without pull requests. */
+  base?: Pick<TaskBaseView, "main"> | null,
+  /** The bounded git read "Up to date with main" uses (display only). */
+  read: GitRead = landingReads): MergeChecklist {
   const active = assignment.activeTaskId;
+  if (landed !== null) return { taskId, activeTaskId: active, run: assignment.receipt?.runId ?? null, head: assignment.receipt?.head ?? null, answer: "landed", sentence: landed, rows: [] };
   const scope = store.getScope(active);
   const task = store.getTask(active);
   const receipt = assignment.receipt;
@@ -96,7 +120,7 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
   else if (check === "not-run" && assignment.repo !== null && !projectCheckSet(store, assignment.repo)) {
     row("checks", "no", noCheckSetWords(assignment.repo));
   }
-  else row("checks", "no", check === "unreadable" ? "The check result couldn't be read." : "No check ran on this commit.", { kind: "run-checks", run: receipt.runId });
+  else row("checks", "no", check === "unreadable" ? "The check result couldn't be read." : check === "stale" ? "The check command changed since they ran on this commit." : "No check ran on this commit.", { kind: "run-checks", run: receipt.runId });
 
   // Requirements: the result's own blockers, as Accept reads them.
   const criteria = assignment.readiness?.blockers.filter(one => one.key === "criteria" || one.key === "high") ?? [];
@@ -147,9 +171,17 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
   }
 
   // Up to date with main and conflicts: Toolroll keeps no record of either, except a batch check's conflict. Where to
-  // look is GitHub only when this project opens pull requests there.
+  // look is GitHub only when this project opens pull requests there. A project without pull requests reads git itself
+  // (everyday-9 E3): the commits on main the RESULT doesn't contain (main..its head), since its work lands only on top
+  // of main. A result that already contains main's newer commits is up to date, whatever base its review started from
+  // (review round 1); the review base itself is unchanged.
   const notRecorded = publishing.on ? NOT_RECORDED : NOT_RECORDED_LOCAL;
-  row("up-to-date", merged ? "yes" : "unknown", merged ? "Merged." : notRecorded);
+  const standing = merged || publishing.on || receipt === null || assignment.repo === null ? null : resultBehindMain(assignment.repo, head, base === undefined ? undefined : base?.main ?? null, read);
+  if (merged) row("up-to-date", "yes", "Merged.");
+  else if (standing == null || standing.main === null || standing.behind === null) row("up-to-date", "unknown", notRecorded);
+  else if (standing.behind === 0) row("up-to-date", "yes", `Up to date with ${standing.main}.`);
+  else row("up-to-date", "no", `${standing.main} has ${standing.behind === 1 ? "1 commit" : `${standing.behind} commits`} this work doesn't. Send it back to build on the current ${standing.main}.`,
+    { kind: "fix", run: receipt!.runId, note: `${standing.main} moved on since this work started. Build it again on the current ${standing.main}.` });
   if (merged) row("conflicts", "yes", "Merged.");
   else if (receipt?.checks.batch?.state === "conflict") row("conflicts", "no", "It conflicted with another result in its batch check.", { kind: "fix", run: receipt.runId, note: "It conflicts with another change. Rebase it on main and resolve the conflict." });
   else row("conflicts", "unknown", notRecorded);
@@ -178,8 +210,19 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
   return { taskId, activeTaskId: active, run, head, answer, sentence, rows };
 }
 
+/** How many commits on the project's main the result's head doesn't contain (`rev-list --count <head>..main`), and which
+ * branch main is (`main` from the caller, else the project's checked-out branch). Null counts when git can't say.
+ * Display only: it decides nothing. */
+function resultBehindMain(repo: string, head: string | null, main: string | null | undefined, read: GitRead): { main: string | null; behind: number | null } {
+  const branch = main === undefined ? read(repo, ["symbolic-ref", "--short", "-q", "HEAD"]) || null : main;
+  if (branch === null || head === null || !/^[0-9a-f]{40}$/.test(head)) return { main: branch, behind: null };
+  const counted = read(repo, ["rev-list", "--count", `${head}..refs/heads/${branch}`]);
+  return { main: branch, behind: counted !== null && /^\d+$/.test(counted) ? Number(counted) : null };
+}
+
 /** The checklist as plain lines (the CLI, the lead, the TUI): the answer, then one line per row that applies. */
 export function checklistLines(list: MergeChecklist): string[] {
+  if (list.answer === "landed") return [list.sentence];
   const MARK: Readonly<Record<ChecklistMark, string>> = { yes: "✓", no: "✗", waiting: "…", unknown: "?", skip: "–" };
   return [`Can I merge ${list.activeTaskId}? ${list.sentence}`,
     // A blocker's act is a button on the task's page; in plain text it says where to find it, never a fake button.

@@ -24,7 +24,7 @@ export { ACCEPT_NEEDS_REASON, cantAcceptYetOf, evidenceProblemOf, type EvidenceP
 import { manualReviewOnly, plainReasonWords, type ProofVerdict } from "./proof.js";
 import type { ReviewRetryState, TaskState } from "./store.js";
 import type { TaskControlView } from "./task-control.js";
-import { CHECK_COMMAND_CHANGED, CHECK_UNREADABLE, OPEN_RESULT, approvedCheckOf, approvedCheckStateOf, plainReasonOf, stageOfCode, taskStatusOf, workToneOf, type ChecksFact } from "./task-status.js";
+import { CHECK_COMMAND_CHANGED, CHECK_UNREADABLE, CHECKS_OUT_OF_DATE, OPEN_RESULT, approvedCheckOf, approvedCheckStateOf, plainReasonOf, stageOfCode, taskStatusOf, workToneOf, type ChecksFact } from "./task-status.js";
 import { whenUtc } from "./when-html.js";
 import { NEEDS } from "./needs-you.js";
 import { wasInterrupted } from "./run-ending.js";
@@ -908,7 +908,9 @@ export function stepRowsOf(view: StepRowFacts): StepRow[] | null {
         const said = step.say ?? null;
         if (step.state === "done") return { sentence: "Project checks passed", at: null };
         if (step.state === "skipped") return { sentence: said === "Checks not run" ? "The checks didn't run" : said === "Checks at release" ? "Checks deferred to release" : "No checks were recorded", at: null };
-        if (step.state === "stuck") return { sentence: step.needsYou && said === null ? "" : said === "Checks unreadable" ? "The checks couldn't be read" : said === "Checks failed" ? headline === "Complete" ? "The checks failed when they ran again" : "The checks failed" : stoppedWord, at: null };
+        if (step.state === "stuck") return { sentence: step.needsYou && said === null ? "" : said === "Checks unreadable" ? "The checks couldn't be read"
+          : said === CHECKS_OUT_OF_DATE ? "The check command changed since they ran"
+          : said === "Checks failed" ? headline === "Complete" ? "The checks failed when they ran again" : "The checks failed" : stoppedWord, at: null };
         if (step.state === "current") return { sentence: said === "Checks running" ? "The checks are running" : step.needsYou ? "" : "Waiting for the checks", at: null };
         return { sentence: "The project's checks run on the result", at: null };
       }

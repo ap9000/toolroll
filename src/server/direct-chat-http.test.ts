@@ -236,6 +236,29 @@ describe("Direct Chat HTTP + SSE routes", () => {
     expect(JSON.parse(teamStart.body)).toMatchObject({ ok: false });
   });
 
+  test("a failed read of its copy is said, through the engine read and on the page, never as no changes (everyday-9 E4)", async () => {
+    const world = await openDirectChatWorld();
+    worlds.push(world);
+    const startedRes = await world.post("/engine/direct-chats", { project: "payments-api", prompt: "Add divide", provider: "claude", model: "claude-sonnet-4-6", request: "d".repeat(32) });
+    const started = JSON.parse(startedRes.body) as { ok: true; threadId: string };
+    const saved = (diff: object) => world.store.handle.prepare("UPDATE direct_chat_thread SET diff_cache_json = ? WHERE id = ?").run(JSON.stringify(diff), started.threadId);
+    const read = async () => (JSON.parse((await world.send(`/engine/direct-chats/${started.threadId}`, "GET", { cookie: world.cookie })).body) as { diff: Record<string, unknown> }).diff;
+    const page = async () => (await world.send(`/direct-chats/${started.threadId}`, "GET", { cookie: world.cookie })).body;
+    // Kept from an earlier read, the last one failed: both say so.
+    saved({ changedFiles: ["math.js"], diffText: "+divide\n", dirty: true, unread: true });
+    expect(await read()).toEqual({ changedFiles: ["math.js"], diffText: "+divide\n", dirty: true, unread: true });
+    expect(await page()).toContain("data-direct-chat-diff-unread");
+    // A first read that failed: nothing to show, and never "No changes".
+    saved({ changedFiles: [], diffText: "", dirty: false, unread: true });
+    expect(await read()).toMatchObject({ changedFiles: [], unread: true });
+    expect(await page()).toContain("data-direct-chat-diff-unread");
+    expect(await page()).not.toContain("No changes in its copy of the project.");
+    // A read that worked: no mark at all.
+    saved({ changedFiles: [], diffText: "", dirty: false });
+    expect(await read()).toEqual({ changedFiles: [], diffText: "", dirty: false });
+    expect(await page()).toContain("No changes in its copy of the project.");
+  });
+
   test("the pages (everyday-8 #6): the same chats as a browser reads them, with the same admission", async () => {
     const world = await openDirectChatWorld();
     worlds.push(world);

@@ -13,7 +13,8 @@ import { storeEvidence } from "./evidence.js";
 import { sealVerificationReceipt } from "./verification-evidence.js";
 import { createDecisionServer } from "./serve.js";
 import { runOperate } from "./operate.js";
-import { checklistLines, mergeChecklistOf, noCheckSetWords, NOT_RECORDED, NOT_RECORDED_LOCAL, type ChecklistKey, type MergeChecklist } from "./merge-checklist.js";
+import { assignmentOf } from "./assignment.js";
+import { checklistFromAssignment, checklistLines, mergeChecklistOf, noCheckSetWords, NOT_RECORDED, NOT_RECORDED_LOCAL, type ChecklistKey, type MergeChecklist } from "./merge-checklist.js";
 import { revisionFormOf, workspaceOf } from "../test/serve-kit.js";
 
 const NOW = new Date("2026-11-05T12:00:00.000Z");
@@ -118,6 +119,23 @@ describe("each row reads its one source", () => {
     expect(list.sentence).toBe("Yes, as far as Toolroll records. Check up to date with main and no conflicts in your repository.");
     expect(checklistLines(list).join("\n")).not.toMatch(/GitHub|\[/);
     expect(list.rows.every(one => one.act === null)).toBe(true);
+  });
+
+  test("up to date with main reads the task's Base line where there are no pull requests; landed work answers with its history (everyday-9 E1/E3)", () => {
+    const assignment = assignmentOf(store, "ready", NOW, { principal: "operator", repos: [REPO] }, ev)!;
+    const head = assignment.receipt!.head!;
+    // git as a revision's project answers it: main's newer commits are already in the result's own head, while its
+    // pinned review base is two commits behind main (review round 1).
+    const git = (missing: string | null) => (_cwd: string, args: readonly string[]) =>
+      args[0] === "rev-list" ? args[2] === `${head}..refs/heads/main` ? missing : "2" : null;
+    const row = (missing: string | null, main: string | null = "main") => checklistFromAssignment(store, "ready", assignment, null, { main }, git(missing)).rows.find(one => one.key === "up-to-date")!;
+    expect(row("0")).toMatchObject({ mark: "yes", say: "Up to date with main." });
+    expect(row("2")).toMatchObject({ mark: "no", act: { kind: "fix", run: runs["ready"] } });
+    expect(row(null)).toMatchObject({ mark: "unknown", say: NOT_RECORDED_LOCAL });
+    expect(row("0", null)).toMatchObject({ mark: "unknown", say: NOT_RECORDED_LOCAL });
+    const landed = checklistFromAssignment(store, "ready", assignment, "Landed on main (abc1234).");
+    expect(landed).toMatchObject({ answer: "landed", sentence: "Landed on main (abc1234).", rows: [] });
+    expect(checklistLines(landed)).toEqual(["Landed on main (abc1234)."]);
   });
 
   test("the plan: an unapproved plan is in the way, and nothing is built", () => {

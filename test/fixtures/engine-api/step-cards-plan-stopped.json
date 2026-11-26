@@ -110,6 +110,7 @@
   "retry": null,
   "approval": null,
   "room": "task:t-b",
+  "landing": null,
   "planStopped": {
     "incident": 7,
     "kind": "plan",

@@ -935,6 +935,39 @@ describe("DirectChatHost & helpers", () => {
     }
   });
 
+  test("a later read of the clone that fails never turns the saved changes into none; it is marked unread (everyday-9 E4)", async () => {
+    const root = tempDir();
+    const repo = makeTempRepo(root);
+    const store = openStore(join(root, "state.db"));
+    store.saveApprover("alex", "h".repeat(64), new Date());
+    const custody = new FakeCustody();
+    let fails = false;
+    const host = new DirectChatHost(store, {
+      stateRoot: join(root, "state"), custody, bootId: () => "boot-1", locateBinary: () => "/fake/codex",
+      readDiff: () => fails ? { changedFiles: [], diffText: "", dirty: false, unread: true } : { changedFiles: ["math.js"], diffText: "+divide\n", dirty: true },
+      spawnTurn: () => { const pid = fakePid(191); custody.add(pid, pid, "start-191"); return { pid, pgid: pid, startIdentity: "start-191" }; },
+    });
+    try {
+      const started = await host.createThread({ owner: "alex", localGeneration: 1, accountGeneration: 1, requestId: "8".repeat(32), repo, provider: "codex", prompt: "Add divide" });
+      expect(started.ok).toBe(true);
+      if (!started.ok) return;
+      const thread = host.getThreadRecord("alex", started.thread.id)!;
+      expect(host.refreshDiffCache(thread)).toMatchObject({ changedFiles: ["math.js"] });
+      fails = true;
+      expect(host.refreshDiffCache(thread)).toEqual({ changedFiles: ["math.js"], diffText: "+divide\n", dirty: true, unread: true });
+      // What the page reads (no git on its GET): the saved files, marked unread.
+      expect(host.getThread("alex", started.thread.id)?.diff).toMatchObject({ changedFiles: ["math.js"], unread: true });
+      fails = false;
+      expect(host.refreshDiffCache(thread)).toEqual({ changedFiles: ["math.js"], diffText: "+divide\n", dirty: true });
+      // No clone binding to read through (its git binding gone from the record): unread too, the saved patch kept (review round 1).
+      store.handle.prepare("UPDATE direct_chat_thread SET git_dir = NULL WHERE id = ?").run(thread.id);
+      const unbound = host.getThreadRecord("alex", started.thread.id)!;
+      expect(host.refreshDiffCache(unbound)).toEqual({ changedFiles: ["math.js"], diffText: "+divide\n", dirty: true, unread: true });
+    } finally {
+      store.close();
+    }
+  });
+
   test("settling a completed Direct Chat turn refreshes diff cache and posts a turn-less status notice to the owner's open Lead thread", async () => {
     const root = tempDir();
     const repo = makeTempRepo(root);

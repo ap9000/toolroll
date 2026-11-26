@@ -192,6 +192,8 @@ export type BrowserTaskRow = {
   group: BrowserTaskGroup;
   /** The status rank: 0 waits on a person, 1 runs, 2 queued or waiting, 3 finished, 4 stopped or put away. */
   rank: number;
+  /** Complete work whose check since acceptance failed, is out of date or can't be read (work-index.ts AfterCheck). */
+  check?: 'failed' | 'stale' | 'unreadable';
   action: BrowserLink | null; detail: string | null; problem: string | null; notes: string[];
   /** Put away, or Restore in Archived (task-tidy.md): a POST to the task's own route; null for a viewer or live work. */
   tidy?: { action: string; label: 'Archive' | 'Restore'; returnTo: string } | null;

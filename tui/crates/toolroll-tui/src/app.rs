@@ -292,6 +292,8 @@ pub struct Item {
     pub thread: bool,
     /// A queued task waiting to start again (Work's own facts: when, and why the last build stopped).
     pub waiting: Option<toolroll_api::Waiting>,
+    /// Complete work whose check since it was accepted failed, is out of date or can't be read (Work's `check`).
+    pub check: Option<String>,
 }
 
 impl Item {
@@ -1805,6 +1807,16 @@ impl App {
         self.selected_item()
             .filter(|i| i.is_task && !i.thread && i.section == Section::Recent && i.tone == "done")
             .map(|i| i.id.clone())
+    }
+
+    /// What Run checks again posts for the selected task: its task, the build and the level its step cards offer (when its
+    /// checks failed, are out of date, couldn't be read or didn't run). The console decides who may, at the post.
+    pub fn run_checks_here(&self) -> Option<(String, i64, String)> {
+        let steps = self.steps_here()?;
+        steps
+            .run_checks
+            .as_ref()
+            .map(|r| (steps.task.id.clone(), r.run, r.level.clone()))
     }
 
     pub fn held_here(&self) -> Option<&toolroll_api::TaskHold> {
@@ -3560,9 +3572,22 @@ impl App {
         }
         self.tab = tab;
         match (tab, self.selected_id()) {
-            (Tab::Diff, Some(id)) if self.diff.is_none() => vec![self.ask_diff(id)],
+            (Tab::Diff, Some(id)) if self.diff.is_none() || !self.diff_is_waiting_result() => {
+                vec![self.ask_diff(id)]
+            }
             _ => vec![],
         }
+    }
+
+    /// Whether the kept diff is the selected task's result waiting now (everyday-9 E4): a revision that reached Ready
+    /// while another tab was open is a new result, and its own changes are read again, never the previous attempt's.
+    /// With no result waiting (a finished or running task), the kept diff stands.
+    fn diff_is_waiting_result(&self) -> bool {
+        let waiting = self
+            .steps_here()
+            .and_then(|s| s.review.as_ref())
+            .map(|r| r.run);
+        waiting.is_none() || self.diff.as_ref().map(|d| d.run) == Some(waiting)
     }
 
     // ---- keys ---------------------------------------------------------------------------------------------------
@@ -5356,6 +5381,30 @@ impl App {
                 }
                 vec![]
             }
+            Action::RunChecks => match self.run_checks_here() {
+                // The task page's own Run checks (POST /r/<build>/checks): the console decides who may, exactly as there.
+                Some((task, run, level)) => {
+                    self.say(Tone::Said, "Asking for checks…");
+                    self.act(
+                        format!("/r/{run}/checks"),
+                        vec![
+                            ("level", level),
+                            (
+                                "return",
+                                format!("/t/{}", toolroll_api::client::encode(&task)),
+                            ),
+                        ],
+                        "Checks asked for: they run again on its exact commit.".into(),
+                    )
+                }
+                None => {
+                    self.say(
+                        Tone::Refused,
+                        "Nothing to run: its checks haven't failed, aren't out of date and were read.",
+                    );
+                    vec![]
+                }
+            },
             Action::Land => match self.land_here() {
                 Some(task) => {
                     self.say(Tone::Said, "Reading what lands…");
@@ -7526,6 +7575,7 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
         is_task: true,
         thread: false,
         waiting: r.waiting.clone(),
+        check: r.check.clone(),
     };
     for r in &rows.rows {
         let section = section_of(r);
@@ -7574,6 +7624,7 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
                 is_task: false,
                 thread: false,
                 waiting: None,
+                check: None,
             });
         }
     }

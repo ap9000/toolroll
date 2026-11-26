@@ -274,7 +274,7 @@ export function phoneTaskView(store: Store, repos: readonly string[], id: string
       const checkNow = root === undefined || proof?.verdict !== "verified" ? null
         : approvedCheckStateOf(approvedCheckOf(proof.verdict, proof.reasons, checksFactOf(assignmentChecksForRun(store, root, result.id, now), result.headRevision)));
       const verifiedWords = root === undefined ? "Open the result to see its checks" : checkNow === "passed" ? "Checks passed at completion"
-        : checkNow === "failed" ? "Checks failed" : checkNow === "running" ? "Checks running" : "The check result couldn't be read";
+        : checkNow === "failed" ? "Checks failed" : checkNow === "running" ? "Checks running" : checkNow === "stale" ? "The check command changed since they ran" : "The check result couldn't be read";
       const proofWords = { verified: verifiedWords, attested: "Checks reported by the agent, not run by Toolroll", short: "Required saved material is missing", refuted: "The saved result doesn't match the approved plan" };
       lines.push(`Checks: ${proof === null ? "No completion record saved" : manualReviewOnly(proof) ? accepted ? "Accepted by a person; the recorded checks are unchanged" : "A person must inspect this result; no recorded check failed" : proofWords[proof.verdict]}.`);
       if (manualReviewOnly(proof) && !accepted) lines.push('Reply “Send the result summary” for the checks, notes and screenshots.');

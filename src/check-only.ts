@@ -88,7 +88,7 @@ export function requestMissingRechecks(store: Store, root: string, now: Date): n
       const run = store.getRun(auth.run);
       if (run === null || run.finishedAt === null) return 0;
       const state = approvedCheckStateOf(assignmentChecksForRun(store, root, auth.run, now));
-      if (state === "not-run" || state === "unreadable") return claimRecheck(store, auth.id, now) === null ? 0 : 1;
+      if (state === "not-run" || state === "unreadable" || state === "stale") return claimRecheck(store, auth.id, now) === null ? 0 : 1;
       if (state !== "running" && checkOnlyRecoveryProblem(store, auth.run) === null) {
         store.handle.prepare("UPDATE check_authorization SET closed_at = ? WHERE id = ? AND used_at IS NULL AND closed_at IS NULL").run(now.toISOString(), auth.id);
       }

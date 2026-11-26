@@ -80,6 +80,10 @@ describe("Save as branch", () => {
     // The person's merge really fast-forwards.
     tgit(world.project, "merge", "--ff-only", branch());
     expect(tgit(world.project, "rev-parse", "HEAD")).toBe(next);
+    // Merged, and later work on main: saving again says it's already in, with no merge to run (everyday-9 E5).
+    tgit(world.project, "commit", "-q", "--allow-empty", "-m", "later work");
+    const again = await save();
+    expect(again).toMatchObject({ ok: true, already: true, next: `It's already in ${head}: nothing to merge.` });
   });
 
   test("the project's branch moved since the thread started: the words say so and give a real merge", async () => {

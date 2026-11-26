@@ -51,7 +51,7 @@ import { recordActionWhole } from "./action-ledger.js";
 import { reproveApprover, verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { localActNow, LOCAL_OWNER_LAPSED } from "./local-owner.js";
 import { publishingOf } from "./pull-request-flow.js";
-import { wholeChangeBaseOf } from "./task-base.js";
+import { readGit, wholeChangeBaseOf } from "./task-base.js";
 
 export const LAND_DESTINATION = "land destination";
 export const LAND_INTENT = "land intent";
@@ -105,7 +105,9 @@ function checkBindingsOf(store: Store, repo: string): CheckBindings {
 }
 export type LandingRead =
   | { ok: true; plan: LandingPlan }
-  | { ok: true; landed: { at: string; ref: string; commit: string; mode: "files" | "ref" | "handoff" } }
+  | { ok: true; landed: { at: string; ref: string; commit: string; mode: "files" | "ref" | "handoff";
+      /** A later commit on the branch exactly reverted it (revertedOnBranch): said as the task page says it. Display only. */
+      reverted?: boolean } }
   | { ok: false; reason: LandRefusal; message: string };
 export type LandRefusal = "pull-requests" | "not-found" | "not-complete" | "checks" | "destination" | "moved" | "occupied" | "dirty" | "unsupported" | "git" | "busy" | "stale" | "authority" | "nothing";
 export type LandResult =
@@ -307,7 +309,10 @@ export async function readLanding(store: Store, taskId: string, access: { repos:
   const candidate = receipt.head;
   if (candidate === null || !OID.test(candidate) || receipt.completionKind === "research-report") return refuse("nothing", "This result has no commit to land.");
   const landed = landingOf(store, assignment.rootId);
-  if (landed !== null && !landed.undone && landed.intent.candidate === candidate) return { ok: true, landed: { at: landed.at, ref: landed.intent.ref, commit: landed.intent.commit, mode: landed.intent.mode } };
+  if (landed !== null && !landed.undone && landed.intent.candidate === candidate) {
+    const reverted = landedStanding(store, assignment.rootId, readGit)?.reverted === true;
+    return { ok: true, landed: { at: landed.at, ref: landed.intent.ref, commit: landed.intent.commit, mode: landed.intent.mode, ...(reverted ? { reverted } : {}) } };
+  }
   // Exactly checked: the sealed receipt's check passed on this commit (verification-evidence.ts binds it to the head), or
   // the project has no check command at all.
   const checks = receipt.checks.status === "passed" ? "passed" as const : !projectCheckSet(store, project.repo) && receipt.checks.status === "not-run" ? "none" as const : null;
@@ -322,11 +327,24 @@ export async function readLanding(store: Store, taskId: string, access: { repos:
   // The family's start the reviewed change ran from (task-base.ts), from Toolroll's run record: bound, for the record.
   const run = store.getRun(receipt.runId);
   const base = run === null || run.branch === null ? null : wholeChangeBaseOf(store, run.taskRef, run.branch) ?? run.baseRevision;
-  return planFor(git, project, destination, { kind: "land", taskId: receipt.taskId, rootId: assignment.rootId, runId: receipt.runId, receipt: receipt.digest, completion: assignment.completion.digest, candidate, checks,
+  const read = await planFor(git, project, destination, { kind: "land", taskId: receipt.taskId, rootId: assignment.rootId, runId: receipt.runId, receipt: receipt.digest, completion: assignment.completion.digest, candidate, checks,
     bindings: checkBindingsOf(store, project.repo) }, { base, message: squashMessage(store.getTask(receipt.taskId)?.title ?? null, receipt.taskId),
     // The commit's time is the completion's own (recorded, so the same inputs always make the same commit).
     time: Math.max(0, Math.floor(Date.parse(assignment.completion.at) / 1000) || 0),
     handedOff: handoffsOf(store, project.repo, assignment.rootId).filter(one => one.candidate === candidate).map(one => one.commit) });
+  // Already there, and a later commit exactly reverted it: said as the task page says it (everyday-9 E1). Display only:
+  // it stays a refusal, and recognising the revert never makes the work landable again.
+  if (!read.ok && read.reason === "nothing") {
+    const seen = recognisedOnBranch(store, project.repo, assignment.rootId, candidate, readGit);
+    if (seen !== null && seen.reverted) return refuse("nothing", `${seen.words}.`);
+  }
+  return read;
+}
+
+/** A recorded landing's words for a refusal or a CLI line: "Landed on main (abc1234)", with the later exact revert when
+ * one is proved ("· a later commit reverted it"), as the task page says it. */
+export function landedLine(landed: { ref: string; commit: string; reverted?: boolean }): string {
+  return `Landed on ${landed.ref.replace(/^refs\/heads\//, "")} (${short(landed.commit)})${landed.reverted === true ? " · a later commit reverted it" : ""}.`;
 }
 
 async function destinationOf(store: Store, project: { repo: string; common: string }, git: Git, into: string | undefined): Promise<{ ok: true; ref: string; recorded: boolean } | { ok: false; reason: LandRefusal; message: string }> {
@@ -588,7 +606,7 @@ export async function land(store: Store, taskId: string, input: { key: string; i
     await settleUnfinished(store, repo, now, options);
     const read = await readLanding(store, taskId, access, now, { ...options, ...(input.into === undefined ? {} : { into: input.into }), ...(input.undo === true ? { undo: true } : {}) });
     if (!read.ok) return read;
-    if (!("plan" in read)) return refuse("nothing", ALREADY_MSG(read.landed.ref, read.landed.commit));
+    if (!("plan" in read)) return refuse("nothing", read.landed.reverted === true ? landedLine(read.landed) : ALREADY_MSG(read.landed.ref, read.landed.commit));
     const plan = read.plan;
     if (plan.key !== input.key) return refuse("stale", "Something changed since you looked (the branch, the checks or the result). Look again, then land it.");
     const project = projectOf(store, plan.repo)!;
@@ -927,6 +945,26 @@ export function recognisedOnBranch(store: Store, repo: string, rootId: string, c
   const reverted = found.old !== null && revertedOnBranch(repo, ref, { old: found.old, commit: found.commit }, read);
   const where = `Landed on ${ref.slice("refs/heads/".length)} (${short(found.commit)})`;
   return { words: reverted ? `${where} · a later commit reverted it` : where, reverted };
+}
+
+/**
+ * A task's landing history: the one answer the task page, its "Can I merge?" checklist, its result's review controls,
+ * `task show` and the workbench read, kept apart from whether it could land now (everyday-9 E1). `landed`: its work is
+ * on the branch as Toolroll recorded it, or as Toolroll recognises it there (merged by hand, or its handed-off commit
+ * brought in: `recorded` false); `reverted`: a later commit exactly reverted it (revertedOnBranch). A landing undone
+ * through Toolroll reads "…, then undone." with `landed` false. `candidate` is the accepted result's commit (null when
+ * the task isn't complete): `landed` holds only for that exact result, so a later revision's work never reads as landed
+ * because an earlier one did (its words still say the history). Display only: it never lands, undoes or allows anything.
+ */
+export type LandingHistory = { words: string; landed: boolean; reverted: boolean; recorded: boolean };
+export function landingHistoryOf(store: Store, repo: string, rootId: string, candidate: string | null, read: GitLook): LandingHistory | null {
+  const record = landingOf(store, rootId);
+  if (record === null || record.undone) {
+    const onBranch = recognisedOnBranch(store, repo, rootId, candidate, read);
+    if (onBranch !== null) return { ...onBranch, landed: true, recorded: false };
+  }
+  const standing = landedStanding(store, rootId, read);
+  return standing === null ? null : { ...standing, landed: record !== null && !record.undone && candidate !== null && record.intent.candidate === candidate, recorded: true };
 }
 
 /** Whether a landing commit Toolroll handed the person is on its branch now (they brought it in) with no landing record

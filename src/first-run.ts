@@ -10,6 +10,7 @@ import { hardenedGit } from "./teardown-git.js";
 import type { Runner } from "./backend.js";
 import { githubIssues } from "./issues.js";
 import { START_BUILDER_HREF } from "./needs-you.js";
+import { CHECKS_OUT_OF_DATE } from "./task-status.js";
 import { firstRunAgentLines, firstTaskOf, withNext, type DetectedAgent } from "./agent-detect.js";
 
 export const SIGN_IN_COMMAND = "claude auth login";
@@ -175,7 +176,8 @@ export function firstTaskJourney(read: { stage: "queued" | "planning" | "needs-y
 
 /** The approved check as the task's status reads it (task-status.ts `approvedCheckStateOf`), for its road: `null` when
  * nothing says (the step is then shown skipped, never done). The road reads this one answer, never a row's words. */
-export type RoadChecks = "passed" | "running" | "failed" | "not-run" | "off" | "unreadable" | null;
+export type RoadChecks = "passed" | "running" | "failed" | "not-run" | "off" | "stale" | "unreadable" | null;
+
 /**
  * Any task's road (the step rows on its page): the first task's five steps, told only
  * from recorded facts. Approval is done only when the plan was approved (a rewritten plan waiting on approval
@@ -205,6 +207,7 @@ export function taskRoad(read: Parameters<typeof firstTaskJourney>[0], approved:
         case "running": return { ...step, state: "current", say: "Checks running" };
         case "failed": return { ...step, say: "Checks failed" };
         case "unreadable": return { ...step, say: "Checks unreadable" };
+        case "stale": return { ...step, say: CHECKS_OUT_OF_DATE };
         default: return step;
       }
     }
@@ -212,6 +215,7 @@ export function taskRoad(read: Parameters<typeof firstTaskJourney>[0], approved:
     // At Checks now: only a recorded failure, an unreadable check or a running check changes how it reads.
     if (step.state === "current") return facts.checks === "failed" ? { ...step, state: "stuck", say: "Checks failed" }
       : facts.checks === "unreadable" ? { ...step, state: "stuck", say: "Checks unreadable" }
+      : facts.checks === "stale" ? { ...step, state: "stuck", say: CHECKS_OUT_OF_DATE }
       : facts.checks === "running" ? { ...step, say: "Checks running" } : step;
     switch (facts.checks ?? null) {
       case "passed": return step;
@@ -220,6 +224,8 @@ export function taskRoad(read: Parameters<typeof firstTaskJourney>[0], approved:
       case "not-run": return { ...step, state: "skipped", say: "Checks not run" };
       case "off": return { ...step, state: "skipped", say: "Checks at release" };
       case "unreadable": return { ...step, state: "stuck", say: "Checks unreadable", ...(complete ? {} : { needsYou: true as const }) };
+      // Out of date (its command changed since): it stops the road like an unreadable check, but reads as waiting, not failed.
+      case "stale": return { ...step, state: "stuck", say: CHECKS_OUT_OF_DATE, ...(complete ? {} : { needsYou: true as const }) };
       default: return { ...step, state: "skipped" };
     }
   });

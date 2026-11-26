@@ -1,5 +1,5 @@
 {
-  "digest": "170a43f1a6d53401a9ea5a366a9497485bc6702e0c6d476ad6deb56f3c9af86e",
+  "digest": "ed0c176b6546bc4bae0b1f16d79568338812f2fda185cb7e870714f318dd3932",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -1076,6 +1076,14 @@
                 "type": "integer",
                 "minimum": -9007199254740991,
                 "maximum": 9007199254740991
+              },
+              "check": {
+                "type": "string",
+                "enum": [
+                  "failed",
+                  "stale",
+                  "unreadable"
+                ]
               },
               "detail": {
                 "type": [
@@ -2464,6 +2472,59 @@
             }
           ]
         },
+        "landing": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "words": {
+                  "type": "string"
+                },
+                "reverted": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "words",
+                "reverted"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "check": {
+          "type": "string",
+          "enum": [
+            "failed",
+            "stale",
+            "unreadable"
+          ]
+        },
+        "runChecks": {
+          "type": "object",
+          "properties": {
+            "run": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "level": {
+              "type": "string",
+              "enum": [
+                "quick",
+                "full"
+              ]
+            }
+          },
+          "required": [
+            "run",
+            "level"
+          ],
+          "additionalProperties": false
+        },
         "room": {
           "type": "string"
         }
@@ -2490,6 +2551,7 @@
         "scopeDigest",
         "agentChoices",
         "pendingAgentChange",
+        "landing",
         "room"
       ],
       "additionalProperties": false
@@ -5685,6 +5747,10 @@
             },
             "dirty": {
               "type": "boolean"
+            },
+            "unread": {
+              "type": "boolean",
+              "const": true
             }
           },
           "required": [

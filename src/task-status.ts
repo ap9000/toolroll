@@ -106,20 +106,26 @@ export function approvedCheckOf(verdict: string | null | undefined, reasons: rea
 }
 
 /** How the approved check reads, in one word every surface shares (from `approvedCheckOf`'s answer): `running` while a
- * check is underway on the commit, else what it recorded. `unreadable`: it couldn't be read or the records disagree. */
-export type ApprovedCheckState = "passed" | "failed" | "running" | "not-run" | "off" | "unreadable";
-export function approvedCheckStateOf(checks: Pick<ChecksFact, "status" | "level" | "release" | "running" | "batch"> | null | undefined): ApprovedCheckState | null {
+ * check is underway on the commit, else what it recorded. `stale`: its saved files are intact but the project's check
+ * command was approved again since it ran — out of date, never a failure. `unreadable`: it couldn't be read or the
+ * records disagree. Neither counts as passed. */
+export type ApprovedCheckState = "passed" | "failed" | "running" | "not-run" | "off" | "stale" | "unreadable";
+export function approvedCheckStateOf(checks: Pick<ChecksFact, "status" | "level" | "release" | "running" | "batch" | "cause"> | null | undefined): ApprovedCheckState | null {
   if (checks == null) return null;
   // A failure stands while a new check runs: only its result can change the answer. A check that couldn't be read (a
   // result waiting for its batch check has none yet) reads running while one is underway, and never passed.
   if (checks.status === "failed") return "failed";
   if (checksUnderway(checks) || checks.status === "running") return "running";
-  if (checks.status === "unavailable") return "unreadable";
+  if (checks.status === "unavailable") return checks.cause === "command-changed" ? "stale" : "unreadable";
   if (checks.status === "passed") return "passed";
   if (checks.level === "off") return checks.release != null ? "passed" : "off";
   return "not-run";
 }
 
+/** The Project checks row for a check whose command was approved again since it ran (one whole sentence). */
+export const CHECKS_STALE_ROW = "Out of date: the check command changed since they ran";
+/** The road's Checks step for a check whose command was approved again since it ran: out of date, never a failure. */
+export const CHECKS_OUT_OF_DATE = "Checks out of date";
 /** A saved check that can't be read, in the words every surface uses. */
 export const CHECK_UNREADABLE = "The check result couldn't be read.";
 export const CHECK_UNREADABLE_ASK = `${CHECK_UNREADABLE} Run checks on it, or open the result to see why.`;
@@ -208,8 +214,10 @@ function resultAsk(facts: Pick<TaskStatusFacts, "report" | "checks" | "requireme
   if (blocker !== undefined) return blocker.message;
   const req = facts.requirements;
   if (req != null && facts.accepted !== true && req.unverified !== true && (req.yours > 0 || (req.unshown ?? 0) > 0) && req.ask != null) return req.ask;
-  // A check that can't be read is never a pass: a person runs it again or looks at why, unless they already accepted.
-  if (facts.accepted !== true && approvedCheckStateOf(facts.checks) === "unreadable") return unreadableAsk(facts.checks);
+  // A check that can't be read, or is out of date, is never a pass: a person runs it again or looks at why, unless they
+  // already accepted.
+  const check = approvedCheckStateOf(facts.checks);
+  if (facts.accepted !== true && (check === "unreadable" || check === "stale")) return unreadableAsk(facts.checks);
   return null;
 }
 
@@ -304,14 +312,16 @@ function detailsOf(headline: Headline, facts: TaskStatusFacts): StatusDetail[] {
       headline === "Failed" ? { href: checksHref, why: batchWhy } : { action: { label: "See what failed", href: checksHref }, why: batchWhy });
     else if (checks.status === "passed") row("checks", CHECKS_LABEL, `${quick ? "Quick checks passed" : "Passed"}${sha === null ? "" : ` on ${sha}`}`, "ok",
       quick && runChecks !== null && headline !== "Complete" ? { href: checksHref, action: { label: "Run full checks", href: runChecks.href } } : { href: checksHref });
+    // Under any other headline (a Complete task whose checks ran again and failed): what failed is the row's own link,
+    // and Run checks stays its act, so it can run again from the top (everyday-9 E3).
     else if (checks.status === "failed") row("checks", CHECKS_LABEL, `${quick ? "Quick checks failed" : "Failed"}${checks.exitCode === null ? "" : ` (exit ${checks.exitCode})`}`, problem(headline),
-      headline === "Failed" ? { href: checksHref } : { action: { label: "See what failed", href: checksHref } });
+      headline === "Failed" ? { href: checksHref } : runChecks !== null ? { href: checksHref, action: runChecks } : { action: { label: "See what failed", href: checksHref } });
     else if (checks.status === "running") row("checks", CHECKS_LABEL, "Running", "running");
     else if (checks.level === "off" && checks.release != null) row("checks", CHECKS_LABEL, `Release checks passed on ${short(checks.release.head) ?? `build #${checks.release.run}`}`, "ok", { href: checksHref });
     else if (checks.level === "off") row("checks", CHECKS_LABEL, CHECKED_AT_RELEASE, "none", runChecks === null ? {} : { action: runChecks });
     else if (checks.status === "not-run") row("checks", CHECKS_LABEL, "Didn't run", "none", runChecks === null ? {} : { action: runChecks });
     // A saved check that can't be read is run again where that is possible.
-    else if (checks.cause === "command-changed") row("checks", CHECKS_LABEL, "Check command changed since", "note", { action: runChecks ?? { label: OPEN_RESULT, href: facts.links?.result ?? null }, why: CHECK_COMMAND_CHANGED });
+    else if (checks.cause === "command-changed") row("checks", CHECKS_LABEL, CHECKS_STALE_ROW, "note", { action: runChecks ?? { label: OPEN_RESULT, href: facts.links?.result ?? null }, why: CHECK_COMMAND_CHANGED });
     else row("checks", CHECKS_LABEL, "Couldn't be read", "note", { action: runChecks ?? { label: OPEN_RESULT, href: facts.links?.result ?? null } });
   }
   const pr = facts.pullRequest;
