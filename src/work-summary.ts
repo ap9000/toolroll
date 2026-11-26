@@ -132,7 +132,7 @@ export function taskWorkSummaryOf(store: Store, taskId: string, now: Date, acces
   const publication = result === null ? null : store.publicationForRun(result.id);
   const facts: WorkFacts = {
     id: task.id, title: task.title, repo: ref.repo, state: task.state, updatedAt: task.updatedAt,
-    ...(task.state === "done" && completionStands(store, task.id, now) ? { completed: true } : {}),
+    ...(task.state === "done" && result !== null && completionStands(store, task.id, now, result.id) ? { completed: true } : {}),
     ...(machineChecked(store, task.id) ? { machine: true } : {}),
     dispatch: diagnoseTaskDispatch(store, taskId, now, access.dependencyRepos ?? null), liveRunId: live?.id ?? null,
     unfinishedRunId: runs.find(one => one.outcome === null && one.role !== "reviewer")?.id ?? null,
@@ -168,8 +168,12 @@ export function taskWorkSummaryOf(store: Store, taskId: string, now: Date, acces
  * follow-up check's own log and receipt aside: a check run later is a separate fact) and after its latest verdict and
  * acceptance. Questions, held findings and a stop under way keep their precedence in workStatusOf. Grants nothing.
  */
-export function completionStands(store: Store, taskId: string, now: Date): boolean {
+export function completionStands(store: Store, taskId: string, now: Date, resultRunId?: number): boolean {
   try {
+    // Most reads end here, in one statement: no completer ever recorded a completion of this version's result (an earlier
+    // version's own result, or work never completed). Everything below reads only for a result that was completed.
+    if (resultRunId !== undefined && store.handle.prepare("SELECT 1 AS hit FROM action_ledger WHERE run_id = ? AND action = ? AND source = 'work' LIMIT 1")
+      .get(resultRunId, COMPLETION_ACTION) === undefined) return false;
     const family = store.taskFamilyOf(taskId, null, true);
     if (family === null || family.problem !== null || family.current.id !== taskId || family.current.state !== "done") return false;
     const current = family.current;
