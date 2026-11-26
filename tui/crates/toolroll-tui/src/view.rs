@@ -2376,6 +2376,12 @@ fn layout_steps(
         for l in wrap(&clean(headline), w) {
             lines.push(Line::from(Span::styled(l, ink())));
         }
+        // Work already on its branch says so under its headline, as the task page leads with it.
+        if let Some(landing) = &steps.landing {
+            for l in wrap(&clean(&landing.words), w) {
+                lines.push(Line::from(Span::styled(l, dim())));
+            }
+        }
         lines.push(Line::raw(""));
     }
     let cards = chain_cards(steps);

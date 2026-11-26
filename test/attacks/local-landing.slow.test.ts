@@ -21,8 +21,9 @@ import { storeEvidence } from "../../src/evidence.js";
 import { sealVerificationReceipt } from "../../src/verification-evidence.js";
 import { recordRunCheckLevel } from "../../src/check-levels.js";
 import { acceptAndCompleteAsOperator, assignmentOf } from "../../src/assignment.js";
+import { mergeChecklistOf } from "../../src/merge-checklist.js";
 import { verifyApproverByPassword, type VerifiedApprover } from "../../src/principal.js";
-import { broughtInOnBranch, gitCommand, handoffsOf, handoffWords, keptHandoffOf, land, landableBranch, landedStanding, landingOf, landingWords, LAND_INTENT, LAND_SETTLED, readLanding, recognisedOnBranch, shownName, unsafeInCommand, type LandAuthority } from "../../src/local-landing.js";
+import { broughtInOnBranch, gitCommand, handoffsOf, handoffWords, keptHandoffOf, land, landableBranch, landedStanding, landingHistoryOf, landingOf, landingWords, LAND_INTENT, LAND_SETTLED, readLanding, recognisedOnBranch, shownName, unsafeInCommand, type LandAuthority } from "../../src/local-landing.js";
 import { readGit } from "../../src/task-base.js";
 import { recordActionWhole } from "../../src/action-ledger.js";
 import { run as execRun } from "../../src/exec.js";
@@ -751,6 +752,11 @@ describe("already on main (everyday-9 A3): recognised for display, never grantin
     expect(recognisedOnBranch(store, repo, "t", head, readGit)).toEqual({ words: `Landed on main (${landed.commit.slice(0, 7)}) · a later commit reverted it`, reverted: true });
     // It grants nothing: the task stays as it was, and nothing is recorded.
     expect(landingOf(store, "t")).toBeNull();
+    // The command says it as the page does (everyday-9 E1), and still refuses: a revert never makes it landable again.
+    expect(await readLanding(store, "t", access(), NOW, options())).toEqual({ ok: false, reason: "nothing", message: `Landed on main (${landed.commit.slice(0, 7)}) · a later commit reverted it.` });
+    expect(landingHistoryOf(store, repo, "t", head, readGit)).toMatchObject({ landed: true, reverted: true, recorded: false });
+    // "Can I merge?" answers with the history, never "Not yet".
+    expect(mergeChecklistOf(store, "t", NOW, { principal: "operator", repos: [repo] }, root)).toMatchObject({ answer: "landed", rows: [], sentence: `Landed on main (${landed.commit.slice(0, 7)}) · a later commit reverted it` });
   });
 
   test("a recorded landing stays history: Landed, never On main now; a later exact inverse is said (everyday-9 #3)", async () => {
@@ -763,6 +769,8 @@ describe("already on main (everyday-9 A3): recognised for display, never grantin
     git(repo, "update-ref", "refs/heads/main", inverse);
     expect(landedStanding(store, "t", readGit)).toEqual({ words: `Landed on main (${landed.commit.slice(0, 7)}) · a later commit reverted it`, reverted: true });
     expect(landingOf(store, "t")).toMatchObject({ undone: false });
+    // The command reads the same history (everyday-9 E1); nothing more lands.
+    expect(await readLanding(store, "t", access(), NOW, options())).toMatchObject({ ok: true, landed: { commit: landed.commit, reverted: true } });
   });
 
   test("a merged side branch that never saw the landing holds the same inverse change: not a revert (review round 1)", async () => {

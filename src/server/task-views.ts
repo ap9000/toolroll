@@ -23,6 +23,7 @@ import { routeChangeOf } from "../route-change.js";
 import { liveAttemptOf, steerControlsFor } from "../steer-controls.js";
 import { originOf } from "../task-source.js";
 import { recentGitReads, taskBaseOf } from "../task-base.js";
+import { landedNowOf } from "../merge-checklist.js";
 import { assignmentPresentationOf,historicalAssessmentReason } from '../assignment-presentation.js';
 import { html, htmlString, joinHtml, type Html } from "../html.js";
 import { assignmentStatusOf,assignmentWithEvidence } from '../assignment-ui.js';
@@ -780,12 +781,12 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     // with no Land. Display only (everyday-9 A3): it grants nothing.
     const history = landingHistoryOf(runtime.store, repo, rootId, complete ? assignment?.receipt?.head ?? null : null, baseGit);
     // A later commit that exactly reverted it (the person's own revert) is said, and Undo, which would revert it again, isn't offered.
-    if (history !== null && !history.recorded) return { taskId: rootId, landed: history.words, canLand: false, canUndo: person && !history.reverted && broughtInOnBranch(runtime.store, repo, rootId, baseGit) };
+    if (history !== null && !history.recorded) return { taskId: rootId, landed: history.words, onBranch: true, canLand: false, canUndo: person && !history.reverted && broughtInOnBranch(runtime.store, repo, rootId, baseGit) };
     const standing = history;
     // A landing commit kept for the person's own merge (their folder had the branch checked out): its exact command,
     // read from the record, so a reload after Land still shows it.
     const kept = complete && (record === null || record.undone) ? keptHandoffOf(runtime.store, repo, rootId, assignment?.receipt?.head ?? null) : null;
-    return { taskId: rootId, landed: standing?.words ?? null, canLand: person && complete && (record === null || record.undone), canUndo: person && record !== null && !record.undone && standing?.reverted !== true,
+    return { taskId: rootId, landed: standing?.words ?? null, onBranch: standing?.landed === true, canLand: person && complete && (record === null || record.undone), canUndo: person && record !== null && !record.undone && standing?.reverted !== true,
       ...(kept === null ? {} : { kept }) };
   }
 
@@ -981,7 +982,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     const oneTaskView = onePage?.kind === "task" ? { ...onePage, ship: shipViewOf(shipChecksForTask(runtime.store, rootId), runtime.clock()),
       release: releaseStepsViewOf(releaseProgressFor(runtime.store, rootId), runtime.clock()),
       // "Can I merge?" (P1.6): the checklist from the same assignment this page read, each blocker with its own form.
-      mergeReady: mergeReadyViewOf(runtime.store, taskId, data.assignment, who, presentedData.runChecks ?? null, taskHref(taskId)) } : onePage;
+      mergeReady: mergeReadyViewOf(runtime.store, taskId, data.assignment, who, presentedData.runChecks ?? null, taskHref(taskId), landedOf(presentedData)) } : onePage;
     // A check the machine runs (a prepared candidate: a release's check) is said as the check it is, with no agent's
     // activity, no notes to read, and for a release its own steps instead of the generic Plan → Build stepper.
     if (oneTaskView?.kind === "task" && machineChecked(runtime.store, taskId)) {
@@ -1282,7 +1283,8 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         const completeRefusal = assignment?.state !== "ready-to-check" || assignment.receipt === null ? null
           : personCompletionRefusal(runtime.store, assignment.receipt.taskId, run.id, who.via === "cookie" ? who.name : null, runtime.evidenceRoot,
               who.via === "cookie" && who.authority === "local-owner" ? { rootId: assignment.rootId } : null);
-        return { assignment, completeRefusal };
+        // Work already on its branch (landingHistoryOf): nothing is left to review, so no review controls are offered.
+        return { assignment, completeRefusal, landed: assignment !== null && landedNowOf(runtime.store, assignment) !== null };
       })(),
       handoff,
       proof,
@@ -1425,4 +1427,9 @@ export function releaseStepsViewOf(progress: ReturnType<typeof releaseProgressFo
     stopped: progress.stopped === null ? null : { step: RELEASE_STEP_WORDS[progress.stopped.step] ?? progress.stopped.step, message: progress.stopped.message, at: progress.stopped.at },
     startedAt: progress.startedAt,
   };
+}
+
+/** The task page's landing history words when its work is on the branch now (taskLandingOf), else null. */
+function landedOf(data: { landing?: TaskLanding | null }): string | null {
+  return data.landing?.onBranch === true ? data.landing.landed : null;
 }

@@ -1,5 +1,5 @@
 {
-  "digest": "170a43f1a6d53401a9ea5a366a9497485bc6702e0c6d476ad6deb56f3c9af86e",
+  "digest": "31a2995b2d931d875b215d9fd44eceb8260d1973119026e6d56607c89f6fe5e1",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -2464,6 +2464,29 @@
             }
           ]
         },
+        "landing": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "words": {
+                  "type": "string"
+                },
+                "reverted": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "words",
+                "reverted"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "room": {
           "type": "string"
         }
@@ -2490,6 +2513,7 @@
         "scopeDigest",
         "agentChoices",
         "pendingAgentChange",
+        "landing",
         "room"
       ],
       "additionalProperties": false

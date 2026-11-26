@@ -105,7 +105,7 @@ import { applyProjectProfile, runProjectCommand } from "./project-cli.js";
 import { passwordFreeOwner, passwordFreeShell, passwordFreeShellWords, proveTaskBuildsStopped, pullRequestLines, runLocalCompletion, runLocalRevision, runTaskMergeCommand, runTaskOutcomeCommand, type ShellCaller } from "./task-outcome-cli.js";
 import { applyPendingAgentChanges, planAgainAsLocalOwner, requestPlanAsLocalOwner, retryAsLocalOwner } from "./local-owner-acts.js";
 import { withTaskAlias } from "./task-aliases.js";
-import { checklistLines, mergeChecklistOf } from "./merge-checklist.js";
+import { checklistLines, landedNowOf, mergeChecklistOf } from "./merge-checklist.js";
 import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
 /**
  * The commands that actually move work: authoring tasks, and the claim loop.
@@ -160,7 +160,7 @@ import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { parseMachLookup, parseReadDeny, readDenyWords, type ProjectSandbox } from "./project-sandbox.js";
 import { LOCAL_POLICY } from "./surface.js";
-import { handoffWords, land, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding, type LandAuthority } from "./local-landing.js";
+import { handoffWords, land, landedLine, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding, type LandAuthority } from "./local-landing.js";
 import { asLocalOwner, currentLocalOwner, localActNow, LOCAL_MODE_CONFINES, localModeOn, localOwnerRefusal, localOwnerRequested, type LocalOwnerAct, type LocalPrincipal } from "./local-owner.js";
 import { CHECK_ACCESS_WARNINGS, checkAccessRunsAs, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
@@ -10214,6 +10214,8 @@ function showTask(positional: readonly string[], context: Context): number {
   const primaryAction = listed === null ? work?.primaryAction ?? null : listed.primaryAction;
   const steeringLive = store.steeringLiveBuild(ref.id, now) !== null;
   const base = taskBaseOf(store, id);
+  // Its landing history (everyday-9 E1): the same words the task page leads with, when its work is on the branch.
+  const landedNow = current === null ? null : landedNowOf(store, current)?.words ?? null;
   const detail = {
     task,
     work: work === null || listed === null ? work : { ...work, status: { ...work.status, label: listed.status.label, detail: listed.status.detail, tone: listed.status.tone }, primaryAction },
@@ -10233,6 +10235,8 @@ function showTask(positional: readonly string[], context: Context): number {
     route: taskRouteView(routed, readiness),
     // Fresh base: the commit this task's work starts from, and how far current main has moved past it.
     base,
+    // Its landing history when its work is on the branch ("Landed on main (abc1234)"); null otherwise.
+    landing: landedNow,
     runs: runs.map(one => ({ ...one, route: store.runRoute(one.id) })),
     deliverable: ref.deliverable,
     report: readVerifiedReport(store, context.evidenceRoot, ref.id),
@@ -10300,7 +10304,8 @@ function showTask(positional: readonly string[], context: Context): number {
           ]
         : [`  report: ${detail.report.problem} (build #${detail.report.run})`]),
     ...pullRequestLines(detail.pullRequest),
-    ...(base === null ? [] : [`  base: ${baseStandingWords(base)}`]),
+    ...(landedNow === null ? [] : [`  landing: ${landedNow}`]),
+    ...(base === null ? [] : [`  base: ${baseStandingWords(base, landedNow !== null)}`]),
     ...(detail.blockedBy.length > 0 ? [`  waits for ${detail.blockedBy.join(", ")}`] : []),
     ...(detail.position === null
       ? []
@@ -16005,7 +16010,7 @@ async function landTaskCommand(positional: readonly string[], flags: Map<string,
     if (key !== undefined) return fail(write, json, command, "usage", "--key goes with --yes.", EXIT.usage);
     const read = await readLanding(store, id, { repos: localRepos }, now, options);
     if (!read.ok) return fail(write, json, command, read.reason, read.message, EXIT.refused);
-    if (!("plan" in read)) return succeed(write, json, command, { landed: read.landed }, () => [`${id} · Landed on ${read.landed.ref.replace(/^refs\/heads\//, "")} (${read.landed.commit.slice(0, 7)}).`]);
+    if (!("plan" in read)) return succeed(write, json, command, { landed: read.landed }, () => [`${id} · ${landedLine(read.landed)}`]);
     const plan = read.plan;
     // Say up front what the yes will ask for (everyday-9 A4): this computer's local owner needs nothing more; anyone
     // else, their name and password. With no password set yet (a solo install), a shell can't prove a person typed the

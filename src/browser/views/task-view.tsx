@@ -1032,7 +1032,9 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
   const ATTACHED: Readonly<Record<string, string | null>> = { problem: approve !== null ? "approve" : stuckKey, "pull-request": "ready", "needs-scope": "approve", control: "build", attempt: "build",
     questions: stuckKey, "plan-revisions": decides ? stuckKey : "build" };
   const leadOf = (key: string) => rows === null ? [] : view.lead.filter(block => ATTACHED[block.key] === key && rows.some(row => row.key === key && row.opens));
-  const unattached = view.lead.filter(block => rows === null || !rows.some(row => row.key === ATTACHED[block.key] && row.opens));
+  // Work already on its branch: its landing leads the page, above everything else it says (everyday-9 E1).
+  const landed = view.lead.filter(block => block.key === "landed");
+  const unattached = view.lead.filter(block => block.key !== "landed" && (rows === null || !rows.some(row => row.key === ATTACHED[block.key] && row.opens)));
   const leadCards = (blocks: readonly { key: string; html: string; instance?: string }[]) => blocks.map(block => <Html key={block.instance === undefined ? block.key : `${block.key}:${block.instance}`} html={block.html} className={`so-task-lead so-task-lead--${block.key}`} />);
   // Where the status box goes: the step happening now, else the last one reached.
   const statusKey = currentKey ?? rows?.find(row => row.open)?.key ?? null;
@@ -1140,6 +1142,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
           <KButton type="submit" variant="primary" label="Restore" data-restore="" />
         </PostForm> : null}
         terms={view.archived.restore !== null ? "Restoring puts it back in Work. Its history and results were kept." : "An approver can restore it."} />}
+      {landed.length > 0 && <div className="k-sec so-task-landed" data-task-landed="">{leadCards(landed)}</div>}
       {outcomeFirst && <div className="k-sec so-task-outcome" data-task-outcome="">
         {statusBox("ready", true)}
         {readyExtras(resultBody !== null)}

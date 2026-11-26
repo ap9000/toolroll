@@ -658,7 +658,18 @@ pub struct StepCards {
     pub plan_queued: bool,
     /// Who approved the task's scope (null while no approval stands).
     pub approval: Option<Approval>,
+    /// Its landing history when its work is already on its branch: the words the task page leads with. Display only.
+    #[serde(default)]
+    pub landing: Option<StepLanding>,
     pub room: String,
+}
+
+/// A task's landing history (StepCards.landing): "Landed on main (abc1234)", and whether a later commit exactly reverted it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct StepLanding {
+    pub words: String,
+    pub reverted: bool,
 }
 
 /// Open build shell's build (StepCards.shell): the run it would open, and why it can't (None: it can).

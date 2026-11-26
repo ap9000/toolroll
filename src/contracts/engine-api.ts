@@ -364,6 +364,11 @@ export const stepCardsSchema = z.object({
    * in words; it waits for a new pick. Null when none waits. */
   pendingAgentChange: z.object({ phase: z.enum(["plan", "build"]), provider: z.string(), model: z.string(), when: z.enum(["next-run", "restart"]), by: z.string(), at: z.string(),
     problem: z.string().nullable() }).nullable(),
+  /** Its landing history when its work is already on its branch (local-landing.ts landingHistoryOf, merge-checklist.ts
+   * landedNowOf): the words the task page leads with ("Landed on main (abc1234)", "· a later commit reverted it" when
+   * proved). Display only: it never makes anything landable. Null when it hasn't landed (or the project publishes
+   * through pull requests). */
+  landing: z.object({ words: z.string(), reverted: z.boolean() }).nullable(),
   room: z.string(),
 });
 

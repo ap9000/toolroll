@@ -13,6 +13,7 @@ import { codexOfflineDependencySuggestion, failedAttemptSentence, latestFinished
 import { pendingAgentChangeOf, planSourceOf, retryPinsOf } from "./local-owner-acts.js";
 import { assignmentOf, owedAcceptance, personCompletionRefusal, type AssignmentSnapshot } from "./assignment.js";
 import { assignmentCardOf } from "./assignment-ui.js";
+import { landedNowOf } from "./merge-checklist.js";
 import { assignmentStageOf, stageOfCode } from "./task-status.js";
 import { taskRoad, type RoadChecks } from "./first-run.js";
 import { stepRowsOf, type StepRowFacts } from "./workspace-ui.js";
@@ -170,6 +171,8 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
     scopeDigest: scope?.digest ?? null,
     agentChoices: scope === null || !withChoices ? null : agentChoicesOf(store, current.id, ref, now),
     pendingAgentChange: ref === null ? null : pendingAgentChangeOf(store, ref.id),
+    // Its landing history, when its work is already on its branch (display only).
+    landing: assignment === null ? null : landedNowOf(store, assignment),
     room: `task:${encodeURIComponent(root.id)}`,
   };
 }

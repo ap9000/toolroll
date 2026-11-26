@@ -15,6 +15,19 @@ import { shipChecksForTask, type Store } from "./store.js";
 import { approvedCheckStateOf, requirementWordOf } from "./task-status.js";
 import { projectCheckSet } from "./check-levels.js";
 import { projectName } from "./project.js";
+import { landingHistoryOf, publishesThroughPullRequests } from "./local-landing.js";
+import { recentGitReads, type GitRead } from "./task-base.js";
+
+/** The bounded git reads a checklist's landing history uses (display only, answers kept for a moment). */
+const landingReads: GitRead = recentGitReads();
+
+/** A task's landing history when its work is on its branch now (landingHistoryOf), else null: what the checklist says in
+ * place of "Not yet" for work that already landed. Projects that publish through pull requests have none. */
+export function landedNowOf(store: Store, assignment: AssignmentSnapshot, read: GitRead = landingReads): { words: string; reverted: boolean } | null {
+  if (assignment.repo === null || publishesThroughPullRequests(store, assignment.repo)) return null;
+  const history = landingHistoryOf(store, assignment.repo, assignment.rootId, assignment.state === "complete" ? assignment.receipt?.head ?? null : null, read);
+  return history !== null && history.landed ? { words: history.words, reverted: history.reverted } : null;
+}
 
 export const CHECKLIST_KEYS = ["plan", "build", "checks", "requirements", "pull-request", "pr-ci", "up-to-date", "conflicts", "comments", "release"] as const;
 export type ChecklistKey = (typeof CHECKLIST_KEYS)[number];
@@ -26,8 +39,10 @@ export type ChecklistAct = { kind: "run-checks"; run: number } | { kind: "retry"
 export type ChecklistRow = { key: ChecklistKey; label: string; mark: ChecklistMark; say: string; act: ChecklistAct | null };
 export type MergeChecklist = {
   taskId: string; activeTaskId: string; run: number | null; head: string | null;
-  /** yes: nothing Toolroll records is in the way; no: something is (the first `no` row); not-yet: only waiting rows. */
-  answer: "yes" | "no" | "not-yet" | "merged";
+  /** yes: nothing Toolroll records is in the way; no: something is (the first `no` row); not-yet: only waiting rows.
+   * landed: its work is already on the branch (local-landing.ts landingHistoryOf): the sentence is that history and
+   * there are no rows, since nothing is left to merge (everyday-9 E1). */
+  answer: "yes" | "no" | "not-yet" | "merged" | "landed";
   sentence: string;
   rows: ChecklistRow[];
 };
@@ -59,12 +74,14 @@ export const noCheckSetWords = (repo: string): string => `No check is set for ${
 export function mergeChecklistOf(store: Store, taskId: string, now: Date, access: AssignmentAccess, root?: string): MergeChecklist | null {
   const assignment = assignmentOf(store, taskId, now, access, root);
   if (assignment === null) return null;
-  return checklistFromAssignment(store, taskId, assignment);
+  return checklistFromAssignment(store, taskId, assignment, landedNowOf(store, assignment)?.words ?? null);
 }
 
-/** The checklist from an assignment snapshot already read (the task page reads one). */
-export function checklistFromAssignment(store: Store, taskId: string, assignment: AssignmentSnapshot): MergeChecklist {
+/** The checklist from an assignment snapshot already read (the task page reads one). `landed`: the task's landing
+ * history words when its work is already on the branch (landedNowOf): the answer is then that history, with no rows. */
+export function checklistFromAssignment(store: Store, taskId: string, assignment: AssignmentSnapshot, landed: string | null = null): MergeChecklist {
   const active = assignment.activeTaskId;
+  if (landed !== null) return { taskId, activeTaskId: active, run: assignment.receipt?.runId ?? null, head: assignment.receipt?.head ?? null, answer: "landed", sentence: landed, rows: [] };
   const scope = store.getScope(active);
   const task = store.getTask(active);
   const receipt = assignment.receipt;
@@ -180,6 +197,7 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
 
 /** The checklist as plain lines (the CLI, the lead, the TUI): the answer, then one line per row that applies. */
 export function checklistLines(list: MergeChecklist): string[] {
+  if (list.answer === "landed") return [list.sentence];
   const MARK: Readonly<Record<ChecklistMark, string>> = { yes: "✓", no: "✗", waiting: "…", unknown: "?", skip: "–" };
   return [`Can I merge ${list.activeTaskId}? ${list.sentence}`,
     // A blocker's act is a button on the task's page; in plain text it says where to find it, never a fake button.
