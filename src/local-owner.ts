@@ -56,6 +56,9 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   // The code map (docs/plans/code-map.md §5): on or off for one project only, the same kind of setting as the default
   // agent. Never a refresh, and never the end of a holdout (code-map-acts.ts refuses those by name).
   "code-map-switch",
+  // Global skill library (v186): a solo owner manages library skills, GitHub bundles, per-project opt-outs, and local
+  // tool folder sync without a password ceremony.
+  "skill-library",
   // Learning loops (D3): deciding a lesson note or a clean-up of project memory. The writers (memory-pass.ts decideProposal,
   // memory-tidy.ts) check this exact act; instruction proposals stay with full authority.
   "memory-review",

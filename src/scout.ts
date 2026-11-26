@@ -488,6 +488,7 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
         // `via`): those ports are all its fence leaves open. With no proxy it reaches its provider alone.
         ...(proxy === null ? {} : { network: { via: [portOf(proxy.url), ...(browserServer === null ? [] : [portOf(browserServer.url)])] } }),
         skills: projectSkills,
+        evidenceRoot: root,
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,
@@ -670,7 +671,7 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
           resumeSession: session,
           ...(structured ? { jsonSchema: SCOUT_OUTPUT_JSON_SCHEMA } : {}),
         },
-        { cwd: worktree, timeoutMs: SHORTEN_TIMEOUT_MS, omitEnv: AGENT_ENV_DENYLIST, skills: projectSkills, ...(agent === undefined ? {} : { runner: agent }), clock },
+        { cwd: worktree, timeoutMs: SHORTEN_TIMEOUT_MS, omitEnv: AGENT_ENV_DENYLIST, skills: projectSkills, evidenceRoot: root, ...(agent === undefined ? {} : { runner: agent }), clock },
       );
       if (spoken.kind === "refused" || spoken.outcome.timedOut || spoken.outcome.code !== 0 || !heartbeat(store, request.leaseId, clock()).ok) return null;
       const head = await git(GIT, ["--no-optional-locks", "rev-parse", "HEAD"], { cwd: worktree });

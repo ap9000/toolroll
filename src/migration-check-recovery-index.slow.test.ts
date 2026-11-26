@@ -53,7 +53,7 @@ test("positive177 migrates to current schema without changing identity/history o
   expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(178); expect(UPDATE_SAFE_MIGRATIONS).toContain(178);
   const file = source177(), before = snapshot(file), inode = statSync(file);
   openStore(file).close(); const after = snapshot(file);
-  expect(after.version?.["version"]).toBe(SCHEMA_VERSION); expect(after.catalog).toHaveLength(726); expect(after.rows).toEqual(before.rows);
+  expect(after.version?.["version"]).toBe(SCHEMA_VERSION); expect(after.catalog).toHaveLength(732); expect(after.rows).toEqual(before.rows);
   expect(statSync(file).ino).toBe(inode.ino); expect(statSync(file).dev).toBe(inode.dev);
   openStore(file).close(); expect(snapshot(file)).toEqual(after);
 });

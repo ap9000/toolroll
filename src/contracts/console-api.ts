@@ -157,6 +157,7 @@ export const CONSOLE_FORMS = {
   agentsCheck: formContract("POST /engine/agents/check", []),
   skillsRevise: formContract("POST /settings/skills/revise", ["run", "repo", "feedback", "nonce"]),
   skillsChange: formContract("POST /settings/skills/import, /settings/skills/change", ["repo", "identity", "revision", "method", "content", "files", "url", "action", "sha", "sample", "nonce", "restore"]),
+  skillsLibrary: formContract("POST /settings/skills/library", ["action", "repo", "url", "skill", "sha", "bundle", "tool", "enabled", "autoUpdate", "optedOut", "method", "content", "files", "revision"]),
   kit: formContract("POST /kits/<kit>/<act>", ["repo", "password"]),
   subagents: formContract("POST /settings/lead/subagents/new, /settings/lead/subagents/<id>/<part>, /settings/lead/subagents/questions/<id>/answer", ["choice", "text", "repo", "template", "name", "soul", "op", "id", "schedule", "tool", "state", "note", "model", "dailyTurns", "manager", "password", "backupPresent", "codexBackupModel"], { prefixes: ["use.", "undo.", "field.", "over."] }),
   galleryUse: formContract("POST /flows/new/<template>", ["repo", "send-result", "name", "intent", "previewed", "password"], { dynamic: true }),

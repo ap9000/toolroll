@@ -951,6 +951,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
         idleTimeoutMs: timeoutMs,
         omitEnv: AGENT_ENV_DENYLIST,
         skills: projectSkills,
+        evidenceRoot: root,
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,
@@ -1116,6 +1117,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
             omitEnv: AGENT_ENV_DENYLIST,
             // The corrected turn resumes the session the skills were named in: the same files, rechecked again.
             skills: projectSkills,
+            evidenceRoot: root,
             ...(agent === undefined ? {} : { runner: agent }),
             ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
             clock,

@@ -40,6 +40,7 @@ import { SHELL_NO_COMMIT, SHELL_NO_RESULT, takeOverRevisionOf, takeOverRunsOf } 
 import { failedAttemptSentence } from "../needs-you.js";
 import { checkEngineResponse, type EngineResponseName } from "../contracts/engine-api.js";
 import { projectName, rowVisible } from "../project.js";
+import { effectiveSkillsForRepo } from "../project-skills.js";
 import { transportOf, type Transport } from "../public-access.js";
 import { agentSaidOf, type Run, type Store, type TaskFamily } from "../store.js";
 import { agentSetupOf } from "../agent-detect.js";
@@ -91,7 +92,8 @@ export function terminalHostFor(store: Store, options: Pick<ServeOptions, "termi
   // (build worktrees, live copies, evidence); the console's own projects are added once its runtime exists
   // (createTerminalHandlers).
   const buildWritable = () => [dirname(database), ...store.knownRepos()];
-  return { host: new TerminalHost({ spawn, worktreeRoot: join(dirname(database), "live-worktrees"), buildWritable, ...(ledger === null ? {} : { ledger }) }), problem: null };
+  const skillsForRepo = (repo: string) => effectiveSkillsForRepo(store, repo);
+  return { host: new TerminalHost({ spawn, worktreeRoot: join(dirname(database), "live-worktrees"), buildWritable, skillsForRepo, ...(ledger === null ? {} : { ledger }) }), problem: null };
 }
 
 type Operator = Who & { via: "cookie" };

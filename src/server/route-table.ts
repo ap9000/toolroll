@@ -238,6 +238,8 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "term.agent-install": "agent-install",
   "engine.agents-check": "check-agents",
   "settings.models-agent": "change-models",
+  // Global skill library (v186): solo owner manages library cards, bundles, per-project opt-outs and local tool sync without a password.
+  "settings.skills-library": "skill-library",
   "task.act.archive": "archive-task",
   "task.act.restore": "archive-task",
   "projects.open": "add-project",
@@ -707,6 +709,7 @@ post("tasks", "code.act-other", "^\\/code(\\/.*)?$", { ...CODING_ACT, sample: "/
 post("settings", "settings.skills-revise", "/settings/skills/revise", { project: "form", limited: "unscoped", ...approver("Sign in to revise a test.", "/settings/skills") });
 post("settings", "settings.skills-import", "/settings/skills/import", { project: "form", limited: "unscoped", bodyCap: 2 * 1024 * 1024, ...approver("Sign in as an approver to manage skills.", "/settings/skills") });
 post("settings", "settings.skills-change", "/settings/skills/change", { project: "form", limited: "unscoped", ...approver("Sign in as an approver to manage skills.", "/settings/skills") });
+post("settings", "settings.skills-library", "/settings/skills/library", { project: "none", limited: "unscoped", bodyCap: 2 * 1024 * 1024, ...approver("Sign in as an approver to manage the skill library.", "/settings/skills") });
 for (const one of ["setup", "sample", "github"]) post("flows", `kit.${one}`, `^\\/kits\\/[a-z-]{1,40}\\/${one}$`, { project: "form", sample: `/kits/support/${one}`, ...approver("Sign in as an approver to set kits up.", "/kits") });
 const SUBAGENTS = anyApprover("Sign in as an approver to look after subagents.", "/settings/lead/subagents");
 post("flows", "subagent.new", "/settings/lead/subagents/new", { project: "form", ...SUBAGENTS });

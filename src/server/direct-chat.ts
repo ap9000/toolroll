@@ -67,6 +67,7 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
 
   const host = new DirectChatHost(store, {
     stateRoot,
+    evidenceRoot: runtime.evidenceRoot ?? null,
     ...deps.seams,
     onNotify: note => {
       deps.seams?.onNotify?.(note);

@@ -65,7 +65,7 @@ function plane(where: Layout, workspace: boolean): Plane {
   const allowed = workspace ? writeAllowlist({ provider: "claude", home, worktree, binding, launchFolder: null, cache: null }) : null;
   const regrant = () => {
     const granted = skillsGrant({ root: evidence, manifest });
-    return fenceFor("build", { databaseFile: join(state, "orders.db"), worktree, home, binding, runFolders: runFolders(null), poolRoots: [pool], policy: 2, exactFiles: granted.files,
+    return fenceFor("build", { databaseFile: join(state, "orders.db"), worktree, home, binding, runFolders: runFolders(null), poolRoots: [pool], policy: 2, evidenceRoot: evidence, exactFiles: granted.files, exactDigests: granted.digests, exactFolders: granted.folders,
       boundary: taskBoundary({ worktree, provider: "claude", home, binding, policy: 2 }), writes: allowed === null ? null : { writes: allowed.writes, readOnly: allowed.readOnly }, extra: [...allowed?.deny ?? [], ...granted.deny] });
   };
   const launch = regrant();
@@ -115,18 +115,28 @@ const REPLACEMENTS = {
     const target = at.others.otherRun!;
     renameSync(at.skill, `${at.skill}.gone`);
     symlinkSync(target, at.skill);
-    return { read: at.skill, target };
+    return { read: at.skill, target, preBuiltCodexRace: true };
   },
   "a granted file replaced by a folder with files in it": (at: Plane) => {
     renameSync(at.skill, `${at.skill}.gone`);
     const target = write(join(at.skill, "inside.md"), marker("inside"));
-    return { read: target, target };
+    return { read: target, target, preBuiltCodexRace: true };
   },
   "an ancestor folder replaced by a link to another run's": (at: Plane) => {
     const folder = dirname(at.skill);
     renameSync(folder, `${folder}.gone`);
     symlinkSync(dirname(at.others.otherRun!), folder);
-    return { read: at.skill, target: at.others.otherRun! };
+    return { read: at.skill, target: at.others.otherRun!, preBuiltCodexRace: true };
+  },
+  "a granted file rewritten in place with different bytes": (at: Plane) => {
+    chmodSync(at.skill, 0o600);
+    writeFileSync(at.skill, marker("rewritten-in-place"));
+    return { read: at.skill, target: at.skill, preBuiltCodexRace: false };
+  },
+  "a granted file replaced by another run's regular file": (at: Plane) => {
+    const copy = write(`${at.skill}.staged`, readFileSync(at.others.otherRun!, "utf8"));
+    renameSync(copy, at.skill);
+    return { read: at.skill, target: at.others.otherRun!, preBuiltCodexRace: false };
   },
 } as const;
 
@@ -134,10 +144,11 @@ const fenced = (at: Plane, launch: LaunchFence, script: string): string => {
   const wrapped = sandboxedSpawn("/bin/sh", ["-c", script], launch.fence, launch.fenceGrants, at.worktree);
   return spawnSync(wrapped.file, wrapped.args, { cwd: at.worktree, encoding: "utf8", env: { ...process.env, ...wrapped.env }, timeout: 30_000 }).stdout;
 };
-const inCodex = (at: Plane, argv: string[], script: string): string => {
+const inCodexResult = (at: Plane, argv: string[], script: string) => {
   const home = join(at.root, `codex-home-${Math.random().toString(16).slice(2)}`); mkdirSync(home);
-  return spawnSync("codex", ["sandbox", ...argv, "-P", "standing-orders", "--", "/bin/sh", "-c", script], { cwd: at.worktree, encoding: "utf8", env: { ...process.env, CODEX_HOME: home }, timeout: 60_000 }).stdout;
+  return spawnSync("codex", ["sandbox", ...argv, "-P", "standing-orders", "--", "/bin/sh", "-c", script], { cwd: at.worktree, encoding: "utf8", env: { ...process.env, CODEX_HOME: home }, timeout: 60_000 });
 };
+const inCodex = (at: Plane, argv: string[], script: string): string => inCodexResult(at, argv, script).stdout;
 const readOf = (path: string) => `cat ${q(path)} 2>/dev/null || echo read-denied`;
 
 describe.each(LAYOUTS.map(one => [one]))("a build's skills, %s", where => {
@@ -161,9 +172,30 @@ describe.each(LAYOUTS.map(one => [one]))("a build's skills, %s", where => {
     // The recheck finds it, so nothing of this launch's skills is granted.
     expect(skillsGrant({ root: dirname(at.manifest.directory), manifest: at.manifest })).toMatchObject({ files: [], problem: expect.stringMatching(/changed after Toolroll prepared it/) });
     expect(at.regrant().fenceGrants.exactFiles ?? []).toEqual([]);
-    // And fenceFor itself refuses the launch outright if handed it anyway.
-    expect(() => fenceFor("build", { databaseFile: null, worktree: null, boundary: null, binding: null, runFolders: runFolders(null), poolRoots: [], home: at.root, exactFiles: at.launch.fenceGrants.exactFiles! })).toThrow(ExactFileChanged);
+    // And fenceFor itself refuses the launch outright if handed it anyway (with its pinned digests & folders).
+    expect(() => fenceFor("build", { databaseFile: null, worktree: null, boundary: null, binding: null, runFolders: runFolders(null), poolRoots: [], home: at.root, exactFiles: at.launch.fenceGrants.exactFiles!, exactDigests: at.launch.fenceGrants.exactDigests!, exactFolders: at.launch.fenceGrants.exactFolders! })).toThrow(ExactFileChanged);
   });
+
+  test("custom evidence folder is denied by path for every launch kind, even with no skills", ctx => {
+    needs(ctx, osFence());
+    const at = plane(where, false);
+    const customEvidence = dirname(at.manifest.directory);
+    for (const kind of ["build", "command", "check", "flow", "tool-server"] as const) {
+      const noSkills = fenceFor(kind, {
+        databaseFile: join(at.root, where === "a shared state folder, evidence under another name" ? "projects-shared" : "toolroll", "orders.db"),
+        worktree: kind === "tool-server" ? null : at.worktree,
+        home: join(at.root, "home"),
+        boundary: null,
+        binding: null,
+        runFolders: runFolders(null),
+        poolRoots: [],
+        policy: 2,
+        evidenceRoot: customEvidence,
+      });
+      expect(noSkills.fence, kind).toContain(customEvidence);
+      expect(fenced(at, noSkills, `${readOf(at.others.report!)}\n${readOf(at.skill)}`), kind).toBe("read-denied\nread-denied\n");
+    }
+  }, 60_000);
 
   describe.each([["a write allowlist", true], ["write anywhere", false]] as const)("under %s", (_name, workspace) => {
     test("attack: the sandbox runtime (a Claude build's launch)", ctx => {
@@ -184,18 +216,33 @@ describe.each(LAYOUTS.map(one => [one]))("a build's skills, %s", where => {
     }, 90_000);
   });
 
-  // The race after the recheck: replaced once the fence was made, the old grant leads nowhere.
+  // The race after the recheck: replaced once the fence was made, re-checked at spawn (sandboxedSpawn + codexFenceArgv),
+  // and even for an already-built Codex argv, nothing leaks and Codex's sandbox is proven to have run and denied it.
   test.for(Object.keys(REPLACEMENTS) as (keyof typeof REPLACEMENTS)[])("attack after the grant was made: %s opens nothing", (name, ctx) => {
     needs(ctx, osFence());
     const at = plane(where, false);
-    const argv = codexFenceArgv(at.launch.fence, false, at.launch.fenceGrants);
-    const { read, target } = REPLACEMENTS[name](at);
+    const control = write(join(at.worktree, "control.txt"), marker("worktree-ok"));
+    const controlText = readFileSync(control, "utf8");
+    const preBuiltArgv = codexFenceArgv(at.launch.fence, false, at.launch.fenceGrants);
+    const { read, target, preBuiltCodexRace } = REPLACEMENTS[name](at);
     const secret = readFileSync(target, "utf8");
-    // The sandbox runtime makes its terms at the spawn: the changed entry is dropped there, never followed.
+    // The sandbox runtime re-checks path, ancestor folders and SHA-256 right at spawn: the changed entry is dropped.
     expect(fenced(at, at.launch, readOf(read))).toBe("read-denied\n");
+    // Codex profile built at spawn also drops the tampered file by re-checking path, ancestor folders and SHA-256.
+    const freshConfig = codexFenceConfig(at.launch.fence, false, at.launch.fenceGrants)["permissions.standing-orders.filesystem"] as Record<string, string>;
+    expect(freshConfig[at.skill]).not.toBe("read");
     if (codexSandbox().available) {
-      const out = inCodex(at, argv, readOf(read));
-      expect(out).not.toContain(secret);
+      const freshArgv = codexFenceArgv(at.launch.fence, false, at.launch.fenceGrants);
+      const probeScript = `cat ${q(control)}; echo; ${readOf(read)}`;
+      const freshRun = inCodexResult(at, freshArgv, probeScript);
+      expect(freshRun.status, freshRun.stderr).toBe(0);
+      expect(freshRun.stdout).toBe(`${controlText}\nread-denied\n`);
+      if (preBuiltCodexRace) {
+        const raced = inCodexResult(at, preBuiltArgv, probeScript);
+        expect(raced.status, raced.stderr).toBe(0);
+        expect(raced.stdout).toBe(`${controlText}\nread-denied\n`);
+        expect(raced.stdout).not.toContain(secret);
+      }
     }
   }, 90_000);
 });

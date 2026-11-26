@@ -134,6 +134,8 @@ export function trustedWorktreeBinding(repository: string, worktree: string, poo
  * secret-looking entries there are fenced.
  */
 export function agentFence(options: { databaseFile: string | null; worktree: string | null; home?: string; extra?: readonly string[]; boundary?: TaskBoundary | null; binding?: WorktreeBinding | null; runFolders?: RunFolders;
+  /** Custom evidence folder (when not beside the database or in ~/.toolroll): denied by path for every launch. */
+  evidenceRoot?: string | null;
   /** Protected storage as this launch resolved it (protected-storage.ts); resolved here when not given. */
   protectedStorage?: readonly string[] }): string[] {
   const fence = new Set<string>();
@@ -250,6 +252,11 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     if (stream !== undefined) fence.add(real(stream));
   }
   for (const path of options.extra ?? []) fence.add(real(path));
+  // Custom evidence folder: denied by both given path and canonical path for every launch, never exemptible.
+  if (typeof options.evidenceRoot === "string" && options.evidenceRoot !== "") {
+    fence.add(resolve(options.evidenceRoot));
+    fence.add(real(options.evidenceRoot));
+  }
   // Secret, state, database, explicit-extra and home-config denies are never exemptible.
   for (const path of options.boundary?.protectedShell ?? []) fence.add(real(path));
   const protectedPaths = new Set([...fence].flatMap(path => literal.has(path) ? [path] : path === runFolder || [RUNNER_PROCESS_DIR, "backups", SECRETS_DIR].includes(basename(path)) ? [path, real(path)] : [real(path)]));
@@ -450,6 +457,10 @@ export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: stri
   /** The `exactFiles` that must be regular files (fenceFor's: a code map, skill files). Each is read by its own path
    * only while it is one; one that has become a folder or a link opens nothing, on any backend (exactFileReads). */
   exactRegular?: string[];
+  /** Expected SHA-256 digest of each pinned regular `exactFiles` entry, re-checked right at spawn (srtTermsOf / exactFileReads). */
+  exactDigests?: Record<string, string>;
+  /** Canonical ancestor folders of pinned `exactFiles` that must stay real non-symlink directories right at spawn. */
+  exactFolders?: string[];
   /** Policy v1: the home configuration names denied by name, present or not (TaskBoundary.homeNames). */
   homeNames?: string[];
   /** macOS: the project's sealed mach services beyond the runtime's baseline (its `allowMachLookup`). */
@@ -955,12 +966,38 @@ export function flattened(fence: readonly string[], grants: FenceGrants = NO_GRA
  * after launch is read. An exact folder (a direct chat's clone) is still split by `flattened`.
  */
 export function exactFileReads(grants: FenceGrants): string[] {
-  return (grants.exactFiles ?? []).filter(path => grants.readable.includes(path) && regularAt(path));
+  return (grants.exactFiles ?? []).filter(path => grants.readable.includes(path) && exactEntryValid(path, grants));
 }
 
-/** A regular file at exactly this canonical path: not a link, not a folder, not reached through a linked folder. */
-function regularAt(path: string): boolean {
-  try { const held = lstatSync(path); return held.isFile() && !held.isSymbolicLink() && realpathSync(path) === path; } catch { return false; }
+/** Regular file at this exact canonical path (not a link, not a folder, not through a linked folder): returns its
+ * SHA-256 hex digest read via O_NOFOLLOW, or null if absent / not a regular file / canonical mismatch. */
+function exactRegularDigest(path: string): string | null {
+  let fd: number | null = null;
+  try {
+    const there = lstatSync(path);
+    if (!there.isFile() || there.isSymbolicLink()) return null;
+    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+    const held = fstatSync(fd);
+    if (!held.isFile() || realpathSync(path) !== path) return null;
+    return createHash("sha256").update(readFileSync(fd)).digest("hex");
+  } catch { return null; } finally { if (fd !== null) closeSync(fd); }
+}
+
+/** A real non-symlink directory at its exact canonical path. */
+function realFolderAt(folder: string): boolean {
+  try { const held = lstatSync(folder); return held.isDirectory() && !held.isSymbolicLink() && realpathSync(folder) === folder; } catch { return false; }
+}
+
+/** Re-check an exact regular file right at spawn: canonical regular file, every pinned ancestor folder still a real
+ * directory, and (when pinned in `exactDigests`) identical SHA-256 bytes. */
+function exactEntryValid(path: string, grants: FenceGrants): boolean {
+  for (const folder of grants.exactFolders ?? []) {
+    if ((path === folder || inside(path, folder)) && !realFolderAt(folder)) return false;
+  }
+  const digest = exactRegularDigest(path);
+  if (digest === null) return false;
+  const expected = grants.exactDigests?.[path];
+  return expected === undefined || digest === expected;
 }
 
 /** Thrown by fenceFor when a file it was to grant exactly is there but is no longer the regular file it was. */
@@ -1022,7 +1059,7 @@ export function srtTermsOf(fence: readonly string[], grants: FenceGrants = NO_GR
   // An exact file meant as a regular file is read only while it is one, by its own canonical path: never through a link
   // it became (that would grant where the link leads) and never as a folder.
   const regular = new Set(grants.exactRegular ?? []);
-  const allowRead = new Set<string>(grants.readable.flatMap(path => regular.has(path) ? (regularAt(path) ? [path] : [])
+  const allowRead = new Set<string>(grants.readable.flatMap(path => regular.has(path) ? (exactEntryValid(path, grants) ? [path] : [])
     : grants.exactFiles?.includes(path) === true ? [real(path)] : [real(path), real(dirname(path))]));
   const denyWrite = new Set<string>([...fence, ...grants.readOnly].map(real));
   for (const path of grants.writeDenies ?? []) denyWrite.add(path);
@@ -1202,6 +1239,12 @@ export type FenceContext = {
   exactFile?: string | null;
   /** More exact files read back the same way (a launch's project skills, rechecked against their manifest first). */
   exactFiles?: readonly string[];
+  /** Expected SHA-256 digests for `exactFiles` (pinned and re-checked at spawn so swapped files open nothing). */
+  exactDigests?: Readonly<Record<string, string>>;
+  /** Canonical ancestor folders for `exactFiles` (re-checked at spawn). */
+  exactFolders?: readonly string[];
+  /** Custom evidence folder for this launch (denied by path wherever it lives). */
+  evidenceRoot?: string | null;
   databaseFile: string | null;
   worktree: string | null;
   boundary: TaskBoundary | null;
@@ -1256,16 +1299,31 @@ export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
   // The project's read denies join the fence by name, there or not (the runtime denies a path that isn't there yet).
   // Protected storage, resolved once for this launch, from the plane's own environment (protected-storage.ts).
   const storage = ctx.storage?.denies ?? protectedStorageDenies(ctx.home ?? homedir());
-  const fence = agentFence({ databaseFile: ctx.databaseFile, worktree: ctx.worktree, ...home, boundary: ctx.boundary, binding: ctx.binding, runFolders: ctx.runFolders, extra: [...ctx.extra ?? [], ...ctx.readDeny ?? []], protectedStorage: storage });
+  const fence = agentFence({ databaseFile: ctx.databaseFile, worktree: ctx.worktree, ...home, boundary: ctx.boundary, binding: ctx.binding, runFolders: ctx.runFolders, extra: [...ctx.extra ?? [], ...ctx.readDeny ?? []], ...(ctx.evidenceRoot === undefined ? {} : { evidenceRoot: ctx.evidenceRoot }), protectedStorage: storage });
   const found = fenceGrants({ databaseFile: ctx.databaseFile, worktree: ctx.worktree, boundary: ctx.boundary, runFolders: ctx.runFolders, linked: ctx.linked ?? null, binding: ctx.binding, ...home, poolRoots: ctx.poolRoots });
   // Toolroll's own install, the sandbox runtime's package and the Node running them, never written by anything it
   // launches: rewriting the code that fences a build would switch the fence off.
   const made = installDenied(found, ctx.worktree, ctx.home ?? homedir(), ctx.binding?.main ?? null);
   const written = ctx.writes ?? null;
-  // Each exact file is checked as it is granted: one that is there but is no longer a regular file at its own canonical
-  // path (a folder, a link, a linked folder above it) refuses the whole launch; one that is gone is simply not granted.
-  const exact = [...new Set([...(ctx.exactFile == null ? [] : [ctx.exactFile]), ...ctx.exactFiles ?? []])].filter(path => {
-    if (regularAt(path)) return true;
+  // Each exact file is checked and digest-pinned as it is granted: one that is there but is no longer a regular file
+  // at its own canonical path (or whose digest / ancestor folder changed) refuses the whole launch; one that is gone is
+  // simply not granted.
+  const exactFolders = [...ctx.exactFolders ?? []];
+  const rawExact = [...new Set([...(ctx.exactFile == null ? [] : [ctx.exactFile]), ...ctx.exactFiles ?? []])];
+  if (rawExact.length > 0 && exactFolders.some(folder => !realFolderAt(folder))) {
+    throw new ExactFileChanged("A skill folder this launch was to read changed before it started, so nothing was started.");
+  }
+  const exactDigests: Record<string, string> = {};
+  const exact = rawExact.filter(path => {
+    const digest = exactRegularDigest(path);
+    if (digest !== null) {
+      const expected = ctx.exactDigests?.[path];
+      if (expected !== undefined && digest !== expected) {
+        throw new ExactFileChanged("A file this launch was to read changed before it started, so nothing was started.");
+      }
+      exactDigests[path] = digest;
+      return true;
+    }
     try { lstatSync(path); } catch { return false; }
     throw new ExactFileChanged("A file this launch was to read changed before it started, so nothing was started.");
   });
@@ -1273,7 +1331,7 @@ export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
     ...made,
     ...(written === null ? {} : { writes: written.writes, readOnly: [...new Set([...made.readOnly, ...written.readOnly])].sort() }),
     // Exact files, granted as the shared dependencies are, and never written (Claude's Edit rules read `readOnly`).
-    ...(exact.length === 0 ? {} : { readable: [...made.readable, ...exact], exactFiles: exact, exactRegular: exact, readOnly: [...new Set([...made.readOnly, ...(written?.readOnly ?? []), ...exact])].sort() }),
+    ...(exact.length === 0 ? {} : { readable: [...made.readable, ...exact], exactFiles: exact, exactRegular: exact, exactDigests, ...(exactFolders.length === 0 ? {} : { exactFolders }), readOnly: [...new Set([...made.readOnly, ...(written?.readOnly ?? []), ...exact])].sort() }),
     ...(ctx.network === undefined ? {} : { network: ctx.network }),
     ...(ctx.machLookup === undefined || ctx.machLookup.length === 0 ? {} : { machLookup: [...ctx.machLookup] }),
     // A project's checks may drive a browser (Playwright's Chromium), and so may a flow's script zone whose browser use

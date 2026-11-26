@@ -70,6 +70,8 @@ test("every route row is marked for the local owner; an allow names one of its a
     "settings.project-flexible=project-flexible",
     "settings.project-live-view=project-live-view",
     "settings.project-network=project-network",
+    // Global skill library (v186): solo owner manages library skills, GitHub bundles, opt-outs and local sync without a password.
+    "settings.skills-library=skill-library",
     // Settings → General: task sizing on or off (the handler re-checks `task-sizing-switch` in its write).
     "settings.task-sizing=task-sizing-switch",
     "task.act.approve=approve-plan", "task.act.archive=archive-task", "task.act.cancel=stop-run", "task.act.complete=complete-task", "task.act.hold=pause-run", "task.act.keep-grown=approve-plan", "task.act.land=land-task",

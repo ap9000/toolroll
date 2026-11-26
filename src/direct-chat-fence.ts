@@ -16,18 +16,19 @@ import { fenceFor, FENCE_POLICY_CURRENT, linuxFenceAvailable, macosFenceAvailabl
 import { proxyEnv, repositoryEcosystems, resolveNetwork, startEgressProxy, type EgressProxy } from "./egress.js";
 import { readDenyPath } from "./project-sandbox.js";
 import { prepareProtectedStorage, storageRefusalOf } from "./protected-storage.js";
+import { skillsGrant, type SkillsManifest } from "./skills-manifest.js";
 import type { Store } from "./store.js";
 import { poolRootOf } from "./worktree.js";
 
 /** One turn's fence: what its spawn runs in, the environment that points it at its proxy and temp folder, and how to
  * end both. */
 export type DirectChatTurnFence = { launch: LaunchFence; temp: string; env: Record<string, string>; close: () => Promise<void> };
-export type DirectChatFenceInput = { stateRoot: string; repo: string; clone: string; gitDir: string };
+export type DirectChatFenceInput = { stateRoot: string; repo: string; clone: string; gitDir: string; skills?: SkillsManifest | null };
 export type DirectChatFenceFn = (input: DirectChatFenceInput) => Promise<DirectChatTurnFence | { problem: string } | { unfenced: true }>;
 
 const real = (path: string): string => { try { return realpathSync(path); } catch { return path; } };
 
-export function directChatFence(store: Store): DirectChatFenceFn {
+export function directChatFence(store: Store, evidenceRoot: string | null = null): DirectChatFenceFn {
   return async input => {
     if (!macosFenceAvailable() && !linuxFenceAvailable()) {
       // As a build: unconfined only where an instance operator allowed unconfined agents.
@@ -67,16 +68,21 @@ export function directChatFence(store: Store): DirectChatFenceFn {
       // Claude's CLI must write; beside them the chat's own Git folder, but never its config, hooks or info.
       const allowed = writeAllowlist({ provider: "claude", home, worktree: clone, binding: null, launchFolder: temp, cache: null });
       const gitReadOnly = ["config", "hooks", "info"].map(name => join(gitDir, name));
+      const skills = skillsGrant({ root: join(input.stateRoot, "direct-chat", "skills"), manifest: input.skills ?? null });
       const made = fenceFor("build", {
         databaseFile, worktree: clone, boundary, binding: null, runFolders: runFolders(temp), poolRoots, storage, policy: FENCE_POLICY_CURRENT, provider: "claude",
+        evidenceRoot,
         // The project's own checkout (the chat works on its clone), and the project's read denies, read live.
-        extra: [repo, ...allowed.deny],
+        extra: [repo, ...allowed.deny, ...skills.deny],
+        exactFiles: skills.files,
+        exactDigests: skills.digests,
+        exactFolders: skills.folders,
         readDeny: store.projectSandbox(input.repo).readDeny.map(one => readDenyPath(one, home)),
         writes: { writes: { subpaths: [...allowed.writes.subpaths, gitDir], prefixes: allowed.writes.prefixes }, readOnly: [...allowed.readOnly, ...gitReadOnly] },
         network: { mode: "allowlist", proxyPort: proxy.port, brokerPorts: [], loopback: policy.loopback, socketRoots: [clone, temp], token: proxy.secret },
       });
       const grants = { ...made.fenceGrants, readDenyOnly: [...made.fenceGrants.readDenyOnly ?? [], chats],
-        readable: [...made.fenceGrants.readable, clone, gitDir], exactFiles: [...made.fenceGrants.exactFiles ?? [], clone, gitDir] };
+        readable: [...made.fenceGrants.readable, clone, gitDir, ...skills.files], exactFiles: [...made.fenceGrants.exactFiles ?? [], clone, gitDir, ...skills.files] };
       return { launch: { ...made, fenceGrants: grants }, temp, env: { ...proxyEnv(proxy, policy.loopback), TMPDIR: temp, TMP: temp, TEMP: temp, CLAUDE_CODE_TMPDIR: temp }, close };
     } catch (error) {
       try { await close(); } catch { /* said below: nothing was started either way */ }
