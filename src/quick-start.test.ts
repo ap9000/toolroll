@@ -78,6 +78,27 @@ test("with no console running, it starts one for this repository", async () => {
   expect(did).toEqual(["up"]);
 });
 
+test("without a terminal, a computer not set up yet gets the next step and nothing is made: no database, no password", async () => {
+  const { localModeRead } = await import("./easy-start.js");
+  const setUp = async () => { const mode = localModeRead(databaseFile); return mode === "on" || mode === "off"; };
+  const { value, write, did, out } = seams({ terminal: false, setUp });
+  expect(existsSync(databaseFile)).toBe(false);
+  expect(await runQuickStart([], write, value)).toBe(3);
+  expect(did).toEqual([]);
+  expect(out).toEqual(["Toolroll isn't set up on this computer yet. Run `toolroll` in a terminal to set it up without a password, or `toolroll up` to start it with one."]);
+  expect(existsSync(databaseFile)).toBe(false);
+  // A database another command made (no account, no local mode yet) isn't set up either.
+  openStore(databaseFile).close();
+  expect(await runQuickStart([], write, value)).toBe(3);
+  expect(did).toEqual([]);
+  // Once set up (here, with an account), it starts as before.
+  const store = openStore(databaseFile);
+  store.bootstrapApproverIfNone("dev", "x".repeat(64), new Date());
+  store.close();
+  expect(await runQuickStart([], write, value)).toBe(0);
+  expect(did).toEqual(["up"]);
+});
+
 // Inside an older plane's macOS check fence every folder a check may write was too deep for this test's unix socket path (about 104 bytes); CI (Linux, and the tag's macOS jobs) runs it unfenced.
 test.skipIf(SOCKETS_TOO_DEEP)("a console that proves itself: a new repository is added through admission, then that console opens", async () => {
   const port = await liveConsole();

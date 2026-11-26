@@ -500,6 +500,7 @@ async function dispatch(
       enrolled: async repo => { const loaded = await loadRepos(registryBeside(databaseFile)); return !("error" in loaded) && loaded.repos.includes(repo); },
       admit: repo => runReposCommand(["add", repo], write, mainOptions.onboard),
       startUp: () => runOperate("up", [], write, mainOptions.operate ?? {}),
+      setUp: async () => { const mode = (await import("./easy-start.js")).localModeRead(databaseFile); return mode === "on" || mode === "off"; },
       openBrowser: async url => { (await import("./operate.js")).openBrowser(url); },
       ...mainOptions.quickStart,
     });

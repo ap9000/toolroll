@@ -63,6 +63,9 @@ export type EasyStartSeams = {
   /** l1: this computer's sandbox, read now — the Linux programs it lacks (sandbox-runtime.ts LINUX_SANDBOX_TOOLS, by
    * package; none elsewhere), and why it can't sandbox here (null when it can). */
   sandbox: () => Promise<{ missing: string[]; problem: string | null; repair?: string[] }>;
+  /** The first start's other prerequisites (preflight.ts): git, telling processes apart, each with its fix; and
+   * advice (no browser). None given: none. */
+  prerequisites?: () => Promise<import("./preflight.js").Prerequisites>;
   /** l1: whether this database was made by a laptop start (created-by laptop) yet never had local mode (on or off):
    * a start that couldn't go password-free made it. Read only, from the database alone; false when unreadable. */
   passwordByLaptopStart: () => boolean;
@@ -158,12 +161,33 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
   if ((local === "candidate" || local === "absent") && !first.ok && first.state === "none") {
     // Too deep for the socket: said before anything else runs, the sandbox probe included.
     if (refusedTooDeep()) return EXIT.refused;
-    // l1: a new install on a Linux computer missing the sandbox's programs stops here, before anything is made: no
-    // account, no database written (a candidate stays one), so once they are installed the next start is password-free.
+    // l1 + preflight: a new install stops here, before anything is made, on everything that would stop it — the
+    // sandbox's programs, a sandbox that can't start (with its repair), git, telling processes apart — listed together,
+    // each with its fix. No account, no database written (a candidate stays one), so once they are fixed the next start
+    // is password-free. A sandbox that can't start for a reason the person can't fix leaves an explicit `toolroll up`.
     const sandbox = await seams.sandbox();
+    const others = await (seams.prerequisites?.() ?? Promise.resolve({ blockers: [], advisories: [] }));
+    const blockers: string[][] = [];
+    let passwordInstead = false;
     if (sandbox.missing.length > 0) {
       const { missingSandboxToolsWords } = await import("./sandbox-runtime.js");
-      for (const line of missingSandboxToolsWords(sandbox.missing)) write(line);
+      blockers.push(missingSandboxToolsWords(sandbox.missing));
+    } else if (sandbox.problem !== null) {
+      blockers.push([`Agents can't run in a sandbox here: ${sandbox.problem}.`, ...sandbox.repair ?? []]);
+      passwordInstead = others.blockers.length === 0;
+    }
+    blockers.push(...others.blockers);
+    if (blockers.length > 0) {
+      if (blockers.length === 1) {
+        for (const line of blockers[0]!) write(line);
+        if (sandbox.missing.length === 0 && sandbox.problem !== null) write("Then run toolroll again.");
+      }
+      else {
+        write("Toolroll can't start on this computer yet. Fix these, then run toolroll again:");
+        blockers.forEach((lines, index) => lines.forEach((line, at) => write(at === 0 ? `${index + 1}. ${line}` : `   ${line}`)));
+      }
+      if (passwordInstead) write("To start now with a password instead (agents can't run until the sandbox works): run `toolroll up`.");
+      for (const line of others.advisories) write(line);
       return EXIT.refused;
     }
     if (await seams.initLocal()) local = "on";
@@ -415,6 +439,7 @@ export function defaultEasyStartSeams(options: {
       const problem = missing.length > 0 ? null : sandboxRuntimeProblem();
       return { missing, problem, repair: problem === null ? [] : sandboxRuntimeRepair() };
     },
+    prerequisites: async () => (await import("./preflight.js")).startPrerequisites(),
     passwordByLaptopStart: () => {
       const store = openStoreReadOnly(file);
       if (store === null) return false;
