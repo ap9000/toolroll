@@ -6101,6 +6101,7 @@ async function verifyCommand(
     if (repo === undefined) return fail(write, json, "verify level", "usage", "which repo? --repo <path>", EXIT.usage);
     const wanted = positional[1];
     if (!isCheckLevel(wanted)) return fail(write, json, "verify level", "usage", "`toolroll verify level quick|full|off --repo <path> --as <you> --token <t>`", EXIT.usage);
+    if (passwordFreeInstall(store, flags, context.principal !== undefined)) return fail(write, json, "verify level", "local-owner", "Changing a check needs a password. Run `toolroll password set` first.", EXIT.refused);
     const acting = await askCredentials(flags, context);
     if (acting === null) return fail(write, json, "verify level", "usage", "changing a project's checks takes `--as <you> --token <t>`", EXIT.usage);
     const authenticated = authenticateApprover(store, acting.name, acting.token, repo);
@@ -6120,6 +6121,8 @@ async function verifyCommand(
   const quickClear = action === "clear" && text(flags, "level") === "quick";
   const grantKey = repo === undefined ? undefined : quickValue !== undefined || quickClear ? quickVerifyKey(repo) : repo;
   if (repo === undefined) return fail(write, json, `verify ${action}`, "usage", "which repo? --repo <path>", EXIT.usage);
+  // A password-free install has no password to give: say so as the browser does, before any prompt.
+  if (passwordFreeInstall(store, flags, context.principal !== undefined)) return fail(write, json, `verify ${action}`, "local-owner", `${action === "set" ? "Setting" : "Clearing"} a check needs a password. Run \`toolroll password set\` first.`, EXIT.refused);
 
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
@@ -15647,9 +15650,7 @@ async function flexibleSignInConfig(action: string, extra: readonly string[], re
  * changes either way.
  */
 function passwordFreeRefusal(store: Store, flags: Map<string, string | true>, key: string, remote: boolean): string | null {
-  if (remote || ["as", "token", "token-file", "token-env"].some(name => flags.has(name)) || localOwnerRequested() || envValue(process.env, "LEAD_TOKEN") !== undefined) return null;
-  const binding = localOwnerBinding(store);
-  if (binding === null || store.accountOf(binding.account)?.passwordSet === true) return null;
+  if (!passwordFreeInstall(store, flags, remote)) return null;
   return `This Toolroll has no password yet, so this runs from Toolroll itself: run \`toolroll\`, select the task and press ${key}, or open it in the browser.`;
 }
 
@@ -16070,3 +16071,11 @@ function verifyRepoOf(store: Store, raw: string): string {
 
 /** Where landing works on an install with no password yet (everyday-9 C3). */
 const LAND_NEEDS_PASSWORD = "Land it from the workbench (B) or the task page in the browser; from a shell it needs a Toolroll password (`toolroll password set`).";
+
+/** passwordFreeRefusal's test: a password-free install (local mode on, its owner without a password), typed in a shell
+ * with no credentials named and no remote principal. Only ever says where an act is; it decides no authority. */
+function passwordFreeInstall(store: Store, flags: Map<string, string | true>, remote: boolean): boolean {
+  if (remote || ["as", "token", "token-file", "token-env"].some(name => flags.has(name)) || localOwnerRequested() || envValue(process.env, "LEAD_TOKEN") !== undefined) return false;
+  const binding = localOwnerBinding(store);
+  return binding !== null && store.accountOf(binding.account)?.passwordSet !== true;
+}

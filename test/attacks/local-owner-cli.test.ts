@@ -126,6 +126,11 @@ describe("CLI commands as the local owner", () => {
     for (const argv of [["task", "requeue", "one"], ["task", "retry", "one"], ["incident", "resolve", "1"]]) {
       expect((await shell(argv)).envelope, argv.join(" ")).toMatchObject({ ok: false, reason: "local-owner", message: words });
     }
+    // Setting a check says what the browser says, before any prompt, and approves nothing.
+    expect((await shell(["verify", "set", "--repo", root, "--command", "npm test", "--yes"]))).toMatchObject({ code: 3, envelope: { ok: false, reason: "local-owner", message: "Setting a check needs a password. Run `toolroll password set` first." } });
+    expect((await shell(["verify", "level", "quick", "--repo", root])).envelope).toMatchObject({ ok: false, reason: "local-owner", message: "Changing a check needs a password. Run `toolroll password set` first." });
+    const unchanged = openStore(file);
+    try { expect(unchanged.liveVerifyCommand(root)).toBeNull(); } finally { unchanged.close(); }
     // Credentials named: the command asks as it always did (and here refuses them), never the password-free words.
     const named = await shell(["task", "requeue", "one", "--as", "alex", "--token", "nope"]);
     expect(named.envelope).toMatchObject({ ok: false });
