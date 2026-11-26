@@ -294,6 +294,8 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
     const opened = await seams.openSignedIn();
     if (!opened.ok) {
       write(`Toolroll is on ${url}, but it couldn't sign you in: ${opened.message}.`);
+      // The way on, never the link itself (it is handed to the browser only through a private page: openLocalSignIn).
+      write(`Run \`toolroll\` to use it in this terminal.${opened.message.includes("toolroll password set") ? "" : " To use a browser, run `toolroll password set` and sign in with that password."}`);
       const child = ownedNow();
       if (child !== null) stopOwned(child);
       return EXIT.refused;

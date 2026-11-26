@@ -455,7 +455,8 @@ pub enum Mode {
     ThreadNext(String),
     /// An act's answer that names a command (Land's handoff, Save as branch, Ship's refusal with its save offer,
     /// everyday-9 C2): the words whole and the command on its own line, scrolled with j/k; `c` puts the command's exact
-    /// bytes in the terminal's scrollback to copy, and any other key closes it. It reads only: it acts on nothing.
+    /// bytes in the terminal's scrollback to copy, and any other key closes it. It reads only: it acts on nothing. A
+    /// refusal too long for the status line comes here too, with no command (nothing to copy).
     CommandSheet {
         words: String,
         command: String,
@@ -1887,6 +1888,13 @@ impl App {
         })
     }
 
+    /// Whether a refusal's words would be cut on the status line as last drawn (unknown before a first frame: no).
+    pub(crate) fn cut_on_status_line(&self, words: &str) -> bool {
+        self.last_width > 0
+            && crate::text::width(&clean(words)) + "Refused: ".len()
+                > usize::from(crate::view::status_width(self.last_width))
+    }
+
     pub(crate) fn say(&mut self, tone: Tone, words: impl Into<String>) {
         self.status = Some((tone, clean(&words.into())));
         self.status_stale = false;
@@ -2457,10 +2465,22 @@ impl App {
                 vec![]
             }
             Msg::Acted(Ok(ActOutcome::Refused(words))) => {
-                self.say(Tone::Refused, words);
+                // Too long for the status line (stranger 17): said there, and shown whole on the sheet a command's
+                // answer uses, with nothing to copy.
+                let cut = self.cut_on_status_line(&words);
+                self.say(Tone::Refused, words.clone());
                 crate::thread::keep_refused_reply(self);
                 self.sent_thread();
-                self.refresh()
+                let fx = self.refresh();
+                if cut && matches!(self.mode, Mode::Normal | Mode::Sending(_)) {
+                    self.mode = Mode::CommandSheet {
+                        words,
+                        command: String::new(),
+                        refused: true,
+                        scroll: 0,
+                    };
+                }
+                fx
             }
             Msg::Acted(Ok(ActOutcome::Commanded {
                 words,
@@ -3951,7 +3971,7 @@ impl App {
                     KeyCode::Char('k') | KeyCode::Up => scroll.saturating_sub(1),
                     KeyCode::Char(' ') | KeyCode::PageDown => scroll + 5,
                     KeyCode::PageUp => scroll.saturating_sub(5),
-                    KeyCode::Char('c') => {
+                    KeyCode::Char('c') if !command.is_empty() => {
                         self.mode = Mode::Copied;
                         return vec![Effect::Scrollback(vec![command])];
                     }

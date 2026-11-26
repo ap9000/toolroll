@@ -4,7 +4,7 @@
  * any of its code runs; credentials on the command line are refused; local mode off refuses everything; an allowed act
  * runs as the local owner, approving eligible work with no password and no prompt.
  */
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,18 @@ import { COMMAND_GUIDE, LOCAL_POLICY } from "../../src/surface.js";
 import { initLocalMode, openStore, setLocalModeOff } from "../../src/store.js";
 import { propose } from "../../src/scope.js";
 import { termsArgs } from "../approval-terms.js";
+
+// A person at a terminal, on demand (prompts.atTerminal): every prompt is counted and answered with nothing.
+const prompts = vi.hoisted(() => ({ atTerminal: false, asked: [] as string[] }));
+vi.mock("../../src/prompt.js", async original => {
+  const real = await original<typeof import("../../src/prompt.js")>();
+  return {
+    ...real,
+    interactive: () => prompts.atTerminal || real.interactive(),
+    ask: async (question: string) => { prompts.asked.push(question); return ""; },
+    askHidden: async (question: string) => { prompts.asked.push(question); return ""; },
+  };
+});
 
 const now = new Date("2026-11-03T12:00:00Z");
 let root: string, file: string;
@@ -126,6 +138,25 @@ describe("CLI commands as the local owner", () => {
     for (const argv of [["task", "requeue", "one"], ["task", "retry", "one"], ["incident", "resolve", "1"]]) {
       expect((await shell(argv)).envelope, argv.join(" ")).toMatchObject({ ok: false, reason: "local-owner", message: words });
     }
+    // Setting a check says what the browser says, before any prompt, and approves nothing.
+    expect((await shell(["verify", "set", "--repo", root, "--command", "npm test", "--yes"]))).toMatchObject({ code: 3, envelope: { ok: false, reason: "local-owner", message: "Setting a check needs a password. Run `toolroll password set` first." } });
+    expect((await shell(["verify", "level", "quick", "--repo", root])).envelope).toMatchObject({ ok: false, reason: "local-owner", message: "Changing a check needs a password. Run `toolroll password set` first." });
+    const unchanged = openStore(file);
+    try { expect(unchanged.liveVerifyCommand(root)).toBeNull(); } finally { unchanged.close(); }
+    // At a person's terminal (not --json, so prompting is on): refused before any username or password prompt.
+    prompts.atTerminal = true;
+    try {
+      for (const [argv, words] of [
+        [["verify", "set", "--repo", root, "--command", "npm test", "--yes"], "Setting a check needs a password. Run `toolroll password set` first."],
+        [["verify", "clear", "--repo", root], "Clearing a check needs a password. Run `toolroll password set` first."],
+        [["verify", "level", "quick", "--repo", root], "Changing a check needs a password. Run `toolroll password set` first."],
+      ] as const) {
+        let out = "";
+        const code = await runOperate(argv[0], [...argv.slice(1), "--db", file], text => { out += text; }, { now });
+        expect({ code, out: out.trim() }, argv.join(" ")).toEqual({ code: 3, out: words });
+      }
+      expect(prompts.asked).toEqual([]);
+    } finally { prompts.atTerminal = false; prompts.asked.length = 0; }
     // Credentials named: the command asks as it always did (and here refuses them), never the password-free words.
     const named = await shell(["task", "requeue", "one", "--as", "alex", "--token", "nope"]);
     expect(named.envelope).toMatchObject({ ok: false });

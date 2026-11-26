@@ -478,6 +478,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 }
 
+/// The status line's cells on a window this wide (inside the frame's margin and a cell each side).
+pub fn status_width(width: u16) -> u16 {
+    let margin = u16::from(width >= 100);
+    width.saturating_sub(2 * margin + 2)
+}
+
 fn draw_frame(f: &mut Frame, app: &mut App) {
     let area = f.area();
     app.last_width = area.width;
@@ -504,7 +510,7 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
     let status = Rect {
         x: area.x + margin + 1,
         y: body.bottom(),
-        width: area.width.saturating_sub(2 * margin + 2),
+        width: status_width(area.width),
         height: 1,
     };
     let keys = Rect {
@@ -5000,10 +5006,13 @@ fn draw_command_sheet(f: &mut Frame, app: &mut App, area: Rect) {
         .into_iter()
         .map(|l| Line::from(Span::styled(l, ink())))
         .collect();
-    body.push(Line::raw(""));
-    let bold = ink().add_modifier(Modifier::BOLD);
-    for piece in crate::text::chunks(&clean(command), inner_w) {
-        body.push(Line::from(Span::styled(piece, bold)));
+    // A refusal too long for the status line has no command: its words alone, and nothing to copy.
+    if !command.is_empty() {
+        body.push(Line::raw(""));
+        let bold = ink().add_modifier(Modifier::BOLD);
+        for piece in crate::text::chunks(&clean(command), inner_w) {
+            body.push(Line::from(Span::styled(piece, bold)));
+        }
     }
     // Inside the border: a blank above, then the foot (a blank, where the reading stands, the keys).
     let room = usize::from(area.height.saturating_sub(2)).saturating_sub(4);
@@ -5021,8 +5030,11 @@ fn draw_command_sheet(f: &mut Frame, app: &mut App, area: Rect) {
         let at = format!("Lines {first}–{end} of {} · j/k scroll", body.len());
         lines.push(Line::from(Span::styled(at, dim())));
     }
-    let mut keys = sheet::act("c", "copies the command,", true);
-    keys.push(Span::raw("  "));
+    let mut keys = Vec::new();
+    if !command.is_empty() {
+        keys = sheet::act("c", "copies the command,", true);
+        keys.push(Span::raw("  "));
+    }
     keys.extend(sheet::act("Esc", "closes", false));
     lines.push(Line::from(keys));
     let title = if *refused { " Not done " } else { " Done " };

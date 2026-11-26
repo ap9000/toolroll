@@ -178,3 +178,32 @@ fn a_short_window_scrolls_the_sheet_and_any_other_key_closes_it() {
     assert_eq!(app.key(code(KeyCode::Esc)), vec![]);
     assert_eq!(app.mode, Mode::Normal);
 }
+
+/// What B on an out-of-date task answers (stranger 17): longer than a 140-column status line.
+const OUT_OF_DATE: &str = concat!(
+    "Its checks changed since you accepted it and haven't run on its exact commit since. ",
+    "Run checks (it stays Complete), then land it."
+);
+
+#[test]
+fn a_refusal_too_long_for_the_status_line_is_shown_whole_with_nothing_to_copy() {
+    let mut app = on("t-old");
+    screen(&mut app, 140, 30);
+    app.update(Msg::Acted(Ok(ActOutcome::Refused(OUT_OF_DATE.into()))));
+    assert!(
+        matches!(&app.mode, Mode::CommandSheet { command, refused: true, .. } if command.is_empty()),
+        "{:?}",
+        app.mode
+    );
+    let shown = screen(&mut app, 140, 30);
+    assert!(shown.contains("then land it."), "{shown}");
+    assert!(!shown.contains("copies the command"), "{shown}");
+    // c copies nothing here: like any other key, it closes the sheet.
+    assert_eq!(app.key(key('c')), vec![]);
+    assert_eq!(app.mode, Mode::Normal);
+    // A refusal that fits stays on the status line alone.
+    app.update(Msg::Acted(Ok(ActOutcome::Refused(
+        "Already on main (6a87b47).".into(),
+    ))));
+    assert_eq!(app.mode, Mode::Normal);
+}
