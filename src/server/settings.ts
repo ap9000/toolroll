@@ -1,4 +1,4 @@
-import { PASSWORDLESS_TRADE, passwordlessSetting, setPasswordless } from "../passwordless.js";
+import { PASSWORDLESS_OTHERS, PASSWORDLESS_STILL_ASKS, PASSWORDLESS_TRADE, passwordlessSetting, setPasswordless } from "../passwordless.js";
 import { approveNetworkRequest } from "../agent-network-request.js";
 import { declareJustMe, installModeNow, sessionStandsIn, soloNow, TEAM_FACT_WORDS } from "../install-mode.js";
 import { ACP_AGENTS, isKeyedProvider } from "../acp-agents.js";
@@ -592,7 +592,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const said = url.searchParams.get("said"), problem = url.searchParams.get("problem");
     const since = setting.at === null ? null : `${setting.on ? "on" : "off"} since ${new Date(setting.at).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}, by ${setting.setBy ?? "someone"}`;
     // On as it works now: set on, or a solo install its owner never turned off (install-mode.ts sessionStandsIn).
-    return sendScreen(response, 200, screen("Passwordless", passwordlessHtml({ on: sessionStandsIn(store), since, trade: PASSWORDLESS_TRADE, said, problem }), { chrome: chromeFor(project, "settings") }));
+    return sendScreen(response, 200, screen("Passwordless", passwordlessHtml({ on: sessionStandsIn(store), since, trade: PASSWORDLESS_TRADE, stillAsks: PASSWORDLESS_STILL_ASKS, others: PASSWORDLESS_OTHERS, said, problem }), { chrome: chromeFor(project, "settings") }));
   }
   async function passwordlessSave(ctx: HandlerContext): Promise<void> {
     const { response, now, posted } = ctx;
