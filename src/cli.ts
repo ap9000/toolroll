@@ -1848,8 +1848,7 @@ async function runRemoteTuiCommand(argv: readonly string[], write: Write, connec
   const origin = profile.origin;
   const openUrl = async (path: string): Promise<string> => {
     const target = new URL(path, origin).href;
-    (await import("./operate.js")).openBrowser(target);
-    return `Opened ${target} in your browser.`;
+    return (await import("./operate.js")).openBrowser(target) ? `Opened ${target} in your browser.` : `Open ${target} in a browser.`;
   };
   const ended = await runTuiBinary({
     binary: chosen.binary,

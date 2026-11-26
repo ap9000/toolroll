@@ -75,8 +75,9 @@ export type EasyStartSeams = {
   spawnUp: (args: readonly string[]) => OwnedUp;
   /** `up` (with these arguments) in this terminal, until it stops: today's foreground start. */
   runUpForeground: (args: readonly string[]) => Promise<number>;
-  /** Open an address that carries no credential (the console's own address) in the browser. */
-  openBrowser: (url: string) => void | Promise<void>;
+  /** Open an address that carries no credential (the console's own address) in the browser. False when nothing could
+   * be opened here (no display, over SSH, no opener): the caller says the address instead. */
+  openBrowser: (url: string) => void | boolean | Promise<void | boolean>;
   /** Open this computer's browser signed in as the local owner: a one-time link from the live console (the socket `link`
    * verb), handed to the browser only through a 0600 page and the platform's own opener (openLocalSignIn). The link
    * never comes back here. */
@@ -303,19 +304,16 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
       const page = `/t/${encodeURIComponent(task)}`;
       const target = new URL(setup ? "/password/set" : `${page}#agents`, url);
       if (setup) target.searchParams.set("next", page);
-      await seams.openBrowser(target.href);
-      return "In the browser, open Agents → Change agents and save the new builder.";
+      const opened = await seams.openBrowser(target.href);
+      return opened === false ? `Open ${target.href} in a browser, then Agents → Change agents and save the new builder.` : "In the browser, open Agents → Change agents and save the new builder.";
     },
     openBrowser: async page => {
       // An already-running console may predate this terminal's named sign-in landing.
       // Open the existing settings form on the proven console with the browser's normal sign-in.
-      if (page === "projects") {
-        await seams.openBrowser(new URL("/projects", url).href);
-        return "Opened Projects in your browser.";
-      }
-      if (page === "lead-providers") {
-        await seams.openBrowser(new URL("/settings/lead#lead-config", url).href);
-        return "Opened Lead settings in your browser.";
+      if (page === "projects" || page === "lead-providers") {
+        const href = new URL(page === "projects" ? "/projects" : "/settings/lead#lead-config", url).href;
+        const opened = await seams.openBrowser(href);
+        return opened === false ? `Open ${href} in a browser.` : `Opened ${page === "projects" ? "Projects" : "Lead settings"} in your browser.`;
       }
       const opened = await seams.openSignedIn(page);
       return opened.ok ? "Opened in your browser." : `The browser couldn't be opened: ${opened.message}.`;
@@ -433,7 +431,7 @@ export function defaultEasyStartSeams(options: {
     },
     spawnUp: args => spawnOwnedUp(args, { cwd, databaseFile: file }),
     runUpForeground: async args => (await import("./operate.js")).runOperate("up", [...args, "--db", file], options.write, options.operate ?? {}),
-    openBrowser: async url => { (await import("./operate.js")).openBrowser(url); },
+    openBrowser: async url => (await import("./operate.js")).openBrowser(url),
     openSignedIn: page => openLocalSignIn(file, options.build, page === undefined ? {} : { then: page }),
     openTui: async session => {
       // The terminal workbench (tui-launch.ts), signed in over descriptor 3; else the classic screen, with one line why.

@@ -168,7 +168,6 @@ import { ledgerSpent, NO_SAFE_OPENER, openSignInLink, platformOpener } from "./s
 import { admissionRecorded, admitProject, commandLineActor } from "./project-admission.js";
 import { leadClaim, leadSay, noteLeadWork } from "./lead-voice.js";
 import { createConnection as createNetConnection, createServer as createNetServer } from "node:net";
-import { spawn as spawnChild } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { superviseController } from "./controller-supervisor.js";
@@ -316,6 +315,7 @@ import {
   type Runner as RunnerRow,
 } from "./runner.js";
 import { processIdentityProblem } from "./process-identity.js";
+import { startOpener } from "./browser-open.js";
 import { credentialDigest, recordedHolderProvedGone, processGone, processStart, readRunnerProcessRecord, runnerProcessFile, sealRunnerProcessRecord, writeRunnerProcessRecord, type RunnerProcessRecord, type RunnerProcessRole } from "./runner-process.js";
 import { stopProcessTree } from "./process-tree.js";
 import { mintCoordinator, revokeCoordinator, listCoordinators } from "./coordinator.js";
@@ -7884,8 +7884,9 @@ async function resolveUpApprover(
   return { approver: selected, approvers: names, verified, passwordFile, mintedPassword: null, notes, startAuthority: verified ? "full" : "none" };
 }
 
-/** The platform browser opener — detached, silent, never load-bearing. */
-export function openBrowser(url: string): void {
+/** The platform browser opener — detached, silent, never load-bearing (browser-open.ts: nothing starts without a
+ * display or over SSH, and a missing opener is never a crash). True when an opener was started. */
+export function openBrowser(url: string): boolean {
   // TOOLROLL_BROWSER_COMMAND names another program to open it with (it gets the address as its one argument).
   const chosen = envValue(process.env, "BROWSER_COMMAND");
   const command =
@@ -7893,12 +7894,8 @@ export function openBrowser(url: string): void {
     : process.platform === "darwin" ? ["open", url]
     : process.platform === "win32" ? ["cmd", "/c", "start", "", url]
     : ["xdg-open", url];
-  try {
-    const child = spawnChild(command[0] as string, command.slice(1), { detached: true, stdio: "ignore" });
-    child.unref();
-  } catch {
-    // A browser that will not open is a URL the greeting already printed.
-  }
+  // A browser that will not open is a URL the greeting already printed.
+  return startOpener(command[0] as string, command.slice(1));
 }
 
 

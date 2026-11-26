@@ -3,7 +3,7 @@
  * (remote-exec.ts) and `toolroll health` sign in with it; nothing here opens the local database except to find the
  * existing local sign-in for --local-login.
  */
-import { spawn } from 'node:child_process';
+import { startOpener } from './browser-open.js';
 import { constants, closeSync, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -269,10 +269,8 @@ function pairPostJson(origin: string, path: string, body?: unknown): Promise<{ s
 function launchBrowserUrl(url: string): void {
   const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
   const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
-  try {
-    const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
-    child.unref();
-  } catch { /* user still sees the printed URL */ }
+  // No display, over SSH, or no opener: the person still sees the printed URL (browser-open.ts never throws).
+  startOpener(cmd, args);
 }
 
 async function pairViaBrowser(origin: string, stderr: (line: string) => void, options: ConnectOptions): Promise<{ account: string; token: string }> {
