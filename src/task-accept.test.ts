@@ -13,7 +13,9 @@ import { storeEvidence } from "./evidence.js";
 import { sealVerificationReceipt } from "./verification-evidence.js";
 import { recordRunCheckLevel } from "./check-levels.js";
 import { assignmentOf } from "./assignment.js";
-import { FOLLOW_UP_LOG, FOLLOW_UP_RECEIPT } from "./result-follow-ups.js";
+import { CHECKS_FINISHED, CHECKS_REQUESTED, FOLLOW_UP_LOG, FOLLOW_UP_RECEIPT } from "./result-follow-ups.js";
+import { workIndexPage, workIndexTask } from "./work-index.js";
+import { stepCardsOf } from "./engine-reads.js";
 import { mintCoordinator } from "./coordinator.js";
 import { assignmentStatusFacts, headlineOf } from "./task-status.js";
 
@@ -183,12 +185,34 @@ describe("a completion stays complete when the check command changes", () => {
     const sealed = receipt("t-recheck");
     storeEvidence(store, root(), runId, "structured-output", "follow-up-check-1.log", Buffer.from("1 failed\n"), FOLLOW_UP_LOG, LATER, { captureStatus: "ok" });
     storeEvidence(store, root(), runId, "structured-output", "follow-up-check-1.json", Buffer.from("{}"), FOLLOW_UP_RECEIPT, LATER, { captureStatus: "ok" });
+    // The check ran again after acceptance and failed: its own ledger lines, as result-follow-ups.ts writes them.
+    const request = store.recordAction({ at: LATER.toISOString(), actor: "cli", repo: REPO, taskId: "t-recheck", runId, action: CHECKS_REQUESTED, outcome: "full", source: "work" });
+    store.recordAction({ at: LATER.toISOString(), actor: "system", repo: REPO, taskId: "t-recheck", runId, action: CHECKS_FINISHED, outcome: `${request}:failed`, source: "work", detail: "exit 1" });
     const after = snapshot("t-recheck");
     expect(after.state).toBe("complete");
     expect(after.completion?.digest).toBe(sealed);
-    // Something else saved on the result later is changed evidence: not covered by the completion.
+    // Every derivation says the same (everyday-9 C1): the Work list, its counts and filters, the CLI list, and the
+    // step road all keep it Complete, with the check fact beside it; nothing waits on a person.
+    const access = { principal: "operator" as const, repos: [REPO] };
+    const item = workIndexTask(store, "t-recheck", LATER, access, root())!;
+    expect(item.assignmentState).toBe("complete");
+    expect(item.status.label).toBe("Complete");
+    expect(item.status.detail).toContain("checks failed when they ran again");
+    expect(item.status.views).toContain("completed");
+    expect(item.status.views).not.toContain("needs-you");
+    expect(workIndexPage(store, LATER, access, {}).totals["needs-you"]).toBe(0);
+    expect(await runOperate("task", ["list", "--json"], line => lines.push(line), { databaseFile: db, now: LATER })).toBe(EXIT.ok);
+    const listed = (JSON.parse(lines.at(-1)!) as { tasks: { id: string; status: { label: string } }[] }).tasks.find(one => one.id === "t-recheck");
+    expect(listed?.status.label).toBe("Complete");
+    const family = store.taskFamilyOf("t-recheck", [REPO], false)!;
+    const cards = stepCardsOf({ store, family, now: LATER, access, evidenceRoot: root() });
+    expect(cards.headline).toBe("Complete");
+    expect(cards.cards?.find(card => card.key === "ready")?.state).toBe("done");
+    expect(cards.cards?.find(card => card.key === "checks")?.sentence).toBe("The checks failed when they ran again");
+    // Something else saved on the result later is changed evidence: not covered by the completion, on any surface.
     storeEvidence(store, root(), runId, "structured-output", "other.json", Buffer.from("{}"), "something else", LATER, { captureStatus: "ok" });
     expect(snapshot("t-recheck").state).not.toBe("complete");
+    expect(workIndexTask(store, "t-recheck", LATER, access, root())!.assignmentState).not.toBe("complete");
   });
 
   test("changed scope or damaged evidence still reopens it", async () => {

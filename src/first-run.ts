@@ -181,7 +181,9 @@ export type RoadChecks = "passed" | "running" | "failed" | "not-run" | "off" | "
  * from recorded facts. Approval is done only when the plan was approved (a rewritten plan waiting on approval
  * stands there again); a task that never needed one shows it skipped. Checks is done only when the approved check
  * passed; a running, missing or Off check says so, and with no checks fact it is skipped. A failed check, or one that
- * can't be read, stops the road at Checks: Ready isn't done (fail closed), even on a task a person marked complete.
+ * can't be read, stops the road at Checks: Ready isn't done (fail closed). On a task a person marked complete the
+ * completion is history (everyday-9 C1): Ready stays done and the Checks step says the check fact beside it, a failure
+ * or unreadable check still marked as one; neither is ever check or deploy authority.
  * A research report has no Checks step: a report stopped there stops at
  * Ready. The step that waits on a person carries `needsYou`.
  */
@@ -224,7 +226,7 @@ export function taskRoad(read: Parameters<typeof firstTaskJourney>[0], approved:
   if (waitsAtReady) steps = steps.map(step => step.key === "ready" ? { ...step, state: "stuck" } : step);
   // A road stopped at Checks (failed, or unreadable) has not reached Ready.
   const at = steps.find(step => step.key === "checks");
-  if (facts.report !== true && at !== undefined && at.state === "stuck") {
+  if (facts.report !== true && at !== undefined && at.state === "stuck" && !complete) {
     steps = steps.map(step => step.key === "ready" && step.state === "done" ? { ...step, state: "todo" } : step);
   }
   if (facts.report === true) {

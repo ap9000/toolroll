@@ -20,7 +20,7 @@ import { buildReviewOf } from './review-switch.js';
 import { shownVerdictOf } from './proof.js';
 import { isCheckLevel, repoClause, requiredCheckCommandFor, RUN_LEVEL_ACTION, TASK_LEVEL_ACTION } from './check-levels.js';
 import { MARKER } from './worktree.js';
-import { CHECKS_FINISHED, CHECKS_REQUESTED, CHECKS_STARTED, withFollowUps } from './result-follow-ups.js';
+import { CHECKS_FINISHED, CHECKS_REQUESTED, CHECKS_STARTED, FOLLOW_UP_LOG, FOLLOW_UP_RECEIPT, withFollowUps } from './result-follow-ups.js';
 import { LANDED_ACTOR, landedReasonOf } from './result-completion.js';
 import { ASKS, CODE_READING, STORAGE_HOLD_PREFIX, NEED_ASK, NEEDS, askChipOf, failedAttemptSentence, isWaitCode, processNeedOf, resultHoldUpSentence, type Ask, type AskChip, type NeedContext, type NeedKey, type WaitKey } from './needs-you.js';
 import { agentlessCommand, NO_AGENT_TITLE, noAgentWords, retryWhenWords, signInAgainWords } from './dispatch.js';
@@ -305,7 +305,10 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
         AND a.action IN ('task state changed','scope approved','task placed','run started','run finished')) END completion_changed,
       CASE WHEN f.ready AND EXISTS(SELECT 1 FROM action_ledger a
         WHERE a.task_id=f.root_id AND a.run_id=f.result_id AND a.action='assignment handoff checked' AND a.source='work')
-      THEN (SELECT MAX(ar.created_at) FROM json_each(f.fam_refs) m JOIN run r ON r.task_ref=m.value JOIN artifact ar ON ar.run=r.id) END completion_artifact_at
+      THEN (SELECT MAX(ar.created_at) FROM json_each(f.fam_refs) m JOIN run r ON r.task_ref=m.value JOIN artifact ar ON ar.run=r.id
+        -- A follow-up check's own log and receipt (Run checks after accepting) are a separate check fact, never changed
+        -- work: assignment.ts reads the completion with the checks as they read then, so the list does too.
+        WHERE NOT (ar.kind='structured-output' AND ar.capture IN ('${FOLLOW_UP_LOG}','${FOLLOW_UP_RECEIPT}'))) END completion_artifact_at
     FROM ready f) f
 ), classified AS MATERIALIZED (
   SELECT f.*,CASE

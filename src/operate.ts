@@ -9926,13 +9926,15 @@ async function runTaskChecks(positional: readonly string[], flags: Map<string, s
   const state = done?.state ?? "waiting";
   const words = `${CHECK_LEVEL_WORDS[asked.level]} checks`;
   const payload = { task: taskId, run: result.runId, head: result.head, request: asked.request, level: asked.level, state, exitCode: done?.exitCode ?? null };
+  // Accepted work stays Complete (everyday-9 C1): a check run later is a separate fact, never a change of status.
+  const complete = assignmentOf(store, taskId, clock(), { principal: "operator", repos: null, includeUnplaced: true }, context.evidenceRoot)?.state === "complete";
   if (state === "failed") {
     if (json) { write(envelopeJson({ ok: false, command: "task checks", reason: "checks-failed", ...payload })); return EXIT.failed; }
-    write(`${words} failed on ${result.head.slice(0, 7)}${done?.exitCode == null ? "" : ` (exit ${done.exitCode})`}. The result shows the failure.`);
+    write(`${words} failed on ${result.head.slice(0, 7)}${done?.exitCode == null ? "" : ` (exit ${done.exitCode})`}. ${complete ? "It stays Complete; it can't land until they pass on its exact commit." : "The result shows the failure."}`);
     return EXIT.failed;
   }
   return succeed(write, json, "task checks", payload, () => [
-    state === "passed" ? `${words} passed on ${result.head.slice(0, 7)}. The result's status is upgraded.`
+    state === "passed" ? `${words} passed on ${result.head.slice(0, 7)}.${complete ? " It stays Complete." : ""}`
       : state === "running" ? `${words} are already running on ${result.head.slice(0, 7)}.`
       : state === "not-run" ? `${words} didn't run: ${done?.note ?? "see the result's log"}`
       : `${words} are queued on ${result.head.slice(0, 7)}.`,
@@ -10312,7 +10314,8 @@ function showTask(positional: readonly string[], context: Context): number {
     ...detail.steering.slice(-5).map(one => `  note #${one.id} to the agent: ${one.words}`),
     ...(detail.claim === null ? [] : [`  claimed by ${detail.claim.runner} until ${detail.claim.expiresAt}`]),
     // A detail that already starts with its summary (a sign-in's own sentence) is said once.
-    ...(detail.dispatch === null ? [] : [`  dispatch: ${detail.dispatch.detail.startsWith(detail.dispatch.summary) ? detail.dispatch.detail : `${detail.dispatch.summary} — ${detail.dispatch.detail}`}`]),
+    // Complete work dispatches nothing more: its dispatch reading (a proof diagnostic) would only contradict its status.
+    ...(detail.dispatch === null || shared?.headline === "Complete" ? [] : [`  dispatch: ${detail.dispatch.detail.startsWith(detail.dispatch.summary) ? detail.dispatch.detail : `${detail.dispatch.summary} — ${detail.dispatch.detail}`}`]),
     ...(detail.control.kind === "none"
       ? []
       : detail.control.kind === "stop"

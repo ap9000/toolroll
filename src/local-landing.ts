@@ -312,7 +312,7 @@ export async function readLanding(store: Store, taskId: string, access: { repos:
   // the project has no check command at all.
   const checks = receipt.checks.status === "passed" ? "passed" as const : !projectCheckSet(store, project.repo) && receipt.checks.status === "not-run" ? "none" as const : null;
   if (checks === null) {
-    if (receipt.checks.status === "failed") return refuse("checks", later ? `Its checks failed when they ran again after you accepted it (${receipt.checks.detail}). It stays Complete; it can't land until they pass on its exact commit.`
+    if (receipt.checks.status === "failed") return refuse("checks", later ? `Its checks failed when they ran again after you accepted it (${receipt.checks.detail.replace(/\.$/, "")}). It stays Complete; it can't land until they pass on its exact commit.`
       : "Its checks failed. Only work whose checks passed on its exact commit lands.");
     return refuse("checks", later ? "Its checks changed since you accepted it and haven't run on its exact commit since. Run checks (it stays Complete), then land it."
       : "Its checks haven't passed on its exact commit. Run checks, then land it.");
