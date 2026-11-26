@@ -89,6 +89,22 @@ describe("task new", () => {
     const code = await runOperate("task", ["new", ...argv, "--db", join(world.configDir, "state.db")], line => { lines.push(line); }, {});
     return { code, out: lines.join("\n") };
   };
+  test("a missing project and missing words are each said on their own (everyday-9 E5)", async () => {
+    // At a terminal (a script is refused before anything else).
+    const atTerminal = async (argv: string[]) => {
+      const lines: string[] = [];
+      const code = await runOperate("task", ["new", ...argv, "--db", join(world.configDir, "state.db")], line => { lines.push(line); }, { easySeams: { terminal: true } });
+      return { code, out: lines.join("\n") };
+    };
+    const noRepo = await atTerminal(["Add a cube function"]);
+    expect(noRepo.code).toBe(EXIT.usage);
+    expect(noRepo.out).toContain("--repo");
+    expect(noRepo.out).not.toContain("Say what should change");
+    const noWords = await atTerminal(["--repo", world.repo]);
+    expect(noWords.code).toBe(EXIT.usage);
+    expect(noWords.out).toContain("Say what should change");
+  });
+
   test("a script, --json or a token is refused, and nothing is filed", async () => {
     const before = world.store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"];
     for (const argv of [["Fix it", "--repo", world.repo], ["Fix it", "--repo", world.repo, "--json"], ["Fix it", "--repo", world.repo, "--as", "alex", "--token", "x"]]) {

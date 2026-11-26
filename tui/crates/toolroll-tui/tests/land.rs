@@ -129,7 +129,7 @@ const SHIP_REFUSED: &str = concat!(
     "This project can't open pull requests yet, and Ship needs them: the merge goes through one. ",
     "Turn them on with `toolroll publish setup --repo /home/me/shop --yes` (or in Settings → ",
     "Projects). Nothing was shipped. To use its work now, save it as a branch in your repository ",
-    "instead (S on the thread in `toolroll`, or `toolroll thread save 0123abcd`)."
+    "instead (S on the thread, or `toolroll thread save 0123abcd`)."
 );
 
 #[test]

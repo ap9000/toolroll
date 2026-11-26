@@ -31,7 +31,7 @@ For Claude Code, Codex, and Gemini — using the subscriptions already on your m
 
 ### CLI & Terminal Workbench (macOS or Linux)
 
-Requires Node.js 22.20+, git 2.41+, and Claude Code (`claude`), Codex (`codex`), or Gemini signed in on this computer. On Linux, also install the sandbox tools: `sudo apt update && sudo apt install bubblewrap socat ripgrep`.
+Requires Node.js 22.20+, git 2.41+, and Claude Code (`claude`), Codex (`codex`), or Gemini signed in on this computer. On Linux (64-bit), also install the sandbox tools: `sudo apt update && sudo apt install bubblewrap socat ripgrep bash debianutils` (other distributions: [Linux](docs/guide/linux.md#install-the-sandbox-tools)). Windows isn't supported; use WSL 2.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ap9000/toolroll/main/install.sh | sh

@@ -4,6 +4,42 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.126 — 2026-11-26
+
+Toolroll starts on more machines and says exactly what to fix when it can't; finished work reads finished everywhere.
+
+### New
+
+- **Run checks again from the workbench** (in the palette) on accepted work whose checks are out of date or failed.
+- **One check at the first start** lists everything that would stop Toolroll (sandbox tools, a sandbox that can't
+  start, git version, process start times), each with its fix, before anything is created.
+
+### Changed
+
+- **Landed work says "Landed on main (sha)"** at the top of the task page, in `task show` and in the CLI, and no longer
+  asks "Can I merge?" or offers Send back. "Behind main" is gone from landed work.
+- **Checks out of date** (the check command changed) show as out of date, not failed or unreadable, in the task list,
+  the workbench and the task page; the web keeps Run checks on the top card after a failed re-check.
+- **Install lines use this machine's package manager** (apt, dnf, zypper, pacman, apk), with `sudo` only when needed.
+- **When the sandbox can't start** (Docker, devcontainers), Toolroll says the cause only when it can see it, with the
+  options and what each one weakens.
+
+### Fixed
+
+- **Linux installs with a group-writable folder** (Ubuntu/Fedora with nvm or a user npm folder) get the exact repair
+  for each path instead of a password-only start; untrusted system programs are named with a real reinstall command.
+- **Fedora, minimal Debian and Alpine** no longer need `ps` to start.
+- **Servers and SSH sessions** no longer crash for want of a browser: Toolroll shows the address; a browser you chose
+  still opens.
+- **Running `toolroll` without a terminal** no longer creates a password install behind your back.
+- **The workbench diff** shows the new revision's changes once it's ready; a Direct Chat whose changes couldn't be read
+  says so instead of "No changes".
+- **`toolroll update` with no database** says so before doing anything.
+
+### Action needed
+
+- Native Windows isn't supported: use WSL 2. 32-bit Linux isn't supported.
+
 ## 0.9.125 — 2026-11-26
 
 Everything in 0.9.124, which was tagged but never reached npm.

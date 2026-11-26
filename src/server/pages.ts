@@ -1532,7 +1532,7 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
     const body: WorkRows = {
       version: ENGINE_API_VERSION, project: view.project, projectName: view.projectName, needsCount: view.needsCount, groups: list.groups,
       rows: list.rows.map(row => ({ id: row.id, title: row.title, href: row.href, project: row.project, age: row.age, status: row.status, word: row.word, ask: row.ask,
-        chip: row.chip, group: row.group, rank: row.rank, detail: row.detail, problem: row.problem, need: row.need === undefined ? null : needOf(row.need),
+        chip: row.chip, group: row.group, rank: row.rank, ...(row.check === undefined ? {} : { check: row.check }), detail: row.detail, problem: row.problem, need: row.need === undefined ? null : needOf(row.need),
         waiting: waiting.get(row.id) ?? null })),
       needs: view.needs.map(group => ({ key: group.key, label: group.label, count: group.count, rows: group.rows.map(needOf) })),
       next: list.pages.next, room: "workspace", spend, limits,

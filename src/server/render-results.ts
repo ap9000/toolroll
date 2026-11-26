@@ -878,7 +878,7 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   const unanswered = accepted || youCheck == null ? [] : youCheck.items.length > 0 ? youCheck.items.map(one => one.statement === "" ? one.words : one.statement) : youCheck.lines;
   const base = !acceptsHere ? null : acceptWordsOf({
     // Checks Off that a release check already covers read as passed (release-coverage.ts).
-    checks: checks === undefined ? null : ({ passed: "passed", failed: "failed", running: "running", "not-run": "not-run", off: "off", unreadable: "unavailable" } as const)[approvedCheckStateOf(checks)!],
+    checks: checks === undefined ? null : ({ passed: "passed", failed: "failed", running: "running", "not-run": "not-run", off: "off", stale: "unavailable", unreadable: "unavailable" } as const)[approvedCheckStateOf(checks)!],
     // Release-aware words (task-status.ts): a requirement waiting only on a release check, or covered by one, isn't unmet.
     unmet: matrix.filter(row => !["Met", "You check", CHECKED_AT_RELEASE].includes(requirementWordOf(row, null, checks === undefined ? undefined : checkBackingOf(checks)))).length,
     action: complete !== null ? "complete" : "accept",
@@ -895,7 +895,8 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   const followUps = view.detail.followUps ?? null;
   const checksRunning = checks?.running != null || (followUps?.checks.some(one => one.state === "waiting" || one.state === "running") ?? false);
   const runChecks = canRetryReview && csrf !== "" && followUps !== null && (followUps.full || followUps.quick) && !checksRunning &&
-    (checks === undefined || ((checks.status === "not-run" || checks.status === "unavailable") && checks.release == null))
+    // A Complete result whose checks ran again and failed can run them again too (everyday-9 E3).
+    (checks === undefined || ((checks.status === "not-run" || checks.status === "unavailable" || (checks.status === "failed" && assignment?.state === "complete")) && checks.release == null))
     // Back on this result's Checks tab, where #follow-ups shows the run it started.
     ? { action: `/r/${run.id}/checks`, level: followUps.full ? "full" as const : "quick" as const, returnTo: at("checks") } : null;
   const need = panel.panel.need;
@@ -1977,6 +1978,9 @@ export type ResultDetail = {
   signedCriteria: number;
   /** Whether a reviewer can annotate here (sealed non-empty patch verifies, cookie session). */
   canAnnotate: boolean;
+  /** The current result's work is already on its branch (merge-checklist.ts landedNowOf): nothing is left to review, so
+   * no person checks, Looks right / Not right or Send back are offered (everyday-9 E1). */
+  landed?: boolean;
   /** Follow-ups on this result (result-follow-ups.ts): checks run since, the tests task, and what can run. */
   followUps?: { repo: string | null; checks: FollowUpCheck[]; testsTask: string | null; quick: boolean; full: boolean } | null;
 };
@@ -2107,7 +2111,7 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
   // Requirements only a person can confirm: plain words and one Accept,
   // in neutral ink — nothing failed. Accepting records the person's
   // decision and leaves the recorded checks as they are.
-  const personChecks = proof === null || proof.accepted !== null ? [] : [
+  const personChecks = proof === null || proof.accepted !== null || detail.landed === true ? [] : [
     ...proof.matrix.filter(row => row.state === "manual-review").map(row => personCheckWords(row.statement)),
     ...(proof.matrix.length > 0 ? [] : proof.reasons.filter(reason => manualReviewCriterionOf(reason) !== null).map(() => personCheckWords(null))),
   ];
@@ -2448,10 +2452,10 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
     views: [{ key: "summary", html: htmlString(joinHtml(summaryParts, "\n")) }, { key: "changes", html: htmlString(joinHtml(changeParts, "\n")) }, { key: "checks", html: htmlString(joinHtml(checkParts, "\n")) }],
     history: detail.history === undefined ? "" : htmlString(detail.history),
     learning: detail.learning === undefined ? "" : htmlString(detail.learning),
-    request: detail.skillTest ? null : htmlString(joinHtml(requestParts, "\n")),
-    canRequest: detail.canAnnotate && o.csrf !== "",
+    request: detail.skillTest || detail.landed === true ? null : htmlString(joinHtml(requestParts, "\n")),
+    canRequest: detail.canAnnotate && o.csrf !== "" && detail.landed !== true,
     // The request form's own fields, as data (the same batch, source and request token the form above posts).
-    sendBack: detail.skillTest || !detail.canAnnotate || o.csrf === "" ? null
+    sendBack: detail.skillTest || !detail.canAnnotate || o.csrf === "" || detail.landed === true ? null
       : { action: `/r/${runId}/comment`, batch: revisionBatchOf(detail.comments), source: revisionSourceOf(detail.sourceDigest), request: o.requestToken },
     need,
     requestQuiet: detail.canAnnotate && o.csrf !== "" && detail.comments.length === 0 && (detail.pastComments?.length ?? 0) === 0 && detail.revisions.length === 0,

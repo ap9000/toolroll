@@ -205,6 +205,7 @@ impl Threads {
                     is_task: false,
                     thread: true,
                     waiting: None,
+                    check: None,
                 }
             })
             .collect()

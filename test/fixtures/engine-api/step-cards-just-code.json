@@ -123,6 +123,7 @@
     "automatic": false
   },
   "room": "task:t-done",
+  "landing": null,
   "planStopped": null,
   "plan": null,
   "planQueued": false,

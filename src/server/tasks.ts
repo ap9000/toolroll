@@ -124,7 +124,7 @@ import { type Who } from "./session.js";
 import { approveReleaseCard, releaseApprovalCard, releaseSheetHref, releaseTaskOf } from "../release-approval.js";
 import { releaseSheetPage } from "./render-release.js";
 import { approvalFactsNow, btn } from "./kit.js";
-import { handoffWords, land, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding } from "../local-landing.js";
+import { handoffWords, land, landedLine, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding } from "../local-landing.js";
 import { localActNow, localOwnerRefusal, withLocalAct } from "../local-owner.js";
 import { localChecksRefusal } from "../local-checks.js";
 import { sessionYesPossible } from "./send-back-build.js";
@@ -3302,7 +3302,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       const read = await readLanding(store, act.taskId, access, now, options);
       if (!read.ok) return taskScreen(response, who, shown, read.message, 409);
       if (!("plan" in read)) {
-        if (answersInPlace(ctx.request)) return answerActInPlace(response, "done", `Already on ${read.landed.ref.replace(/^refs\/heads\//, "")} (${read.landed.commit.slice(0, 7)}).`, 200);
+        if (answersInPlace(ctx.request)) return answerActInPlace(response, "done", read.landed.reverted === true ? landedLine(read.landed) : `Already on ${read.landed.ref.replace(/^refs\/heads\//, "")} (${read.landed.commit.slice(0, 7)}).`, 200);
         return redirect(response, taskHref(shown));
       }
       const plan = read.plan;

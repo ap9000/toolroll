@@ -13,6 +13,8 @@ import { codexOfflineDependencySuggestion, failedAttemptSentence, latestFinished
 import { pendingAgentChangeOf, planSourceOf, retryPinsOf } from "./local-owner-acts.js";
 import { assignmentOf, owedAcceptance, personCompletionRefusal, type AssignmentSnapshot } from "./assignment.js";
 import { assignmentCardOf } from "./assignment-ui.js";
+import { landedNowOf } from "./merge-checklist.js";
+import { liveQuickCommand } from "./check-levels.js";
 import { assignmentStageOf, stageOfCode } from "./task-status.js";
 import { taskRoad, type RoadChecks } from "./first-run.js";
 import { stepRowsOf, type StepRowFacts } from "./workspace-ui.js";
@@ -170,8 +172,26 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
     scopeDigest: scope?.digest ?? null,
     agentChoices: scope === null || !withChoices ? null : agentChoicesOf(store, current.id, ref, now),
     pendingAgentChange: ref === null ? null : pendingAgentChangeOf(store, ref.id),
+    // Its landing history, when its work is already on its branch (display only).
+    landing: assignment === null ? null : landedNowOf(store, assignment),
+    // The approved check, when it holds the result back without a failure headline saying so: failed (a Complete task's
+    // check that ran again), out of date (its command changed) or unreadable. A terminal marks only a failure as one.
+    ...(card?.status.check === "failed" || card?.status.check === "stale" || card?.status.check === "unreadable" ? { check: card.status.check } : {}),
+    ...(() => { const offer = runChecksOfferOf(store, assignment, card?.status.check ?? null); return offer === null ? {} : { runChecks: offer }; })(),
     room: `task:${encodeURIComponent(root.id)}`,
   };
+}
+
+/** What Run checks again posts (POST /r/<run>/checks `level`, the task page's own Run checks): the current result's build
+ * and the level the project has a command for, when its check failed, is out of date, can't be read or didn't run.
+ * Display only: who may run them is the console's to decide at the post (server/tasks.ts runFollowUp), exactly as for
+ * the page. Null otherwise; nothing is read unless the check holds the result back. */
+function runChecksOfferOf(store: Store, assignment: AssignmentSnapshot | null, check: string | null): NonNullable<StepCards["runChecks"]> | null {
+  if (check !== "failed" && check !== "stale" && check !== "unreadable" && check !== "not-run") return null;
+  const receipt = assignment?.receipt ?? null;
+  if (receipt === null || receipt.head === null || receipt.completionKind === "research-report" || assignment!.repo === null || store.isDemo()) return null;
+  const level = store.liveVerifyCommand(assignment!.repo) !== null ? "full" as const : liveQuickCommand(store, assignment!.repo) !== null ? "quick" as const : null;
+  return level === null ? null : { run: receipt.runId, level };
 }
 
 /** The words Open build shell is refused with when its build has nothing to open on, as the start itself says them

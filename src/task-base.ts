@@ -39,10 +39,12 @@ export const readGit: GitRead = (cwd, args) => {
 const commits = (count: number) => `${count} commit${count === 1 ? "" : "s"}`;
 
 /** The base line on its own, for surfaces that label it already: `9d087efe · Behind main by 2 commits`. A revision's
- * says its change is the whole change since that start. */
-export function baseStandingWords(view: Pick<TaskBaseView, "base" | "main" | "behind" | "family">): string {
+ * says its change is the whole change since that start. `landed`: the task's work is already on its branch
+ * (local-landing.ts landingHistoryOf): the count would include its own landing and every later commit, so only the base
+ * is said (everyday-9 E1); the review base itself is unchanged. */
+export function baseStandingWords(view: Pick<TaskBaseView, "base" | "main" | "behind" | "family">, landed = false): string {
   const short = view.family === true ? `Whole change since ${view.base.slice(0, 8)} (includes earlier attempts' work that's still in it)` : view.base.slice(0, 8);
-  if (view.main === null || view.behind === null) return short;
+  if (landed || view.main === null || view.behind === null) return short;
   return view.behind === 0 ? `${short} · Up to date with ${view.main}` : `${short} · Behind ${view.main} by ${commits(view.behind)}`;
 }
 

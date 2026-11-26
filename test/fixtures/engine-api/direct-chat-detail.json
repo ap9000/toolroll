@@ -106,6 +106,7 @@
   "diff": {
     "changedFiles": ["src/nav.tsx"],
     "diffText": "diff --git a/src/nav.tsx b/src/nav.tsx\n--- a/src/nav.tsx\n+++ b/src/nav.tsx\n@@ -1 +1 @@\n-gap: 16px;\n+gap: 12px;\n",
-    "dirty": true
+    "dirty": true,
+    "unread": true
   }
 }

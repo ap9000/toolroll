@@ -27,7 +27,7 @@ beforeEach(() => {
   stub("node", `echo "\${NODE_STUB_VERSION:-22.20.0}"`);
   // The Linux sandbox tools, there by default (a test that wants one missing removes it), so a Linux host's own
   // programs never decide what these tests see.
-  for (const name of ["bwrap", "socat", "rg"]) stub(name, "exit 0");
+  for (const name of ["bwrap", "socat", "rg", "bash", "which"]) stub(name, "exit 0");
   stub("npm", `[ "$1" = ls ] && exit 1\n[ "$1" = install ] && : > "${base}/npm-installed"\nexit 0`);
   // git: its version (GIT_STUB_VERSION), and the repository a folder is in (a folder with a .git directory).
   stub("git", `[ "$1" = --version ] && { echo "git version \${GIT_STUB_VERSION:-2.43.0}"; exit 0; }\ncase " $* " in *" --absolute-git-dir "*) [ -d .git ] && { echo "$(pwd -P)/.git"; exit 0; }; exit 128 ;; *" rev-parse "*) [ -d .git ] && { pwd -P; exit 0; }; exit 128 ;; *" config "*) exit 1 ;; esac\nexit 0`);
@@ -291,8 +291,9 @@ describe("install.sh's repository, with real git", () => {
   test("i1: every apt line it suggests refreshes the package lists first (a fresh image's are empty)", () => {
     const script = readFileSync(INSTALL, "utf8");
     const suggested = script.split("\n").filter(line => /apt install/.test(line) && !line.includes("apt install nodejs"));
-    expect(suggested.length).toBeGreaterThanOrEqual(3);
-    for (const line of suggested) expect(line).toMatch(/sudo apt update && sudo apt install/);
+    // The git hint, and the one line every apt suggestion is made from (sudo, or nothing as root).
+    expect(suggested.length).toBeGreaterThanOrEqual(2);
+    for (const line of suggested) expect(line).toMatch(/(?:sudo |%s)apt update && (?:sudo |%s)apt install/);
   });
 
   test("the script stays plain POSIX sh (dash parses it)", () => {
@@ -310,6 +311,9 @@ describe("install.sh on Linux", () => {
   beforeEach(() => {
     writeFileSync(join(stubs, "uname"), "#!/bin/sh\necho Linux\n");
     chmodSync(join(stubs, "uname"), 0o755);
+    // An apt computer (Debian, Ubuntu), as a person: its install lines are apt's, with sudo.
+    writeFileSync(join(stubs, "apt-get"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(stubs, "apt-get"), 0o755);
     sys = join(base, "sys");
     mkdirSync(sys);
     for (const name of ["sh", "sed", "mkdir", "cat", "script", "env"]) {
@@ -329,7 +333,7 @@ describe("install.sh on Linux", () => {
     // At a terminal (script's pseudo-terminal writes \r\n).
     const result = await linux({}, "ignore", repo);
     expect(result.code, result.out).toBe(1);
-    expect(result.out.replace(/\r\n/g, "\n")).toContain("Toolroll needs this first:\n  - the sandbox tools agents run in: socat ripgrep\n\nInstall it:\n  sudo apt update && sudo apt install socat ripgrep\n  (Fedora: sudo dnf install socat ripgrep)\n\nThen run this again.");
+    expect(result.out.replace(/\r\n/g, "\n")).toContain("Toolroll needs this first:\n  - the sandbox tools agents run in: socat ripgrep\n\nInstall it:\n  sudo apt update && sudo apt install socat ripgrep\n\nThen run this again.");
     expect(existsSync(join(base, "npm-installed"))).toBe(false);
     expect(existsSync(record)).toBe(false);
   });
@@ -341,26 +345,25 @@ describe("install.sh on Linux", () => {
     const result = await linux({ SO_NO_START: "1" }, "pipe", repo);
     expect(result.code, result.out).toBe(0);
     expect(existsSync(join(base, "npm-installed"))).toBe(true);
-    expect(result.out).toContain("Before you start it, install the sandbox tools agents run in:\nsudo apt update && sudo apt install ripgrep (Fedora: sudo dnf install ripgrep)");
+    expect(result.out).toContain("Before you start it, install the sandbox tools agents run in:\nsudo apt update && sudo apt install ripgrep\n");
     expect(result.out).toContain(`Start it in ${realpathSync(repo)} with: toolroll`);
     expect(existsSync(record)).toBe(false);
   });
 
   test("i1: everything missing at once (old Node, no git, no sandbox tools) is one list and one install block, said once, and nothing is installed", async () => {
     writeFileSync(join(stubs, "node"), "#!/bin/sh\necho 18.19.1\n");
-    for (const name of ["git", "bwrap", "socat", "rg"]) rmSync(join(stubs, name));
+    for (const name of ["git", "bwrap", "socat", "rg", "which"]) rmSync(join(stubs, name));
     const result = await linux({});
     expect(result.code, result.out).toBe(1);
     expect(result.out).toContain([
       "Toolroll needs these first:",
       "  - Node.js 22.20 or newer (this computer has 18.19.1)",
       "  - git 2.41 or newer (none was found)",
-      "  - the sandbox tools agents run in: bubblewrap socat ripgrep",
+      "  - the sandbox tools agents run in: bubblewrap socat ripgrep which",
       "",
       "Install them:",
       "  Node.js: install it from https://nodejs.org/en/download (choose nvm: `nvm install 22`), or from NodeSource (https://github.com/nodesource/distributions); `apt install nodejs` is usually too old",
-      "  sudo apt update && sudo apt install git bubblewrap socat ripgrep",
-      "  (Fedora: sudo dnf install git bubblewrap socat ripgrep)",
+      "  sudo apt update && sudo apt install git bubblewrap socat ripgrep debianutils",
       "",
       "Then run this again.",
     ].join("\n"));
@@ -370,11 +373,37 @@ describe("install.sh on Linux", () => {
     expect(existsSync(record)).toBe(false);
   });
 
+  test("E7: the install line is this computer's own package manager's, sudo only when not root, every manager's when none is found", async () => {
+    rmSync(join(stubs, "socat"));
+    rmSync(join(stubs, "apt-get"));
+    const lines = async (extra: Record<string, string>) => {
+      for (const [name, body] of Object.entries(extra)) { writeFileSync(join(stubs, name), `#!/bin/sh\n${body}\n`); chmodSync(join(stubs, name), 0o755); }
+      const result = await linux({});
+      for (const name of Object.keys(extra)) rmSync(join(stubs, name));
+      expect(result.code, result.out).toBe(1);
+      return result.out.split("Install it:\n")[1]!.split("\n\nThen run this again.")[0]!;
+    };
+    expect(await lines({ dnf: "exit 0" })).toBe("  sudo dnf install socat");
+    expect(await lines({ pacman: "exit 0" })).toBe("  sudo pacman -S --needed socat");
+    expect(await lines({ apk: "exit 0", id: "echo 0" })).toBe("  apk add socat");
+    expect(await lines({ "apt-get": "exit 0", id: "echo 0" })).toBe("  apt update && apt install socat");
+    expect((await lines({})).split("\n")).toEqual(["  sudo apt update && sudo apt install socat (Debian, Ubuntu)", "  sudo dnf install socat (Fedora)",
+      "  sudo zypper install socat (openSUSE)", "  sudo pacman -S --needed socat (Arch)", "  sudo apk add socat (Alpine)"]);
+  });
+
+  test("E10: a 32-bit Linux is told up front, before anything is installed", async () => {
+    writeFileSync(join(stubs, "uname"), "#!/bin/sh\n[ \"$1\" = -m ] && { echo armv7l; exit 0; }\necho Linux\n");
+    const result = await linux({});
+    expect(result.code).toBe(1);
+    expect(result.out).toContain("this computer is 32-bit (armv7l)");
+    expect(existsSync(join(base, "npm-installed"))).toBe(false);
+  });
+
   test("i1: git missing or too old says how to get it, for this computer, with the 2.41 floor", async () => {
     rmSync(join(stubs, "git"));
     const none = await linux({});
     expect(none.code).toBe(1);
-    expect(none.out).toContain("  - git 2.41 or newer (none was found)\n\nInstall it:\n  sudo apt update && sudo apt install git\n  (Fedora: sudo dnf install git)\n");
+    expect(none.out).toContain("  - git 2.41 or newer (none was found)\n\nInstall it:\n  sudo apt update && sudo apt install git\n");
     writeFileSync(join(stubs, "git"), "#!/bin/sh\necho git version 2.34.1\n");
     chmodSync(join(stubs, "git"), 0o755);
     const old = await linux({});

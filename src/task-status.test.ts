@@ -58,6 +58,9 @@ describe("the brief's states", () => {
     const status = taskStatusOf({ stage: "complete", checks: failed, completedBy: "sam" });
     expect(status.headline).toBe("Complete");
     expect(row(status, "checks")).toMatchObject({ text: "Failed (exit 1)", mark: "note", action: { label: "See what failed", href: null } });
+    // Where Run checks can run (everyday-9 E3): it stays the row's act, and what failed is the row's own link.
+    const again = taskStatusOf({ stage: "complete", checks: failed, completedBy: "sam", links: { checks: "/t/x?tab=result&section=checks", runChecks: "/t/x?tab=result&section=checks#follow-ups" } });
+    expect(row(again, "checks")).toMatchObject({ text: "Failed (exit 1)", href: "/t/x?tab=result&section=checks", action: { label: "Run checks", href: "/t/x?tab=result&section=checks#follow-ups" } });
   });
 
 });

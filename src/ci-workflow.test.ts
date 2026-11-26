@@ -122,7 +122,10 @@ const GATE = "gate changes";
  * drift, but a release never waits for it). */
 const ADVISORY = ["youiyoux · UI drift", "journeys · app (scripted)", "journeys · flows (scripted)", "upgrade path · scope", "upgrade path", GATE, "guard checks"];
 /** install-smoke.yml: advisory too, but only on pull requests that change what gets packed or installed. */
-const INSTALL_SMOKE = ["install smoke · ubuntu-24.04", "install smoke · macos-latest"];
+const INSTALL_SMOKE_HOSTS = ["install smoke · ubuntu-24.04", "install smoke · macos-latest"];
+/** Its container lanes (scripts/container-smoke.sh): the first terminal start on the Linux machines people have. */
+const INSTALL_SMOKE_CONTAINERS = ["ubuntu umask 0002", "ubuntu umask 0002 · arm64", "no user namespaces", "alpine", "fedora", "debian 12", "debian 13", "node 26"].map(lane => `install smoke · ${lane}`);
+const INSTALL_SMOKE = [...INSTALL_SMOKE_HOSTS, ...INSTALL_SMOKE_CONTAINERS];
 /** wire-budgets.yml: advisory too, on pull requests that touch the server, the browser app, the work index or the store. */
 const WIRE = ["wire budgets"];
 /** rust.yml: advisory too, on pull requests that touch the terminal workbench or its contract. */
@@ -291,7 +294,21 @@ describe("the CI workflows", () => {
     }
     expect(names({ kind: "push", tag: "v0.9.80" }).filter(name => INSTALL_SMOKE.includes(name))).toEqual([]);
     expect(executed({ kind: "workflow_dispatch" }).filter(name => INSTALL_SMOKE.includes(name))).toEqual([...INSTALL_SMOKE].sort());
-    expect(reported(pr(["install.sh"])).filter(one => INSTALL_SMOKE.includes(one.name)).map(one => one.runner).sort()).toEqual(["macos-latest", "ubuntu-24.04"]);
+    expect(reported(pr(["install.sh"])).filter(one => INSTALL_SMOKE_HOSTS.includes(one.name)).map(one => one.runner).sort()).toEqual(["macos-latest", "ubuntu-24.04"]);
+    // The container lanes run on Linux runners (arm64 for its own lane), and also run for the startup and trust files.
+    expect(reported(pr(["install.sh"])).filter(one => INSTALL_SMOKE_CONTAINERS.includes(one.name)).map(one => `${one.name} @ ${one.runner}`).sort())
+      .toEqual(INSTALL_SMOKE_CONTAINERS.map(name => `${name} @ ${name.endsWith("arm64") ? "ubuntu-24.04-arm" : "ubuntu-24.04"}`).sort());
+    for (const paths of [["src/easy-start.ts"], ["src/trusted-path.ts"], ["src/process-identity.ts"], ["scripts/container-smoke.sh"]]) {
+      expect(executed(pr(paths)).filter(name => INSTALL_SMOKE.includes(name)), paths[0]).toEqual([...INSTALL_SMOKE].sort());
+    }
+    const lanes = smoke.jobs["containers"]!;
+    expect((lanes as { "timeout-minutes"?: number })["timeout-minutes"]).toBeLessThanOrEqual(20);
+    expect(runsOf(lanes).join("\n")).toContain("sh /work/container-smoke.sh");
+    // The Node 26 lane runs Node 26 (the runner's, in its container); every other lane the floor's major.
+    const include = (lanes as { strategy?: { matrix?: { include?: { name: string; node?: string }[] } } }).strategy?.matrix?.include ?? [];
+    expect(include.find(one => one.name === "node 26")?.node).toBe("26");
+    expect(lanes.steps?.find(step => step.uses?.startsWith("actions/setup-node@"))?.with).toMatchObject({ "node-version": "${{ matrix.node || '22' }}", "check-latest": true });
+    expect(lanes.steps?.find(step => step.uses?.startsWith("actions/checkout@"))?.with).toMatchObject({ ref: "${{ env.TESTED_SHA }}", "persist-credentials": false });
     const job = smoke.jobs["smoke"]!;
     expect(job.if).toBeUndefined();
     expect((job as { "timeout-minutes"?: number })["timeout-minutes"]).toBeLessThanOrEqual(15);

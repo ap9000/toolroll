@@ -53,6 +53,7 @@ import { V173_ADDED_COLUMNS } from "./plan-problems-schema.js";
 import { V159_ADDED_COLUMNS } from "./one-step-chat-schema.js";
 import { isNewer, REGISTRY } from "./releases.js";
 import { markNeverIndex } from "./never-index.js";
+import { protectTree } from "./trust-repair.js";
 import { readRuntimeUpdateJournal, RUNTIME_PHASES, RUNTIME_UPDATE_STEPS, stagedStartedAt, updaterStartingOf, type RuntimeUpdateJournalRecord } from "./contracts/update-journal.js";
 import { sleep } from "./sleep.js";
 
@@ -918,6 +919,8 @@ function assertNoneActive(stateDir: string): void {
 export function prepareRuntimeUpdate(o: StartOptions, now: Date): RuntimeUpdateJournal | { refused: string } {
   if (!/^\d+\.\d+\.\d+$/.test(o.version)) return { refused: `${o.version} is not a release version (x.y.z).` };
   if (!o.allowDowngrade && !isNewer(o.version, o.current.version)) return { refused: `Toolroll ${o.version} is not newer than ${o.current.version}. To go back to an older release, run toolroll update --version ${o.version} --allow-downgrade.` };
+  // Nothing set up here: refused before anything is staged or drained, and no database is made to update.
+  if (!existsSync(o.databaseFile)) return { refused: `Toolroll isn't set up on this computer yet (there's no database at ${o.databaseFile}), so there's nothing to update. Nothing was changed. To get the newest command, run npm install -g toolroll@latest.` };
   try { assertNoneActive(o.stateDir); keepCompletedUpdate(o.stateDir); } catch (error) { return { refused: (error as Error).message }; }
   const at = o.when === "at" ? nextAt(o.at ?? "03:00", now).toISOString() : null;
   const j = newJournal("update", { stateDir: o.stateDir, databaseFile: o.databaseFile, from: o.current, to: { version: o.version, dist: "" }, when: o.when, at, actor: o.actor }, now);
@@ -1377,6 +1380,8 @@ export function machineSystem(home = homedir(), env: Record<string, string | und
       const registry = `--registry=${REGISTRY}/`;
       const installed = sh("npm", ["install", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", "--no-color", registry], { cwd: runtime });
       if (installed.status !== 0) throw new Refusal(`npm could not install Toolroll ${release.version}: ${(installed.stderr || installed.stdout).trim().slice(-400)} Nothing was changed.`);
+      // Writable by this user alone whatever the umask npm ran under: the sandbox won't run a helper others can change.
+      protectTree(join(runtime, "node_modules"));
       let locked: { integrity?: string; resolved?: string; version?: string } | undefined;
       try { locked = (JSON.parse(readFileSync(join(runtime, "package-lock.json"), "utf8")) as { packages?: Record<string, { integrity?: string; resolved?: string; version?: string }> }).packages?.[`node_modules/${NAME}`]; } catch { locked = undefined; }
       if (locked?.version !== release.version || locked.integrity !== release.integrity || !String(locked.resolved ?? "").startsWith(`${REGISTRY}/`)) throw new Refusal(`npm installed different bytes than the verified Toolroll ${release.version}. Nothing was changed.`);

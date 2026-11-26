@@ -2981,7 +2981,7 @@ export function taskBodyParts(data: {
   // A put-away task's one status is Archived (its banner says by whom and why).
   work.push({ label: "Status", parts: [data.archived != null ? "Archived" : data.assignment != null && assignmentOptions !== null ? assignmentCardOf(data.assignment, assignmentOptions).status.headline : status.label] });
   if (data.repo !== null) work.push({ label: "Project", parts: [projectName(data.repo)] });
-  if (data.base != null) work.push({ label: "Base", parts: [baseStandingWords(data.base)] });
+  if (data.base != null) work.push({ label: "Base", parts: [baseStandingWords(data.base, data.landing?.onBranch === true)] });
   work.push({ label: "Agent", parts: [lastRunForAgent !== undefined ? `${lastRunForAgent.provider}${lastRunForAgent.model === null ? "" : ` · ${lastRunForAgent.model}`} on ${lastRunForAgent.runner}`
     : data.route?.legacy != null ? `${data.route.legacy.provider} · ${data.route.legacy.model}` : "The project's default"] });
   if (scope !== null) work.push({ label: "Checks level", parts: [qualityModeTitle(scope.qualityMode ?? "default")] });
@@ -3168,7 +3168,8 @@ export function taskBodyParts(data: {
       { key: "route-change", html: data.routeChange == null ? "" : htmlString(html`<div class="card"><p>${data.routeChange}</p></div>`) },
       { key: "fast-grown", html: data.fastGrown == null || data.csrf === "" ? "" : htmlString(html`<div class="card"><p>${data.fastGrown}</p>${postForm(`${taskHref(task.id)}/keep-grown`, btn("Approve it", { variant: "primary", type: "submit" }))}</div>`) },
       { key: "pull-request", html: fragmentString(pullRequestCard) },
-      { key: "landing", html: data.landing == null ? "" : htmlString(landingCardHtml(data.landing, data.csrf)) },
+      // Work already on its branch leads the page ("landed"); otherwise the card sits with the rest ("landing").
+      { key: data.landing?.onBranch === true ? "landed" : "landing", html: data.landing == null ? "" : htmlString(landingCardHtml(data.landing, data.csrf)) },
       { key: "needs-scope", html: fragmentString(needsScopeCard) },
       { key: "mirror", html: fragmentString(mirrorCard) }, { key: "attempt", html: fragmentString(attemptPanel), ...(liveRunId === null ? {} : { instance: String(liveRunId) }) },
     ].filter(one => one.html !== ""),
@@ -3424,6 +3425,9 @@ export function cancelPinsOf(state: string, runs: readonly { id: number }[]): { 
 
 /** Land on main (everyday-8 #1): where a task's accepted work stands on the project's branch, as the task page shows it. */
 export type TaskLanding = { taskId: string; landed: string | null; canLand: boolean; canUndo: boolean;
+  /** Its work is on the branch now (local-landing.ts landingHistoryOf): the page leads with `landed` and offers no
+   * "Can I merge?" or review controls. */
+  onBranch?: boolean;
   /** A landing commit Toolroll kept for the person to bring in (their folder had the branch checked out): the exact
    * command, from its record, so the page still shows it after a reload. */
   kept?: { commit: string; branch: string; command: string | null; words: string } | null };

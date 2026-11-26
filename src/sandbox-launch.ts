@@ -7,6 +7,7 @@
  * the runtime made and stops the relays. It exits with the command's status. Nothing runs if
  * the runtime refuses: the helper exits 126 with the reason.
  */
+import { shownText } from "./shown-text.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { checkLinuxDependencies, cleanupBwrapMountPoints, getLinuxDependencyStatus, initializeLinuxNetworkBridge, wrapCommandWithSandboxLinux, type LinuxNetworkBridgeContext } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 import { SANDBOX_LAUNCH_SPEC, shellQuote, withRuntimeTemp, type SandboxLaunchSpec } from "./sandbox-runtime.js";
@@ -44,7 +45,7 @@ async function main(): Promise<number> {
   if (raw === undefined) { process.stderr.write("toolroll sandbox: no launch was given\n"); return REFUSED; }
   const spec = JSON.parse(raw) as SandboxLaunchSpec;
   const problem = toolsProblem(spec);
-  if (problem !== null) { process.stderr.write(`toolroll sandbox: nothing was started: ${problem}\n`); return REFUSED; }
+  if (problem !== null) { process.stderr.write(`toolroll sandbox: nothing was started: ${shownText(problem)}\n`); return REFUSED; }
   const tools = spec.tools;
   const exclusions = sandboxToolExclusions(spec.terms, spec.cwd);
   // The launch keeps the environment it was given. This helper's own PATH is only `which`'s root-owned folder: the
@@ -123,7 +124,7 @@ async function main(): Promise<number> {
       await new Promise(done => setTimeout(done, 50 * attempt));
     }
   } catch (error) {
-    if (child === null) { process.stderr.write(`toolroll sandbox: nothing was started: ${error instanceof Error ? error.message : String(error)}\n`); return REFUSED; }
+    if (child === null) { process.stderr.write(`toolroll sandbox: nothing was started: ${shownText(error instanceof Error ? error.message : String(error))}\n`); return REFUSED; }
     return 1;
   } finally {
     try { cleanupBwrapMountPoints(); } catch { /* best effort: the runtime's own exit handler retries */ }

@@ -20,8 +20,13 @@ stop() { printf '\nToolroll: %s\n' "$*" >&2; exit 1; }
 
 os=$(uname -s)
 case "$os" in
-  Darwin|Linux) ;;
-  *) stop "this installer is for macOS and Linux. On Windows, use WSL, or run: npx toolroll up" ;;
+  Darwin) ;;
+  Linux)
+    # Toolroll's sandbox ships for 64-bit Linux only (x86_64, aarch64): said before anything is installed.
+    case "$(uname -m 2>/dev/null)" in
+      armv6l|armv7l|armhf|i386|i686) stop "this computer is 32-bit ($(uname -m)). Toolroll runs agents in a sandbox only on 64-bit Linux (x86_64 or aarch64): on a Raspberry Pi, install a 64-bit OS." ;;
+    esac ;;
+  *) stop "this installer is for macOS and Linux. Windows isn't supported: Toolroll can't run agents in a sandbox there. Use WSL 2 (Ubuntu) instead." ;;
 esac
 
 # Everything it needs is checked before anything is installed, and whatever is missing is said once: one list, one
@@ -83,13 +88,40 @@ else
   fi
 fi
 
+# Distribution packages are installed with this computer's own package manager (the same lines as
+# src/linux-packages.ts), with sudo only when not already root; with none of these found, every manager's line.
+if [ "$(id -u 2>/dev/null)" = "0" ]; then sudo=""; else sudo="sudo "; fi
+pm=""
+for one in apt-get:apt dnf:dnf zypper:zypper pacman:pacman apk:apk; do
+  if command -v "${one%%:*}" >/dev/null 2>&1; then pm="${one#*:}"; break; fi
+done
+install_line() { # <manager> <package>...: one line ("which" is debianutils on Debian and Ubuntu)
+  m="$1"; shift; names=""
+  for p in "$@"; do if [ "$m" = apt ] && [ "$p" = which ]; then p=debianutils; fi; names="$names $p"; done
+  case "$m" in
+    apt) printf '%sapt update && %sapt install%s' "$sudo" "$sudo" "$names" ;;
+    dnf) printf '%sdnf install%s' "$sudo" "$names" ;;
+    zypper) printf '%szypper install%s' "$sudo" "$names" ;;
+    pacman) printf '%spacman -S --needed%s' "$sudo" "$names" ;;
+    apk) printf '%sapk add%s' "$sudo" "$names" ;;
+  esac
+}
+# <package>...: `how` (or `say`) this computer's line, or each manager's named by its distributions.
+install_lines() {
+  tell="$1"; shift
+  if [ -n "$pm" ]; then "$tell" "$(install_line "$pm" "$@")"; return; fi
+  for m in apt:"Debian, Ubuntu" dnf:Fedora zypper:openSUSE pacman:Arch apk:Alpine; do
+    "$tell" "$(install_line "${m%%:*}" "$@") (${m#*:})"
+  done
+}
+
 # On Linux, agents run in a sandbox that needs these programs, each <command>:<package> (the same list as
 # LINUX_SANDBOX_TOOLS in src/sandbox-runtime.ts; src/sandbox-runtime.test.ts keeps the two the same). Toolroll starts
 # only once they are all there, so they are one of the things it needs first, unless it is only installed
 # (SO_NO_START=1), when they are named after the install instead.
 sandbox_missing=""
 if [ "$os" = "Linux" ]; then
-  for tool in bwrap:bubblewrap socat:socat rg:ripgrep; do
+  for tool in bwrap:bubblewrap socat:socat rg:ripgrep bash:bash which:which; do
     command -v "${tool%%:*}" >/dev/null 2>&1 || sandbox_missing="$sandbox_missing ${tool#*:}"
   done
 fi
@@ -99,10 +131,8 @@ if [ -n "$sandbox_missing" ] && [ "${SO_NO_START:-}" != "1" ]; then
 fi
 
 if [ "$count" -gt 0 ]; then
-  if [ -n "$pkgs" ]; then
-    how "sudo apt update && sudo apt install$pkgs"
-    how "(Fedora: sudo dnf install$pkgs)"
-  fi
+  # One word per package.
+  if [ -n "$pkgs" ]; then install_lines how $pkgs; fi
   if [ "$count" -eq 1 ]; then first="this"; them="it"; else first="these"; them="them"; fi
   printf '\nToolroll needs %s first:%s\n\nInstall %s:%s\n\nThen run this again.\n' "$first" "$needs" "$them" "$hows" >&2
   exit 1
@@ -132,6 +162,9 @@ if npm ls -g standing-orders --depth=0 >/dev/null 2>&1; then
   fi
 fi
 say "Installing $package …"
+# Toolroll refuses to run programs others can change, so its files are made writable by you alone, whatever this
+# shell's umask (Ubuntu's and Fedora's 0002 would make them group-writable).
+umask 022
 if ! npm install -g "$package" --no-fund --no-audit --loglevel=error; then
   stop "npm couldn't install it. If it said permission denied, give npm a folder you own: https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally"
 fi
@@ -150,7 +183,7 @@ fi
 if [ -n "$sandbox_missing" ]; then
   say ""
   say "Before you start it, install the sandbox tools agents run in:"
-  say "sudo apt update && sudo apt install$sandbox_missing (Fedora: sudo dnf install$sandbox_missing)"
+  install_lines say $sandbox_missing
 fi
 
 projects="${SO_PROJECTS:-}"

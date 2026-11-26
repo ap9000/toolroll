@@ -813,11 +813,12 @@ export async function projectThreadBranch(store: Store, input: { thread: string;
 
 /**
  * Where a saved thread branch would go in its project (Save as branch, flexible-save.ts): the project's checked-out branch
- * (null when HEAD is detached or unreadable) and whether that branch is an ancestor of `candidate` (a fast-forward merges
- * it). Reads the project's own repository only, from Toolroll's record of the thread, through the hardened runner; never
- * the thread's folder. It decides nothing: the words a person copies.
+ * (null when HEAD is detached or unreadable), whether that branch is an ancestor of `candidate` (a fast-forward merges
+ * it), and whether it already contains `candidate` (merged already: nothing to bring in). Reads the project's own
+ * repository only, from Toolroll's record of the thread, through the hardened runner; never the thread's folder. It
+ * decides nothing: the words a person copies.
  */
-export async function projectMergeHint(store: Store, input: { thread: string; candidate: string; runner?: Runner }): Promise<{ repo: string; branch: string | null; fastForward: boolean } | null> {
+export async function projectMergeHint(store: Store, input: { thread: string; candidate: string; runner?: Runner }): Promise<{ repo: string; branch: string | null; fastForward: boolean; contained: boolean } | null> {
   const thread = flexibleThread(store, input.thread);
   if (thread === null || !SHA.test(input.candidate)) return null;
   let project: string;
@@ -825,9 +826,10 @@ export async function projectMergeHint(store: Store, input: { thread: string; ca
   const read = gitIn(input.runner ?? run, "read");
   const head = await read(project, ["symbolic-ref", "-q", "HEAD"]);
   const ref = head.code === 0 ? head.stdout.trim() : "";
-  if (!ref.startsWith("refs/heads/")) return { repo: project, branch: null, fastForward: false };
+  if (!ref.startsWith("refs/heads/")) return { repo: project, branch: null, fastForward: false, contained: false };
   const ancestor = await read(project, ["merge-base", "--is-ancestor", "--end-of-options", ref, input.candidate]);
-  return { repo: project, branch: ref.slice("refs/heads/".length), fastForward: ancestor.code === 0 };
+  const contained = await read(project, ["merge-base", "--is-ancestor", "--end-of-options", input.candidate, ref]);
+  return { repo: project, branch: ref.slice("refs/heads/".length), fastForward: ancestor.code === 0, contained: contained.code === 0 };
 }
 
 /**

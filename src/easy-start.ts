@@ -62,7 +62,10 @@ export type EasyStartSeams = {
   initLocal: () => Promise<boolean>;
   /** l1: this computer's sandbox, read now — the Linux programs it lacks (sandbox-runtime.ts LINUX_SANDBOX_TOOLS, by
    * package; none elsewhere), and why it can't sandbox here (null when it can). */
-  sandbox: () => Promise<{ missing: string[]; problem: string | null }>;
+  sandbox: () => Promise<{ missing: string[]; problem: string | null; repair?: string[] }>;
+  /** The first start's other prerequisites (preflight.ts): git, telling processes apart, each with its fix; and
+   * advice (no browser). None given: none. */
+  prerequisites?: () => Promise<import("./preflight.js").Prerequisites>;
   /** l1: whether this database was made by a laptop start (created-by laptop) yet never had local mode (on or off):
    * a start that couldn't go password-free made it. Read only, from the database alone; false when unreadable. */
   passwordByLaptopStart: () => boolean;
@@ -75,8 +78,9 @@ export type EasyStartSeams = {
   spawnUp: (args: readonly string[]) => OwnedUp;
   /** `up` (with these arguments) in this terminal, until it stops: today's foreground start. */
   runUpForeground: (args: readonly string[]) => Promise<number>;
-  /** Open an address that carries no credential (the console's own address) in the browser. */
-  openBrowser: (url: string) => void | Promise<void>;
+  /** Open an address that carries no credential (the console's own address) in the browser. False when nothing could
+   * be opened here (no display, over SSH, no opener): the caller says the address instead. */
+  openBrowser: (url: string) => void | boolean | Promise<void | boolean>;
   /** Open this computer's browser signed in as the local owner: a one-time link from the live console (the socket `link`
    * verb), handed to the browser only through a 0600 page and the platform's own opener (openLocalSignIn). The link
    * never comes back here. */
@@ -157,12 +161,35 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
   if ((local === "candidate" || local === "absent") && !first.ok && first.state === "none") {
     // Too deep for the socket: said before anything else runs, the sandbox probe included.
     if (refusedTooDeep()) return EXIT.refused;
-    // l1: a new install on a Linux computer missing the sandbox's programs stops here, before anything is made: no
-    // account, no database written (a candidate stays one), so once they are installed the next start is password-free.
+    // l1 + preflight: a new install stops here, before anything is made, on everything that would stop it — the
+    // sandbox's programs, a sandbox that can't start (with its repair), git, telling processes apart — listed together,
+    // each with its fix. No account, no database written (a candidate stays one), so once they are fixed the next start
+    // is password-free. A sandbox that can't start for a reason the person can't fix leaves an explicit `toolroll up`.
     const sandbox = await seams.sandbox();
+    const others = await (seams.prerequisites?.() ?? Promise.resolve({ blockers: [], advisories: [] }));
+    const blockers: string[][] = [];
+    let passwordInstead = false;
     if (sandbox.missing.length > 0) {
       const { missingSandboxToolsWords } = await import("./sandbox-runtime.js");
-      for (const line of missingSandboxToolsWords(sandbox.missing)) write(line);
+      blockers.push(missingSandboxToolsWords(sandbox.missing));
+    } else if (sandbox.problem !== null) {
+      // The opt-in needs a password install first (refused without one): said once, in the password road's line below.
+      const { UNCONFINED_OPT_IN } = await import("./sandbox-runtime.js");
+      blockers.push([`Agents can't run in a sandbox here: ${sandbox.problem}.`, ...(sandbox.repair ?? []).filter(line => line !== UNCONFINED_OPT_IN)]);
+      passwordInstead = others.blockers.length === 0;
+    }
+    blockers.push(...others.blockers);
+    if (blockers.length > 0) {
+      if (blockers.length === 1) {
+        for (const line of blockers[0]!) write(line);
+        if (sandbox.missing.length === 0 && sandbox.problem !== null) write("Then run toolroll again.");
+      }
+      else {
+        write("Toolroll can't start on this computer yet. Fix these, then run toolroll again:");
+        blockers.forEach((lines, index) => lines.forEach((line, at) => write(at === 0 ? `${index + 1}. ${line}` : `   ${line}`)));
+      }
+      if (passwordInstead) write("To start now with a password instead, run `toolroll up`. Agents then run only once the sandbox works, or if an instance operator lets them run without OS confinement (`toolroll config unconfined-agents allow`).");
+      for (const line of others.advisories) write(line);
       return EXIT.refused;
     }
     if (await seams.initLocal()) local = "on";
@@ -254,8 +281,9 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
   // No local mode here (a new install on a computer that can't sandbox): the browser, with the password `up` saved —
   // pointed at, never "your password" to someone who never set one (l1).
   if (seams.localMode() !== "on") {
-    const problem = (await seams.sandbox()).problem;
+    const { problem, repair } = await seams.sandbox();
     if (problem !== null) write(`Toolroll can't start without a password here: ${problem}.`);
+    if (problem !== null) for (const line of repair ?? []) write(line);
     const saved = seams.savedLogin();
     write(saved === null ? `Toolroll is on ${url}. Sign in with your password.` : `Toolroll is on ${url}. Your password: run \`cat -- '${saved.replaceAll("'", "'\\''")}'\``);
     await seams.openBrowser(url);
@@ -302,19 +330,16 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
       const page = `/t/${encodeURIComponent(task)}`;
       const target = new URL(setup ? "/password/set" : `${page}#agents`, url);
       if (setup) target.searchParams.set("next", page);
-      await seams.openBrowser(target.href);
-      return "In the browser, open Agents → Change agents and save the new builder.";
+      const opened = await seams.openBrowser(target.href);
+      return opened === false ? `Open ${target.href} in a browser, then Agents → Change agents and save the new builder.` : "In the browser, open Agents → Change agents and save the new builder.";
     },
     openBrowser: async page => {
       // An already-running console may predate this terminal's named sign-in landing.
       // Open the existing settings form on the proven console with the browser's normal sign-in.
-      if (page === "projects") {
-        await seams.openBrowser(new URL("/projects", url).href);
-        return "Opened Projects in your browser.";
-      }
-      if (page === "lead-providers") {
-        await seams.openBrowser(new URL("/settings/lead#lead-config", url).href);
-        return "Opened Lead settings in your browser.";
+      if (page === "projects" || page === "lead-providers") {
+        const href = new URL(page === "projects" ? "/projects" : "/settings/lead#lead-config", url).href;
+        const opened = await seams.openBrowser(href);
+        return opened === false ? `Open ${href} in a browser.` : `Opened ${page === "projects" ? "Projects" : "Lead settings"} in your browser.`;
       }
       const opened = await seams.openSignedIn(page);
       return opened.ok ? "Opened in your browser." : `The browser couldn't be opened: ${opened.message}.`;
@@ -410,11 +435,14 @@ export function defaultEasyStartSeams(options: {
       remote: (await import("./local-owner.js")).localOwnerRequested(),
     }),
     sandbox: async () => {
-      const { missingLinuxSandboxTools, sandboxRuntimeProblem } = await import("./sandbox-runtime.js");
-      if (process.platform !== "linux") return { missing: [], problem: sandboxRuntimeProblem() };
-      const missing = missingLinuxSandboxTools();
-      return { missing, problem: missing.length > 0 ? null : sandboxRuntimeProblem() };
+      const { missingLinuxSandboxTools, sandboxAdviceLines, sandboxRuntimeDiagnosis } = await import("./sandbox-runtime.js");
+      const missing = process.platform === "linux" ? missingLinuxSandboxTools() : [];
+      if (missing.length > 0) return { missing, problem: null };
+      // Why, by kind: a trust failure's exact repair, or what the probe said, the settings that may deny it and the remedies.
+      const diagnosis = sandboxRuntimeDiagnosis();
+      return diagnosis.ok ? { missing, problem: null } : { missing, problem: diagnosis.why, repair: sandboxAdviceLines(diagnosis) };
     },
+    prerequisites: async () => (await import("./preflight.js")).startPrerequisites(),
     passwordByLaptopStart: () => {
       const store = openStoreReadOnly(file);
       if (store === null) return false;
@@ -431,7 +459,7 @@ export function defaultEasyStartSeams(options: {
     },
     spawnUp: args => spawnOwnedUp(args, { cwd, databaseFile: file }),
     runUpForeground: async args => (await import("./operate.js")).runOperate("up", [...args, "--db", file], options.write, options.operate ?? {}),
-    openBrowser: async url => { (await import("./operate.js")).openBrowser(url); },
+    openBrowser: async url => (await import("./operate.js")).openBrowser(url),
     openSignedIn: page => openLocalSignIn(file, options.build, page === undefined ? {} : { then: page }),
     openTui: async session => {
       // The terminal workbench (tui-launch.ts), signed in over descriptor 3; else the classic screen, with one line why.

@@ -21,14 +21,52 @@ you own: https://docs.npmjs.com/resolving-eacces-permissions-errors-when-install
 ## Install the sandbox tools
 
 ```sh
-sudo apt update && sudo apt install bubblewrap socat ripgrep   # Debian, Ubuntu
-sudo dnf install bubblewrap socat ripgrep                      # Fedora
+sudo apt update && sudo apt install bubblewrap socat ripgrep bash debianutils   # Debian, Ubuntu
+sudo dnf install bubblewrap socat ripgrep bash which                            # Fedora
+sudo zypper install bubblewrap socat ripgrep bash which                         # openSUSE
+sudo pacman -S --needed bubblewrap socat ripgrep bash which                     # Arch
+sudo apk add bubblewrap socat ripgrep bash which                                # Alpine
 ```
 
-Toolroll runs Claude and Gemini agents in a sandbox where its own secrets
-don't exist, and the sandbox needs all three. Until they're installed,
+Leave out `sudo` when you are already root (a container). Toolroll runs
+Claude and Gemini agents in a sandbox where its own secrets don't exist, and
+the sandbox needs all of these (`which` is in `debianutils` on Debian and
+Ubuntu). It runs on 64-bit Linux only (x86_64, aarch64): a 32-bit system
+such as 32-bit Raspberry Pi OS has no sandbox for it. Until they're installed,
 `toolroll` says which are missing and doesn't start. See
 [Security](security.md).
+
+## When the sandbox can't start
+
+The sandbox needs unprivileged user namespaces. When the system denies one,
+`toolroll` and `toolroll doctor` say so and show what bubblewrap said. They
+don't guess the cause: settings that can deny it and that this machine shows
+(Ubuntu's `kernel.apparmor_restrict_unprivileged_userns`, Debian's
+`kernel.unprivileged_userns_clone`, `user.max_user_namespaces`) are listed as
+what may be denying it, since a container can show its host's setting while
+its own profile is what denies. The fix belongs to whoever runs the
+computer: an AppArmor profile for `/usr/bin/bwrap` that allows `userns`, or
+turning the setting on. In a container (Docker, devcontainers, Codespaces),
+its seccomp or AppArmor profile usually denies it: allow user namespaces in
+a profile for that container. `--security-opt seccomp=unconfined
+--security-opt apparmor=unconfined` also works, but weakens the container's
+own protection. Without a sandbox, an instance operator can still let agents
+run without OS confinement with `toolroll config unconfined-agents allow`
+(their password; logged; not while Toolroll runs without a password).
+
+## When Toolroll says a program "can't be trusted"
+
+Toolroll only runs its sandbox helper and your agents' sign-in checks from
+files nobody else can change. On Ubuntu and Fedora the default `umask` is
+0002, so `npm install -g` into a folder you own (nvm, `~/.npm-global`) makes
+those files writable by your group. `toolroll doctor` names each path that
+fails and why (owned by someone else, writable by the group or by everyone,
+an extended ACL) and prints the exact `chmod` commands for those paths only:
+one recursive command for Toolroll's own package, one per folder above it,
+never a recursive one on a shared folder or another program's install. Run
+them, then `toolroll doctor` again. If anyone else uses this computer,
+reinstall too, after `umask 022`. The installer (`install.sh`) and
+`toolroll update` already make Toolroll's files writable by you alone.
 
 ## Start over without a password
 
@@ -56,6 +94,23 @@ with a password", you can start over without one:
    (`$XDG_CONFIG_HOME/toolroll` when `XDG_CONFIG_HOME` is set). Older
    installs may use `standing-orders` or `nightorders` instead of
    `toolroll`; if you set `TOOLROLL_DB`, it's the folder holding that file.
+
+## Uninstall
+
+Removing Toolroll and removing its data are two separate steps.
+
+1. Stop it and remove its services: `toolroll stop`, then
+   `toolroll background off` if you turned that on (it removes the login
+   service) and `toolroll daemon uninstall` if you set up a watch service,
+   and quit every terminal running `toolroll`.
+2. Remove the command: `npm uninstall -g toolroll` (and
+   `npm uninstall -g standing-orders` if an older install left it).
+3. Only if you also want its data gone: tasks, results, settings, saved
+   password, keys you gave it and the runtimes `toolroll update` staged all
+   live in `~/.config/toolroll` (`$XDG_CONFIG_HOME/toolroll` when that is
+   set). Moving it aside (`mv ~/.config/toolroll ~/.config/toolroll.old`)
+   keeps a way back; deleting it can't be undone. Your projects' own
+   folders aren't touched either way.
 
 ## Process containment
 

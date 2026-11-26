@@ -70,7 +70,7 @@ const CASES: Case[] = [
   { id: "verified-no-commit", repo: REPO, verdict: "verified", receipt: "pass", noCommit: true, expect: "unreadable" },
   { id: "verified-pass-held", repo: REPO, verdict: "verified", receipt: "pass", held: true, expect: "passed" },
   { id: "verified-no-receipt", repo: REPO, verdict: "verified", receipt: "none", expect: "unreadable" },
-  { id: "verified-command-changed", repo: REPO_LATER, verdict: "verified", receipt: "pass", expect: "unreadable" },
+  { id: "verified-command-changed", repo: REPO_LATER, verdict: "verified", receipt: "pass", expect: "stale" },
   { id: "failed-check", repo: REPO, verdict: "refuted", receipt: "fail", expect: "failed" },
   { id: "failed-check-damaged", repo: REPO, verdict: "refuted", receipt: "fail", damage: true, expect: "failed" },
   // A failure the builder recorded stands on every surface when the receipt can't be read, whatever else refuted it.
@@ -96,12 +96,12 @@ const CASES: Case[] = [
 const PASSED_CLAIM = /\b(?:check|checks) passed\b|\bpassed against\b|\bPassed on\b|verified the result/i;
 /** The Project checks row's words for each answer. */
 const ROW: Record<ApprovedCheckState, RegExp> = {
-  passed: /^Passed/, failed: /^Failed/, running: /checks running$/i, "not-run": /^Didn't run$/, off: /^Checks deferred to release$/, unreadable: /^(?:Couldn't be read|Check command changed since)$/,
+  passed: /^Passed/, failed: /^Failed/, running: /checks running$/i, "not-run": /^Didn't run$/, off: /^Checks deferred to release$/, stale: /^Out of date: the check command changed since they ran$/, unreadable: /^Couldn't be read$/,
 };
 /** The road's Checks step for each answer. */
 const ROAD: Record<ApprovedCheckState, string> = {
   passed: "done:Checks", failed: "stuck:Checks failed", running: "current:Checks running", "not-run": "skipped:Checks not run",
-  off: "skipped:Checks at release", unreadable: "stuck:Checks unreadable",
+  off: "skipped:Checks at release", stale: "stuck:Checks out of date", unreadable: "stuck:Checks unreadable",
 };
 
 let store: Store;
@@ -216,7 +216,7 @@ describe("one answer to 'did the approved check pass', on every surface", () => 
     expect(row!.text, `${one.id}: Project checks row`).toMatch(ROW[one.expect]);
     const claims = [status.sentence, ...status.details.filter(detail => detail.key !== "checks").map(detail => detail.text)];
     if (one.expect !== "passed" && one.expect !== "running") for (const words of claims) expect(words, `${one.id}: no surface claims a pass`).not.toMatch(PASSED_CLAIM);
-    if (one.expect === "unreadable") {
+    if (one.expect === "unreadable" || one.expect === "stale") {
       expect(status.headline, one.id).toBe("Needs you");
       // A hold is its own reason to need a person; otherwise the unreadable check is the ask.
       if (one.held !== true) expect(status.sentence, one.id).toMatch(/couldn't be read|check command changed since this check/);
@@ -226,13 +226,14 @@ describe("one answer to 'did the approved check pass', on every surface", () => 
     const road = task.journey!.map(step => `${step.key}:${step.state}:${step.say ?? step.label}`);
     expect(road[3], `${one.id}: the road's Checks step`).toBe(`checks:${ROAD[one.expect]}`);
     // Fail closed: a failed or unreadable check never lets the road reach Ready.
-    if (one.expect === "failed" || one.expect === "unreadable") expect(road[4], one.id).not.toMatch(/^ready:done/);
+    if (one.expect === "failed" || one.expect === "unreadable" || one.expect === "stale") expect(road[4], one.id).not.toMatch(/^ready:done/);
     // A passing check never reads stuck: the road reaches Ready, or waits there on a hold.
     if (one.expect === "passed") expect(road[4], one.id).toBe(one.held === true ? "ready:stuck:Ready" : "ready:done:Ready");
 
     // A check command approved again since says exactly that, never that saved files are missing.
     if (one.id === "verified-command-changed") {
-      expect(row!.text).toBe("Check command changed since");
+      expect(row!.text).toBe("Out of date: the check command changed since they ran");
+      expect(row!.action?.label).toBe("Run checks");
       expect(status.sentence).toBe("The check command changed since this check. Run checks again, then accept it.");
       expect(status.details.find(detail => detail.key === "evidence")?.text, "Saved files").toBe("All kept");
     }
@@ -258,7 +259,7 @@ describe("one answer to 'did the approved check pass', on every surface", () => 
     }
     const checksTab = selected.panel!.views.find(view => view.key === "checks")?.html ?? "";
     // A verdict that recorded a pass the check can't show now says so where it is shown.
-    if (one.verdict === "verified" && one.expect === "unreadable") expect(checksTab, one.id).toMatch(/Now: the check (?:result couldn(?:'|&#39;|&#x27;)t be read|command changed since this check)\. It doesn(?:'|&#39;|&#x27;)t count as passed\./);
+    if (one.verdict === "verified" && (one.expect === "unreadable" || one.expect === "stale")) expect(checksTab, one.id).toMatch(/Now: the check (?:result couldn(?:'|&#39;|&#x27;)t be read|command changed since this check)\. It doesn(?:'|&#39;|&#x27;)t count as passed\./);
     // The road and the result page read the card's one answer, never the row's words.
     expect(status.check, `${one.id}: the card's one answer`).toBe(one.expect);
     expect(panel.check, `${one.id}: result panel answer`).toBe(one.expect);
@@ -377,6 +378,9 @@ describe("approvedCheckOf", () => {
   test("a recorded pass the check can't show is unreadable; a recorded failure stays failed", () => {
     const of = (verdict: Verdict, reasons: string[], reading: ChecksFact | null) => approvedCheckStateOf(approvedCheckOf(verdict, reasons, reading));
     expect(of("verified", [], read("unavailable"))).toBe("unreadable");
+    // Its command approved again since: out of date, not unreadable and never failed; a recorded failure still stands.
+    expect(of("verified", [], read("unavailable", { cause: "command-changed" }))).toBe("stale");
+    expect(of("refuted", FAILED, read("unavailable", { cause: "command-changed" }))).toBe("failed");
     expect(of("verified", [], read("not-run"))).toBe("unreadable");
     expect(of("verified", [], null)).toBe("unreadable");
     expect(of("refuted", FAILED, read("unavailable"))).toBe("failed");

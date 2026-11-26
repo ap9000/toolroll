@@ -428,6 +428,10 @@ pub struct WorkRow {
     pub chip: Option<String>,
     pub group: String,
     pub rank: i64,
+    /// Complete work whose check since it was accepted failed ("failed"), is out of date ("stale": its command
+    /// changed, never a failure) or can't be read ("unreadable"); absent on every other row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<String>,
     pub detail: Option<String>,
     pub problem: Option<String>,
     pub need: Option<NeedRow>,
@@ -658,7 +662,33 @@ pub struct StepCards {
     pub plan_queued: bool,
     /// Who approved the task's scope (null while no approval stands).
     pub approval: Option<Approval>,
+    /// Its landing history when its work is already on its branch: the words the task page leads with. Display only.
+    #[serde(default)]
+    pub landing: Option<StepLanding>,
+    /// The approved check when it holds the result back: "failed", "stale" (out of date, never a failure) or
+    /// "unreadable"; absent otherwise. Only "failed" is a failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<String>,
+    /// What Run checks again posts (POST /r/<run>/checks `level`); absent when it isn't offered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_checks: Option<RunChecksOffer>,
     pub room: String,
+}
+
+/// Run checks again on a result (StepCards.run_checks): its build and the level its project has a command for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RunChecksOffer {
+    pub run: i64,
+    pub level: String,
+}
+
+/// A task's landing history (StepCards.landing): "Landed on main (abc1234)", and whether a later commit exactly reverted it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct StepLanding {
+    pub words: String,
+    pub reverted: bool,
 }
 
 /// Open build shell's build (StepCards.shell): the run it would open, and why it can't (None: it can).
@@ -1603,6 +1633,10 @@ pub struct DirectChatDiff {
     pub changed_files: Vec<String>,
     pub diff_text: String,
     pub dirty: bool,
+    /// The last read of the chat's copy failed: the files are what an earlier read saw (or none was ever read), never
+    /// "no changes". Absent after a read that worked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

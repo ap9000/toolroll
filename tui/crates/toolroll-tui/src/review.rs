@@ -256,10 +256,41 @@ pub fn layout(file: &ResultDiffFile, revealed: &BTreeMap<i64, String>, count: Op
         }
         emphasise(&mut code.lines[start..]);
     }
-    if !hunks.is_empty() && spans.last().copied().flatten().is_some() {
+    // The lines after the last hunk: a marker only while the file may go on (everyday-9 E5), never "more lines below"
+    // over the end of the file.
+    if !hunks.is_empty()
+        && spans.last().copied().flatten().is_some()
+        && !(count.is_none() && hunks.last().is_some_and(ends_at_eof))
+    {
         gap(&mut code, hunks.len());
     }
     code
+}
+
+/// Lines of context git keeps after a change (its default; Toolroll's diffs never ask for fewer).
+const CONTEXT: usize = 3;
+
+/// Whether a hunk proves its file ends with it: git's "No newline at end of file" note, or a change followed by fewer
+/// lines of context than git keeps (it would have shown them had the file gone on).
+fn ends_at_eof(hunk: &toolroll_api::Hunk) -> bool {
+    if hunk
+        .lines
+        .iter()
+        .any(|l| l.kind == "meta" && l.text.contains("No newline at end of file"))
+    {
+        return true;
+    }
+    let changed = hunk
+        .lines
+        .iter()
+        .any(|l| l.kind == "addition" || l.kind == "deletion");
+    let trailing = hunk
+        .lines
+        .iter()
+        .rev()
+        .take_while(|l| l.kind == "context")
+        .count();
+    changed && trailing < CONTEXT
 }
 
 fn code_line(hunk: usize, line: &DiffLine, fresh: bool) -> CodeLine {
@@ -518,10 +549,17 @@ pub enum Checks {
     Running,
     Skipped,
     NotRun,
+    /// The check command was approved again since they ran: out of date, never a failure.
+    Stale,
 }
 
 impl Checks {
-    pub fn of(mark: Option<&str>) -> Checks {
+    /// From the Checks card's mark and the steps' own check fact (StepCards.check): an out-of-date check is never read
+    /// as failed, whatever its mark.
+    pub fn of(mark: Option<&str>, check: Option<&str>) -> Checks {
+        if check == Some("stale") {
+            return Checks::Stale;
+        }
         match mark {
             Some("done") => Checks::Passed,
             Some("stuck") => Checks::Failed,
@@ -537,6 +575,7 @@ impl Checks {
             Checks::Running => "running",
             Checks::Skipped => "skipped",
             Checks::NotRun => "none ran",
+            Checks::Stale => "out of date",
         }
     }
     pub fn word(self) -> &'static str {
@@ -546,6 +585,7 @@ impl Checks {
             Checks::Running => "Checks running",
             Checks::Skipped => "Checks skipped",
             Checks::NotRun => "No checks ran",
+            Checks::Stale => "Checks out of date",
         }
     }
 }
@@ -553,6 +593,53 @@ impl Checks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One file whose only hunk ends with `trailing` lines of context after its change.
+    fn file_ending_with(trailing: usize) -> toolroll_api::ResultDiffFile {
+        let mut lines = vec![
+            serde_json::json!({ "kind": "addition", "text": "export const subtract = (a, b) => a - b;", "oldLine": null, "newLine": 1 }),
+        ];
+        for i in 0..trailing as i64 {
+            lines.push(serde_json::json!({ "kind": "context", "text": "x", "oldLine": i + 1, "newLine": i + 2 }));
+        }
+        let n = trailing as i64;
+        serde_json::from_value(
+            serde_json::json!({ "version": 1, "task": "t", "run": 1, "linesTruncated": false,
+            "file": { "file": 0, "path": "math.js", "oldPath": "math.js", "meta": [],
+                "hunks": [{ "header": format!("@@ -1,{n} +1,{} @@", n + 1), "lines": lines }] } }),
+        )
+        .unwrap()
+    }
+    fn ends_with_gap(code: &Code) -> bool {
+        matches!(code.items.last(), Some(Item::Gap { .. }))
+    }
+
+    #[test]
+    fn more_lines_below_only_while_the_file_may_go_on() {
+        // Fewer lines of context after the change than git keeps: the file ends there, nothing below.
+        assert!(!ends_with_gap(&layout(
+            &file_ending_with(1),
+            &BTreeMap::new(),
+            None
+        )));
+        assert!(!ends_with_gap(&layout(
+            &file_ending_with(0),
+            &BTreeMap::new(),
+            None
+        )));
+        // A full three: the file may go on, so the marker stays.
+        assert!(ends_with_gap(&layout(
+            &file_ending_with(3),
+            &BTreeMap::new(),
+            None
+        )));
+        // A known line count decides by itself.
+        assert!(ends_with_gap(&layout(
+            &file_ending_with(1),
+            &BTreeMap::new(),
+            Some(9)
+        )));
+    }
 
     #[test]
     fn spans_from_headings() {

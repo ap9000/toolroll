@@ -9,13 +9,17 @@ import type { MergeReadyAct, MergeReadyView } from "../browser-workspace.js";
 import { checklistFromAssignment } from "../merge-checklist.js";
 import { isRevisionFeedback, revisionBatchOf, revisionSourceOf } from "../result-review.js";
 import type { Store } from "../store.js";
+import type { TaskBaseView } from "../task-base.js";
 import type { Who } from "./session.js";
 
-/** The panel for a task page, or null when there is no result to merge yet. */
+/** The panel for a task page, or null when there is no result to merge yet, or its work already landed (`landed`: the
+ * landing history words, which the page's landing card says at the top instead of "Not yet"). */
 export function mergeReadyViewOf(store: Store, taskId: string, assignment: AssignmentSnapshot | null | undefined, who: Who,
-  runChecks: { action: string; level: "quick" | "full"; returnTo: string } | null, returnTo: string): MergeReadyView | null {
+  runChecks: { action: string; level: "quick" | "full"; returnTo: string } | null, returnTo: string, landed: string | null = null,
+  base: Pick<TaskBaseView, "main"> | null = null): MergeReadyView | null {
   if (assignment == null || assignment.receipt === null) return null;
-  const list = checklistFromAssignment(store, taskId, assignment);
+  const list = checklistFromAssignment(store, taskId, assignment, landed, base);
+  if (list.answer === "landed") return null;
   const person = who.via === "cookie" && who.role === "approver" && !store.isDemo();
   const receipt = assignment.receipt;
   const notes = store.liveDiffComments(receipt.runId).filter(one => isRevisionFeedback(one));

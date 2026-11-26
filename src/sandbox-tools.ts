@@ -28,6 +28,9 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SrtTerms } from "./sandbox-runtime.js";
+import { installLine, reinstallLine } from "./linux-packages.js";
+import { hasUnsafeText, shownText } from "./shown-text.js";
+import { mergeRepairs, toolrollPackageRoot, trustFaults, trustFaultWords, trustRepair, type TrustFault, type TrustRepair } from "./trust-repair.js";
 import { platformAcl, rootOwnedBinary, rootOwnedFolders, type AclReader } from "./trusted-path.js";
 
 /** The only folders the system programs are looked for in, in this order. */
@@ -47,7 +50,11 @@ const KEYS = [...SYSTEM_TOOLS.map(tool => tool.key), "seccomp"] as const;
 export type SandboxTool = { real: string; id: string };
 /** Every program, and for `which` the root-owned folder the runtime's PATH lookup goes through. */
 export type LinuxSandboxTools = Record<SystemKey | "seccomp", SandboxTool> & { whichFolder: string };
-export type LinuxSandboxToolsVerdict = { ok: true; tools: LinuxSandboxTools } | { ok: false; why: string };
+/** Why not, as a kind: a program with no copy at all in the folders ("missing"), copies that all failed their check
+ * ("untrusted", with those paths), no seccomp helper for this processor, one that failed its check, or a program that
+ * changed since it was checked. */
+export type ToolFailure = "missing" | "untrusted" | "unsupported-arch" | "seccomp-untrusted" | "changed";
+export type LinuxSandboxToolsVerdict = { ok: true; tools: LinuxSandboxTools } | { ok: false; why: string; failure?: ToolFailure; rejected?: string[] };
 /** Who counts as root and as the owner of Toolroll's own code: the real ones, except where a test stands its uid in. */
 export type ToolTrust = { root?: readonly number[]; codeOwner?: number; acl?: AclReader | null; seccomp?: string | null };
 
@@ -92,8 +99,7 @@ export function sandboxToolExclusions(terms: SrtTerms, cwd: string): ToolExclusi
 const mayWrite = (writes: NonNullable<ToolExclusions["writes"]>, path: string): boolean =>
   writes.allow.some(root => insideOrAt(path, root)) && !writes.deny.some(root => insideOrAt(path, root));
 
-const installWords = (pkg: string): string =>
-  `install ${pkg} from your system package manager (sudo apt install ${pkg}; Fedora: sudo dnf install ${pkg})`;
+const installWords = (pkg: string): string => `install ${pkg} from your system package manager (${installLine([pkg])})`;
 
 type Trust = { root: readonly number[]; codeOwner: number | undefined; acl: AclReader | null };
 type Checked = { ok: true; tool: SandboxTool } | { ok: false; why: string };
@@ -148,28 +154,35 @@ export function resolveLinuxSandboxTools(options: ToolTrust & { folders?: readon
   let whichFolder: string | null = null;
   for (const tool of SYSTEM_TOOLS) {
     const passedOver: string[] = [];
+    const rejected: string[] = [];
     for (const folder of folders) {
       const candidate = join(folder, tool.command);
       if (!existsSync(candidate)) continue;
       const checked = checkSystem(candidate, trust, exclusions);
-      if (!checked.ok) { passedOver.push(`${candidate}: ${checked.why}`); continue; }
+      if (!checked.ok) { passedOver.push(`${candidate}: ${checked.why}`); rejected.push(candidate); continue; }
       if (tool.key === "which") {
         // The runtime finds `which` by name: the folder its PATH will name must be root's own too.
         const dir = rootOwnedFolders(folder, trust.acl, trust.root);
-        if (!dir.ok) { passedOver.push(`${candidate}: ${dir.why}`); continue; }
+        if (!dir.ok) { passedOver.push(`${candidate}: ${dir.why}`); rejected.push(candidate); continue; }
         whichFolder = dir.real;
       }
       found[tool.key] = checked.tool;
       break;
     }
+    if (found[tool.key] === undefined && rejected.length === 0) {
+      return { ok: false, failure: "missing", why: shownText(`${tool.words} has no copy owned by root in ${folders.join(", ")}: ${installWords(tool.install)}`) };
+    }
     if (found[tool.key] === undefined) {
-      return { ok: false, why: `${tool.words} has no copy owned by root in ${folders.join(", ")}${passedOver.length === 0 ? "" : ` (${passedOver.join("; ")})`}: ${installWords(tool.install)}` };
+      // Installed, but no copy passes its check: that is a trust failure with its paths (repaired by toolroll doctor's
+      // commands), not a missing program.
+      return { ok: false, failure: "untrusted", rejected,
+        why: shownText(`${tool.words} has no copy Toolroll can trust in ${folders.join(", ")} (${passedOver.join("; ")}): remove a copy your package manager didn't install, or reinstall ${tool.install} (${reinstallLine([tool.install])}); \`toolroll doctor\` says which`) };
     }
   }
   const helper = "seccomp" in options ? options.seccomp ?? null : seccompHelperPath();
-  if (helper === null) return { ok: false, why: `the sandbox runtime's seccomp helper isn't available for this processor (${process.arch})` };
+  if (helper === null) return { ok: false, failure: "unsupported-arch", why: `the sandbox runtime's seccomp helper isn't available for this processor (${process.arch})` };
   const checked = checkSeccompHelper(helper, exclusions, options);
-  if (!checked.ok) return { ok: false, why: `the sandbox runtime's seccomp helper (${helper}) can't be trusted: ${checked.why}` };
+  if (!checked.ok) return { ok: false, failure: "seccomp-untrusted", rejected: [helper], why: shownText(`the sandbox runtime's seccomp helper (${helper}) can't be trusted: ${checked.why}`) };
   found.seccomp = checked.tool;
   return { ok: true, tools: { ...(found as Record<SystemKey | "seccomp", SandboxTool>), whichFolder: whichFolder! } };
 }
@@ -180,6 +193,12 @@ export function resolveLinuxSandboxTools(options: ToolTrust & { folders?: readon
  * Why not, or null.
  */
 export function verifyLinuxSandboxTools(tools: LinuxSandboxTools, options: ToolTrust & { exclusions?: ToolExclusions } = {}): string | null {
+  // Its reason names paths (a re-pointed link's target among them): shown escaped (shown-text.ts).
+  const why = verifyNow(tools, options);
+  return why === null ? null : shownText(why);
+}
+
+function verifyNow(tools: LinuxSandboxTools, options: ToolTrust & { exclusions?: ToolExclusions }): string | null {
   const trust = trustOf(options);
   const exclusions = options.exclusions ?? NO_EXCLUSIONS;
   for (const key of KEYS) {
@@ -200,7 +219,8 @@ export function verifyLinuxSandboxTools(tools: LinuxSandboxTools, options: ToolT
 export function isLinuxSandboxTools(value: unknown): value is LinuxSandboxTools {
   if (value === null || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
-  const path = (one: unknown) => typeof one === "string" && one.startsWith("/") && !/[\u0000-\u001f\u007f]/.test(one);
+  // No control, separator or invisible format character in a path handed over (shown-text.ts's set).
+  const path = (one: unknown) => typeof one === "string" && one.startsWith("/") && !hasUnsafeText(one);
   if (!path(record["whichFolder"])) return false;
   return KEYS.every(key => {
     const tool = record[key] as Record<string, unknown> | null | undefined;
@@ -220,6 +240,90 @@ export function linuxSandboxTools(exclusions: ToolExclusions = NO_EXCLUSIONS): L
   }
   const tools = discovered;
   const why = verifyLinuxSandboxTools(tools, { exclusions });
-  if (why !== null) { discovered = null; return { ok: false, why: `a sandbox program failed its check right before the launch: ${why}` }; }
+  if (why !== null) { discovered = null; return { ok: false, failure: "changed", why: shownText(`a sandbox program failed its check right before the launch: ${why}`) }; }
   return { ok: true, tools };
+}
+
+/**
+ * When the seccomp helper fails its check: which canonical paths fail and the exact repair (trust-repair.ts). Toolroll's
+ * own package folder, when the helper is inside it and this user owns it, gets one recursive command; every folder
+ * above gets its own. The check itself is unchanged: null when the helper passes, has none for this processor, or
+ * can't be read.
+ */
+export function seccompHelperRepair(options: ToolTrust = {}, packageRoot: string | null = toolrollPackageRoot()): TrustRepair | null {
+  const helper = "seccomp" in options ? options.seccomp ?? null : seccompHelperPath();
+  if (helper === null || checkSeccompHelper(helper, NO_EXCLUSIONS, options).ok) return null;
+  const t = trustOf(options);
+  const owners = t.codeOwner === undefined ? t.root : [...t.root, t.codeOwner];
+  const root = packageRoot;
+  const real = realOrSelf(helper);
+  let mine = false;
+  try { mine = root !== null && lstatSync(root).uid === (process.geteuid?.() ?? -1); } catch { mine = false; }
+  return trustRepair(helper, { owners, ownTree: root !== null && mine && insideOrAt(real, root) ? root : null });
+}
+
+/**
+ * What to do about every sandbox program that is installed but fails its check (not only the first): each system
+ * program (bwrap, socat, bash, rg, which) whose copies in the folders all fail is never repaired in place — no chmod,
+ * no chown, whoever runs this, since making a copy that others could have replaced look root's own would launder it —
+ * every copy that fails (even beside one that passes) is named as untrusted (why, by trust-repair.ts trustFaults): a
+ * package's own file is reinstalled with this computer's reinstall command (linux-packages.ts reinstallLine; an ordinary
+ * install would leave it as it is), and a copy outside the package manager's folders (/usr/local, a home folder) is to
+ * be removed. Merged with the seccomp helper's repair (seccompHelperRepair). The checks are unchanged. Null when nothing
+ * installed fails.
+ */
+export function sandboxToolsRepair(options: ToolTrust & { folders?: readonly string[]; managed?: (copy: string) => boolean } = {}, packageRoot: string | null = toolrollPackageRoot()): TrustRepair | null {
+  const folders = options.folders ?? SANDBOX_TOOL_FOLDERS;
+  const trust = trustOf(options);
+  const managed = options.managed ?? fromPackageManager;
+  const faults: TrustFault[] = [];
+  const notes: string[] = [];
+  for (const tool of SYSTEM_TOOLS) {
+    const candidates = folders.map(folder => join(folder, tool.command)).filter(candidate => existsSync(candidate));
+    const passing = candidates.filter(candidate => checkSystem(candidate, trust, NO_EXCLUSIONS).ok
+      && (tool.key !== "which" || rootOwnedFolders(dirname(candidate), trust.acl, trust.root).ok));
+    // Every copy that fails, even beside one that passes: each is named, with what to do about it.
+    for (const copy of candidates.filter(candidate => !passing.includes(candidate))) {
+      const found = trustFaults(copy, { owners: trust.root }) ?? [];
+      faults.push(...found);
+      const why = `${shownText(copy)} can't be trusted${found.length === 0 ? "" : ` (${shownText(found.map(trustFaultWords).join("; "))})`}`;
+      if (!managed(copy)) {
+        // Not a package's file (a copy in /usr/local, a home folder): reinstalling a package wouldn't replace it.
+        notes.push(`${why}: remove it (it isn't from your system package manager, and Toolroll won't run it)${passing.length > 0 ? "." : `, then install ${tool.install}: ${installLine([tool.install])}.`}`);
+      } else {
+        notes.push(`${why}: reinstall ${tool.install} so its own files come back (${reinstallLine([tool.install])}), and don't change its permissions by hand.`);
+      }
+    }
+  }
+  const system = faults.length === 0 && notes.length === 0 ? null : { faults, commands: [], notes };
+  // Not even through the helper's repair: no command touches any installed copy of a system program (passing or not,
+  // in any folder), its real target, or a folder above either (a recursive one, nothing inside it).
+  const protectedPaths = new Set<string>();
+  for (const tool of SYSTEM_TOOLS) {
+    for (const folder of folders) {
+      const copy = join(folder, tool.command);
+      if (!existsSync(copy)) continue;
+      for (const start of new Set([copy, realOrSelf(copy)])) for (let at = start; ; at = dirname(at)) { protectedPaths.add(at); if (dirname(at) === at) break; }
+    }
+  }
+  const helper = seccompHelperRepair(options, packageRoot);
+  const kept = helper === null ? null : { ...helper, commands: helper.commands.filter(command => !touchesProtected(command, protectedPaths)) };
+  return mergeRepairs(system, kept);
+}
+
+/** Whether a repair command (trust-repair.ts: its target path last, single-quoted) changes a protected path: the target
+ * is one, or (a recursive command) holds one. A target that can't be read back counts as touching. */
+function touchesProtected(command: string, protectedPaths: ReadonlySet<string>): boolean {
+  const quoted = / '((?:[^']|'\\'')*)'$/.exec(command);
+  if (quoted === null) return true;
+  const target = quoted[1]!.replace(/'\\''/g, "'");
+  if (protectedPaths.has(target)) return true;
+  return / -R /.test(command) && [...protectedPaths].some(path => insideOrAt(path, target));
+}
+
+/** The folders a distribution's packages put programs in (FHS: never /usr/local, never a home folder). */
+const PACKAGE_FOLDERS: ReadonlySet<string> = new Set(["/usr/bin", "/bin", "/usr/sbin", "/sbin", "/run/current-system/sw/bin"]);
+/** Whether a copy is a package's own file: its canonical folder is one packages install into. */
+function fromPackageManager(copy: string): boolean {
+  return PACKAGE_FOLDERS.has(dirname(realOrSelf(copy)));
 }

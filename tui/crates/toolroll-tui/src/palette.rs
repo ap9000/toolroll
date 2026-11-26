@@ -55,6 +55,7 @@ fn applies(app: &App, action: Action) -> bool {
             Action::SwitchWorkspace => app.remote_badge.is_some(),
             // Offered on a finished task only (everyday-9 A4); the console says why not when it can't land.
             Action::Land => app.land_here().is_some(),
+            Action::RunChecks => app.run_checks_here().is_some(),
             Action::ReleaseTerminal => app
                 .pane_here()
                 .is_some_and(|p| p.link == crate::term::Link::Live && !p.is_observer),
@@ -88,6 +89,7 @@ fn context_rank(app: &App, pick: &Pick) -> i64 {
                 Action::Stop if live || held || queued => 290,
                 Action::Resume if held => 300,
                 Action::Land => 305,
+                Action::RunChecks if app.run_checks_here().is_some() => 306,
                 Action::ThreadReply
                 | Action::ThreadShip
                 | Action::ThreadSave

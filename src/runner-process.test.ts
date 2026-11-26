@@ -18,11 +18,18 @@ const record = (patch: Partial<RunnerProcessRecord> = {}): RunnerProcessRecord =
   v: 1, runner: "w-1", host: "here", registeredAt: runner.registeredAt, credential: credentialDigest(holder.credentialHash),
   processes: [{ pid: fakePid(42), role: "up", started: "2026-10-29T11:59:59.000Z" }, { pid: fakePid(43), role: "worker", started: "2026-10-29T12:00:01.000Z" }], ...patch,
 }, holder.credentialHash);
-/** Each pid: absent, present with this start, present with an unreadable start, or unknown to the probe. */
-const probe = (world: Record<number, string | null | "unknown">): ProcessProbe => ({
+/** Each pid: absent, present with this start, present with an unreadable start, unknown to the probe, or present with
+ * what each identity provider reads now (a provider missing reads null). */
+type Seen = string | null | "unknown" | { proc?: string; ps?: string };
+const probe = (world: Record<number, Seen>): ProcessProbe => ({
   exists: pid => !(pid in world) ? "absent" : world[pid] === "unknown" ? "unknown" : "present",
-  start: pid => { const one = world[pid]; return one === undefined || one === "unknown" ? null : one; },
+  start: (pid, provider) => {
+    const one = world[pid];
+    if (one === undefined || one === "unknown" || one === null) return null;
+    return typeof one === "string" ? one : provider === undefined ? one.proc ?? one.ps ?? null : one[provider] ?? null;
+  },
 });
+const BOOT = "0f6a3c1e-2b4d-4e5f-8a9b-0c1d2e3f4a5b";
 
 test.each([
   ["every process exited", {}, record(), true],
@@ -36,6 +43,13 @@ test.each([
   ["a record for another machine", {}, record({ host: "elsewhere" }), false],
   ["a record for another worker", {}, record({ runner: "w-2" }), false],
   ["a record that names no `up`", {}, record({ processes: [{ pid: fakePid(43), role: "worker", started: "2026-10-29T12:00:01.000Z" }] }), false],
+  // Identity providers (process-identity.ts): only a reading by the record's own provider counts.
+  ["a legacy ISO record, the `up` alive, ps gone and only /proc readable now", { [fakePid(42)]: { proc: `proc:${BOOT}:4242` } }, record(), false],
+  ["a legacy ISO record, the pid reused, read by ps", { [fakePid(42)]: { proc: `proc:${BOOT}:9999`, ps: "2026-10-29T13:00:00.000Z" } }, record({ processes: [{ pid: fakePid(42), role: "up", started: "2026-10-29T11:59:59.000Z" }] }), true],
+  ["a /proc record, the `up` alive, /proc unreadable now", { [fakePid(42)]: { ps: "2026-10-29T11:59:59.000Z" } }, record({ processes: [{ pid: fakePid(42), role: "up", started: `proc:${BOOT}:4242` }] }), false],
+  ["a /proc record, the `up` alive", { [fakePid(42)]: { proc: `proc:${BOOT}:4242` } }, record({ processes: [{ pid: fakePid(42), role: "up", started: `proc:${BOOT}:4242` }] }), false],
+  ["a /proc record, the pid reused after a reboot", { [fakePid(42)]: { proc: "11111111-2222-4333-8444-555555555555:4242".replace(/^/, "proc:") } }, record({ processes: [{ pid: fakePid(42), role: "up", started: `proc:${BOOT}:4242` }] }), true],
+  ["a record of a format this build doesn't know, its pid held", { [fakePid(42)]: "2026-10-29T13:00:00.000Z" }, record({ processes: [{ pid: fakePid(42), role: "up", started: "boot:7:4242" }] }), false],
 ] as const)("holder proved gone: %s → %s", (_, world, one, gone) => {
   expect(holderProvedGone(one, holder, "here", probe(world)).gone).toBe(gone);
 });
@@ -77,11 +91,17 @@ test("a record is read strictly: a link, a damaged file or a wrong shape is no r
     expect(file).not.toContain("w-1");
     writeRunnerProcessRecord(file, record());
     expect(readRunnerProcessRecord(file)).toEqual(record());
+    // Both identity formats read back; the tag is part of what is sealed.
+    const tagged = record({ processes: [{ pid: fakePid(42), role: "up", started: `proc:${BOOT}:4242` }] });
+    writeRunnerProcessRecord(file, tagged);
+    expect(readRunnerProcessRecord(file)).toEqual(tagged);
+    writeRunnerProcessRecord(file, record());
     const linked = `${file}.link`;
     symlinkSync(file, linked);
     expect(readRunnerProcessRecord(linked)).toBeNull();
     for (const bad of ["not json", JSON.stringify({ ...record(), v: 2 }), JSON.stringify({ ...record(), processes: [{ pid: 1, role: "up", started: "2026-10-29T11:59:59.000Z" }] }),
-      JSON.stringify({ ...record(), processes: [{ pid: fakePid(42), role: "builder", started: "2026-10-29T11:59:59.000Z" }] }), JSON.stringify({ ...record(), processes: [] })]) {
+      JSON.stringify({ ...record(), processes: [{ pid: fakePid(42), role: "builder", started: "2026-10-29T11:59:59.000Z" }] }), JSON.stringify({ ...record(), processes: [] }),
+      JSON.stringify({ ...record(), processes: [{ pid: fakePid(42), role: "up", started: "boot:7:4242" }] }), JSON.stringify({ ...record(), processes: [{ pid: fakePid(42), role: "up", started: "Thu Oct 29 13:11:05 2026" }] })]) {
       writeFileSync(file, bad);
       expect(readRunnerProcessRecord(file)).toBeNull();
     }
@@ -94,7 +114,7 @@ test("ps start times parse exactly, and a real process is gone only once it has 
   expect(parseProcessStart("Thu Oct  9 07:05:01 2026")).toBeNull();
   expect(parseProcessStart("Feb 30 2026")).toBeNull();
   const own = processStart(process.pid);
-  expect(own).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$/);
+  expect(own).toMatch(process.platform === "linux" ? /^proc:[0-9a-f-]{36}:\d+$/ : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$/);
   expect(processGone({ pid: process.pid, role: "up", started: own! })).toBe(false);
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
   try {
