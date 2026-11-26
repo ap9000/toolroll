@@ -60,7 +60,7 @@ export type AutoUpdateHold = "policy-unreadable" | "off" | "enabler-gone" | "not
  * happened, or a record no longer on this computer. */
 export type AutoUpdateOutcome = "complete" | "restored" | "refused" | "cancelled" | "rolled-back" | "not-started" | "unknown";
 export type AutoUpdateAttempt = {
-  id: number; version: string; from: string; enabledBy: string; policyRevision: number; reservedAt: string;
+  id: number; version: string; from: string; enabledBy: string; enabledGeneration: number; policyRevision: number; reservedAt: string;
   journalId: string | null; launchedAt: string | null; outcome: AutoUpdateOutcome | null; outcomeAt: string | null; detail: string | null;
 };
 /** The ledger's action for an automatic attempt: started, and how it ended. */
@@ -74,11 +74,11 @@ function attemptOf(row: Record<string, unknown>): AutoUpdateAttempt {
   const maybe = (key: string) => row[key] === null ? null : text(key);
   const outcome = maybe("outcome");
   if (outcome !== null && !OUTCOMES.some(one => one === outcome)) throw new Error("unknown outcome");
-  if (typeof row["id"] !== "number" || typeof row["policy_revision"] !== "number") throw new Error("not a number");
-  return { id: row["id"], version: text("version"), from: text("from_version"), enabledBy: text("enabled_by"), policyRevision: row["policy_revision"], reservedAt: text("reserved_at"),
+  if (typeof row["id"] !== "number" || typeof row["policy_revision"] !== "number" || typeof row["enabled_generation"] !== "number") throw new Error("not a number");
+  return { id: row["id"], version: text("version"), from: text("from_version"), enabledBy: text("enabled_by"), enabledGeneration: row["enabled_generation"], policyRevision: row["policy_revision"], reservedAt: text("reserved_at"),
     journalId: maybe("journal_id"), launchedAt: maybe("launched_at"), outcome: outcome as AutoUpdateOutcome | null, outcomeAt: maybe("outcome_at"), detail: maybe("detail") };
 }
-const ATTEMPT_COLUMNS = "id, version, from_version, enabled_by, policy_revision, reserved_at, journal_id, launched_at, outcome, outcome_at, detail";
+const ATTEMPT_COLUMNS = "id, version, from_version, enabled_by, enabled_generation, policy_revision, reserved_at, journal_id, launched_at, outcome, outcome_at, detail";
 
 /** The newest attempts first, or null when the history can't be read (callers fail closed). */
 export function autoUpdateAttempts(store: Pick<Store, "handle">, limit = 20): AutoUpdateAttempt[] | null {
@@ -105,7 +105,7 @@ export function autoUpdateAttempted(store: Pick<Store, "handle">, version: strin
  * never makes the version eligible again; the database backup the update takes later holds the reservation, so a
  * restore keeps it too.
  */
-export function reserveAutoUpdate(store: Pick<Store, "handle" | "transact" | "isInstanceOperator" | "recordAction">, o: { version: string; from: string; now: Date }):
+export function reserveAutoUpdate(store: Pick<Store, "handle" | "transact" | "isInstanceOperator" | "recordAction" | "accountOf">, o: { version: string; from: string; now: Date }):
   { ok: true; attempt: AutoUpdateAttempt } | { ok: false; why: AutoUpdateHold } {
   if (!/^\d+\.\d+\.\d+$/.test(o.version)) return { ok: false, why: "prerelease" };
   try {
@@ -117,8 +117,10 @@ export function reserveAutoUpdate(store: Pick<Store, "handle" | "transact" | "is
       const attempted = autoUpdateAttempted(store, o.version);
       if (attempted === null) return { ok: false as const, why: "history-unreadable" as const };
       if (attempted) return { ok: false as const, why: "attempted" as const };
-      const row = store.handle.prepare(`INSERT INTO auto_update_attempt (version, from_version, enabled_by, policy_revision, reserved_at) VALUES (?, ?, ?, ?, ?) RETURNING ${ATTEMPT_COLUMNS}`)
-        .get(o.version, o.from, policy.by, policy.revision, o.now.toISOString());
+      const generation = store.accountOf(policy.by)?.generation;
+      if (generation === undefined) return { ok: false as const, why: "enabler-gone" as const };
+      const row = store.handle.prepare(`INSERT INTO auto_update_attempt (version, from_version, enabled_by, enabled_generation, policy_revision, reserved_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING ${ATTEMPT_COLUMNS}`)
+        .get(o.version, o.from, policy.by, generation, policy.revision, o.now.toISOString());
       return { ok: true as const, attempt: attemptOf(row!) };
     });
   } catch { return { ok: false, why: "history-unreadable" }; }
@@ -215,7 +217,7 @@ export function cancelAutomaticUpdate(store: Pick<Store, "handle">, stateDir: st
 // ---- the trigger ---------------------------------------------------------------------------------------------------
 
 /** What the automatic pass uses of the store. */
-export type AutoUpdateStore = Pick<Store, "handle" | "transact" | "isInstanceOperator" | "recordAction" | "accountFacts" | "enqueueNotification">;
+export type AutoUpdateStore = Pick<Store, "handle" | "transact" | "isInstanceOperator" | "recordAction" | "accountFacts" | "enqueueNotification" | "accountOf">;
 
 /** What the decision reads, each as it stands now; null where it can't be read. */
 export type AutoUpdateFacts = {
@@ -306,10 +308,12 @@ export async function autoUpdatePass(store: AutoUpdateStore, o: AutoUpdatePassOp
     recordAutoUpdateOutcome(store, reservedAttempt, "not-started", prepared.refused, o.now());
     return { failed: prepared.refused, version };
   }
-  // Turned off while it was being prepared: it never starts.
+  // Turned off, or its person's authority lapsed, while it was being prepared: it never starts. (The updater checks both
+  // again before it starts and before it switches: toolroll-update.ts automaticAuthorityProblem.)
   const still = autoUpdatePolicy(store);
-  if (still === null || !still.on || still.revision !== reservedAttempt!.policyRevision) {
-    const why = "Automatic updates were turned off before it started.";
+  const stands = store.isInstanceOperator(reservedAttempt!.enabledBy) && store.accountOf(reservedAttempt!.enabledBy)?.generation === reservedAttempt!.enabledGeneration;
+  if (still === null || !still.on || still.revision !== reservedAttempt!.policyRevision || !stands) {
+    const why = !stands ? `${reservedAttempt!.enabledBy}, who turned automatic updates on, can no longer manage this installation.` : "Automatic updates were turned off before it started.";
     abandonRuntimeUpdate(o.stateDir, prepared.id, why, o.now());
     recordAutoUpdateOutcome(store, reservedAttempt!, "cancelled", why, o.now());
     return { held: "off" };

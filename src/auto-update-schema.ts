@@ -5,7 +5,8 @@
  * - `auto_update_policy`: one row once a person chose (no row reads off, so a new install and an upgraded one start
  *   with automatic updates off), with its revision, who chose and when. Every change is also in action_ledger.
  * - `auto_update_attempt`: one row per release version an automatic update was ever reserved for (UNIQUE version), so
- *   a failed, restored or rolled-back release is never tried automatically again. Reserved before anything is
+ *   a failed, restored or rolled-back release is never tried automatically again. It binds the enabling person's
+ *   account generation, which the updater checks again before it starts and before it switches. Reserved before anything is
  *   prepared or launched; its journal id, launch time and outcome are each written once (a trigger refuses any other
  *   change) and the row is never deleted.
  *
@@ -25,6 +26,7 @@ CREATE TABLE IF NOT EXISTS auto_update_attempt (
   version         TEXT NOT NULL UNIQUE CHECK (version GLOB '[0-9]*.[0-9]*.[0-9]*' AND version NOT GLOB '*[^0-9.]*'),
   from_version    TEXT NOT NULL,
   enabled_by      TEXT NOT NULL,
+  enabled_generation INTEGER NOT NULL CHECK (enabled_generation >= 0),
   policy_revision INTEGER NOT NULL CHECK (policy_revision >= 1),
   reserved_at     TEXT NOT NULL,
   journal_id      TEXT CHECK (journal_id IS NULL OR (length(journal_id) = 36 AND journal_id NOT GLOB '*[^0-9a-f-]*')),
@@ -35,6 +37,7 @@ CREATE TABLE IF NOT EXISTS auto_update_attempt (
 );
 CREATE TRIGGER IF NOT EXISTS auto_update_attempt_write_once BEFORE UPDATE ON auto_update_attempt
 WHEN NEW.id IS NOT OLD.id OR NEW.version IS NOT OLD.version OR NEW.from_version IS NOT OLD.from_version OR NEW.enabled_by IS NOT OLD.enabled_by
+  OR NEW.enabled_generation IS NOT OLD.enabled_generation
   OR NEW.policy_revision IS NOT OLD.policy_revision OR NEW.reserved_at IS NOT OLD.reserved_at
   OR (OLD.journal_id IS NOT NULL AND NEW.journal_id IS NOT OLD.journal_id)
   OR (OLD.launched_at IS NOT NULL AND NEW.launched_at IS NOT OLD.launched_at)

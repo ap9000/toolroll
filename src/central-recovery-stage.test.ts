@@ -453,7 +453,7 @@ test.each(["catalog", "version", "binding"] as const)("post-open %s of the actua
 test("a restored backup's automatic updates are off in the stage until a person turns them on again; attempts are kept as found", () => {
   const f = fixture((store, now) => {
     store.handle.prepare("INSERT INTO auto_update_policy (id, enabled, revision, updated_by, updated_at) VALUES (1, 1, 3, 'synthetic', ?)").run(now.toISOString());
-    store.handle.prepare("INSERT INTO auto_update_attempt (version, from_version, enabled_by, policy_revision, reserved_at) VALUES ('9.9.9', '9.9.8', 'synthetic', 3, ?)").run(now.toISOString());
+    store.handle.prepare("INSERT INTO auto_update_attempt (version, from_version, enabled_by, enabled_generation, policy_revision, reserved_at) VALUES ('9.9.9', '9.9.8', 'synthetic', 1, 3, ?)").run(now.toISOString());
   });
   const before = hash(f.source), h = copy(f.source);
   const report = retireCentralRecoveryStage(h);

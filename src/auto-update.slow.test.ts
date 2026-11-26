@@ -24,14 +24,16 @@ function turnedOn(f: Fixture): Store {
   const store = openStore(f.databaseFile);
   const alex = addApprover(store, "alex", f.system.now());
   if (!alex.ok) throw new Error("alex");
+  // pat, vouched for by alex: someone who can revoke alex later.
+  if (!addApprover(store, "pat", f.system.now(), { name: "alex", token: alex.token }).ok) throw new Error("pat");
   setAutoUpdatePolicy(store, true, "alex", f.system.now());
   return store;
 }
 /** One pass; the launcher starts the job (the journal's own resume) the way launchd would: apart from the pass. */
-async function passOnce(f: Fixture, store: Store, system: UpdateSystem = f.system) {
+async function passOnce(f: Fixture, store: Store, system: UpdateSystem = f.system, beforeJob: () => void = () => undefined) {
   let job: Promise<unknown> | null = null;
   const result = await autoUpdatePass(store, { stateDir: f.stateDir, databaseFile: f.databaseFile, current: f.current, kind: "managed", latest: "0.7.0", now: () => system.now(),
-    launch: async args => { job = resumeRuntimeUpdate(f.stateDir, system, args.id); } });
+    launch: async args => { beforeJob(); job = resumeRuntimeUpdate(f.stateDir, system, args.id); } });
   if (job !== null) await job;
   return result;
 }
@@ -125,4 +127,29 @@ test("a version a person installed by hand and then rolled back is never install
     expect(await passOnce(f, store)).toEqual({ held: "attempted" });
     expect(readRuntimeUpdate(f.stateDir)).toMatchObject({ kind: "rollback", phase: "complete" });
   } finally { store?.close(); f.close(); }
+});
+
+test("the person who turned automatic updates on is revoked while the job is starting: the updater refuses before it starts", async () => {
+  const f = fixture();
+  let store = turnedOn(f);
+  try {
+    expect(await passOnce(f, store, f.system, () => { expect(store.revokeAccount("alex", "pat", f.system.now())).toMatchObject({ ok: true }); })).toMatchObject({ started: "0.7.0" });
+    expect(readRuntimeUpdate(f.stateDir)).toMatchObject({ phase: "refused", detail: "The automatic update to 0.7.0 stopped before it started: alex, who turned automatic updates on, can no longer manage this installation. Nothing was changed." });
+    expect(f.calls).toEqual([]);
+    store.close(); store = openStore(f.databaseFile);
+    expect(reconcileAutoUpdates(store, { stateDir: f.stateDir, current: "0.6.0", now: f.system.now() }).map(one => one.outcome)).toEqual(["refused"]);
+  } finally { store.close(); f.close(); }
+});
+
+test("automatic updates turned off after the backup and rehearsal: nothing is switched, and the service restarts unchanged", async () => {
+  const f = fixture();
+  let store = turnedOn(f);
+  try {
+    const system = { ...f.system, checkpoint: (phase: string) => { if (phase === "rehearsing") setAutoUpdatePolicy(store, false, "alex", f.system.now()); } };
+    expect(await passOnce(f, store, system as UpdateSystem)).toMatchObject({ started: "0.7.0" });
+    expect(readRuntimeUpdate(f.stateDir)).toMatchObject({ phase: "refused", detail: expect.stringContaining("stopped before it switched: automatic updates were turned off") });
+    expect(f.calls).toEqual(["install", "stop", "rehearse", "restart"]);
+    for (const link of f.links) expect(readlinkSync(link)).toBe(join(f.oldDist, "bin.js"));
+    expect(f.paused()).toBe(false);
+  } finally { store.close(); f.close(); }
 });

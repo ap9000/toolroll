@@ -32,7 +32,7 @@ function v186File(): string {
 }
 const version = (store: ReturnType<typeof openStore>) => store.handle.prepare("SELECT version FROM schema_version").get()?.["version"];
 const attempt = (store: ReturnType<typeof openStore>, version: string) =>
-  store.handle.prepare("INSERT INTO auto_update_attempt (version, from_version, enabled_by, policy_revision, reserved_at) VALUES (?, '0.9.120', 'alex', 1, ?)").run(version, T0.toISOString());
+  store.handle.prepare("INSERT INTO auto_update_attempt (version, from_version, enabled_by, enabled_generation, policy_revision, reserved_at) VALUES (?, '0.9.120', 'alex', 1, 1, ?)").run(version, T0.toISOString());
 
 describe("v187", () => {
   test("fresh: the tables, no rows, so automatic updates are off; update-safe", () => {
@@ -83,7 +83,7 @@ describe("v187", () => {
       set(`journal_id = '${"a".repeat(8)}-aaaa-aaaa-aaaa-${"a".repeat(12)}'`);
       expect(() => set(`journal_id = '${"b".repeat(8)}-bbbb-bbbb-bbbb-${"b".repeat(12)}'`)).toThrow(/written once/);
       set("outcome = 'restored', outcome_at = 'now', detail = 'it failed its health check'");
-      for (const change of ["outcome = 'complete'", "detail = 'other'", "outcome = NULL", "version = '0.9.122'", "enabled_by = 'someone'", "policy_revision = 9"]) expect(() => set(change), change).toThrow(/written once/);
+      for (const change of ["outcome = 'complete'", "detail = 'other'", "outcome = NULL", "version = '0.9.122'", "enabled_by = 'someone'", "enabled_generation = 7", "policy_revision = 9"]) expect(() => set(change), change).toThrow(/written once/);
       expect(() => store.handle.prepare("DELETE FROM auto_update_attempt").run()).toThrow(/kept/);
     } finally { store.close(); }
   });

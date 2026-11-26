@@ -1063,6 +1063,8 @@ async function driveRuntimeUpdate(j: RuntimeUpdateJournal, system: UpdateSystem)
       if (resumedAt <= at("verifying")) {
         // Cancelled before this updater started (turning automatic updates off, or Cancel): nothing is downloaded.
         if (cancelRequested(j)) return finish(true, "cancelled", `The ${noun} to ${j.to.version} was cancelled before it started. Nothing changed.`, `toolroll ${noun} cancelled`, "cancelled", verb);
+        // An automatic update starts only while the yes it stands on still stands.
+        refuseLapsedAutomatic(j, "started");
         step("verifying", j.kind === "update" ? `Downloading and verifying Toolroll ${j.to.version}.` : `Checking the previous runtime (${j.to.version}) and its backup.`);
         if (j.kind === "update") await verify(j, system);
         else if (fileHash(j.restoreFrom!.path) !== j.restoreFrom!.hash || (j.restoreFrom!.codingPath && fileHash(j.restoreFrom!.codingPath) !== j.restoreFrom!.codingHash)) throw new Refusal("The update's backup changed since it was made. Nothing was changed.");
@@ -1095,6 +1097,8 @@ async function driveRuntimeUpdate(j: RuntimeUpdateJournal, system: UpdateSystem)
       save(j, "backing-up", "Database and coding catalog backed up.", system.now());
       step("rehearsing", `Rehearsing ${j.to.version} on a copy of the database.`);
       j.rehearsal = await rehearse(j, system, j.restoreFrom?.path ?? j.backupPath);
+      // …and is switched only while it still stands (nothing is switched yet: refusing restarts the service unchanged).
+      refuseLapsedAutomatic(j, "switched");
     }
     if (resumedAt <= at("switching")) {
       step("switching", `Switching to ${j.to.version}.`);
@@ -1754,4 +1758,39 @@ function jobOwnerProblem(unitPath: string, id: string): string | null {
   try { saved = readRuntimeUpdate(theirs); } catch { return `Another Toolroll on this computer (${theirs}) has an update record that can't be read, so this update didn't start. Check that one with toolroll update --status --db ${db}.`; }
   if (saved?.id === owner && !runtimeUpdateTerminal(saved.phase)) return `Another Toolroll on this computer (${theirs}) is updating right now, so this update didn't start. Try again once it finishes.`;
   return null;
+}
+
+// ---- an automatic update's authority, checked again by the updater ------------------------------------------------
+
+/** Refuses (nothing switched) an automatic update whose standing yes no longer stands. A person's own update is never
+ * affected: only a journal an automatic attempt row names. */
+function refuseLapsedAutomatic(j: RuntimeUpdateJournal, before: "started" | "switched"): void {
+  if (j.kind !== "update") return;
+  const lapsed = automaticAuthorityProblem(j);
+  if (lapsed !== null) throw new Refusal(`The automatic update to ${j.to.version} stopped before it ${before}: ${lapsed}. Nothing was changed.`);
+}
+
+/**
+ * Whether the automatic attempt behind this journal (auto_update_attempt names it) still stands: automatic updates on at
+ * the revision it was reserved under, and the person who turned them on still an active, unrestricted approver at the
+ * account generation it bound. Null when it stands, or when no automatic attempt names this journal (a person's update);
+ * otherwise why, in words. Anything that can't be read is a lapse.
+ */
+function automaticAuthorityProblem(j: RuntimeUpdateJournal): string | null {
+  let db: DatabaseSync;
+  try { db = new (sqlite().DatabaseSync)(j.databaseFile, { readOnly: true }); } catch { return "its database can't be read"; }
+  try {
+    db.exec("PRAGMA busy_timeout=5000");
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'auto_update_attempt'").get() === undefined) return null;
+    const attempt = db.prepare("SELECT enabled_by, enabled_generation, policy_revision FROM auto_update_attempt WHERE journal_id = ?").get(j.id);
+    if (attempt === undefined) return null;
+    const policy = db.prepare("SELECT enabled, revision FROM auto_update_policy WHERE id = 1").get();
+    if (policy === undefined || policy["enabled"] !== 1 || policy["revision"] !== attempt["policy_revision"]) return "automatic updates were turned off";
+    const who = db.prepare("SELECT role, revoked_at, generation, projects_json FROM approver WHERE name = ?").get(attempt["enabled_by"] as string);
+    if (who === undefined || who["role"] !== "approver" || who["revoked_at"] !== null || who["generation"] !== attempt["enabled_generation"] || who["projects_json"] !== null) {
+      return `${String(attempt["enabled_by"])}, who turned automatic updates on, can no longer manage this installation`;
+    }
+    return null;
+  } catch { return "its automatic update record can't be read"; }
+  finally { db.close(); }
 }
