@@ -11,9 +11,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "../src/store.js";
 
+/** No automatic maintenance, as the plane's own hardened git (teardown-git.ts TEARDOWN_FLAGS): commit, merge and fetch
+ * otherwise start a detached `git maintenance run --auto` that outlives the command, and since git 2.54's geometric
+ * default it writes into the repository even when nothing needs doing, racing a test's later reads and its rmSync. */
 export const THREAD_GIT_ENV: Record<string, string> = {
   PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: tmpdir(), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_AUTHOR_NAME: "Thread test", GIT_AUTHOR_EMAIL: "thread@example.invalid", GIT_COMMITTER_NAME: "Thread test", GIT_COMMITTER_EMAIL: "thread@example.invalid",
+  GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "maintenance.auto", GIT_CONFIG_VALUE_0: "false", GIT_CONFIG_KEY_1: "gc.auto", GIT_CONFIG_VALUE_1: "0",
 };
 
 export function tgit(cwd: string, ...args: string[]): string {
