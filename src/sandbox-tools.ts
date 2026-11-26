@@ -30,7 +30,7 @@ import { fileURLToPath } from "node:url";
 import type { SrtTerms } from "./sandbox-runtime.js";
 import { installLine } from "./linux-packages.js";
 import { shownText } from "./shown-text.js";
-import { mergeRepairs, toolrollPackageRoot, trustRepair, type TrustRepair } from "./trust-repair.js";
+import { mergeRepairs, toolrollPackageRoot, trustFaults, trustFaultWords, trustRepair, type TrustFault, type TrustRepair } from "./trust-repair.js";
 import { platformAcl, rootOwnedBinary, rootOwnedFolders, type AclReader } from "./trusted-path.js";
 
 /** The only folders the system programs are looked for in, in this order. */
@@ -176,7 +176,7 @@ export function resolveLinuxSandboxTools(options: ToolTrust & { folders?: readon
       // Installed, but no copy passes its check: that is a trust failure with its paths (repaired by toolroll doctor's
       // commands), not a missing program.
       return { ok: false, failure: "untrusted", rejected,
-        why: shownText(`${tool.words} has no copy Toolroll can trust in ${folders.join(", ")} (${passedOver.join("; ")}): fix those paths (\`toolroll doctor\` prints how), or ${installWords(tool.install)}`) };
+        why: shownText(`${tool.words} has no copy Toolroll can trust in ${folders.join(", ")} (${passedOver.join("; ")}): reinstall ${tool.install} from your system package manager (${installLine([tool.install])})`) };
     }
   }
   const helper = "seccomp" in options ? options.seccomp ?? null : seccompHelperPath();
@@ -256,21 +256,31 @@ export function seccompHelperRepair(options: ToolTrust = {}, packageRoot: string
 }
 
 /**
- * The repair for every sandbox program that is installed but fails its check (trust-repair.ts), not only the first:
- * each system program (bwrap, socat, bash, rg, which) whose copies in the folders all fail, by the root-owned rule (one
- * command per failing path; a copy someone other than root owns gets why, not a chown), and the seccomp helper
- * (seccompHelperRepair). The checks are unchanged. Null when nothing installed fails.
+ * What to do about every sandbox program that is installed but fails its check (not only the first): each system
+ * program (bwrap, socat, bash, rg, which) whose copies in the folders all fail is never repaired in place — no chmod,
+ * no chown, whoever runs this, since making a copy that others could have replaced look root's own would launder it —
+ * its copy is named as untrusted (why, by trust-repair.ts trustFaults) and it is reinstalled from the system package
+ * manager, with this computer's line; merged with the seccomp helper's repair (seccompHelperRepair). The checks are
+ * unchanged. Null when nothing installed fails.
  */
 export function sandboxToolsRepair(options: ToolTrust & { folders?: readonly string[] } = {}, packageRoot: string | null = toolrollPackageRoot()): TrustRepair | null {
   const folders = options.folders ?? SANDBOX_TOOL_FOLDERS;
   const trust = trustOf(options);
-  const rejected: string[] = [];
+  const faults: TrustFault[] = [];
+  const notes: string[] = [];
   for (const tool of SYSTEM_TOOLS) {
     const candidates = folders.map(folder => join(folder, tool.command)).filter(candidate => existsSync(candidate));
     const passes = candidates.some(candidate => checkSystem(candidate, trust, NO_EXCLUSIONS).ok
       && (tool.key !== "which" || rootOwnedFolders(dirname(candidate), trust.acl, trust.root).ok));
-    if (!passes) rejected.push(...candidates);
+    if (passes || candidates.length === 0) continue;
+    const found = candidates.flatMap(candidate => trustFaults(candidate, { owners: trust.root }) ?? []);
+    faults.push(...found);
+    notes.push(`${shownText(candidates.join(", "))} can't be trusted${found.length === 0 ? "" : ` (${shownText(found.map(trustFaultWords).join("; "))})`}: reinstall ${tool.install} from your system package manager (${installLine([tool.install])}), and don't change its permissions by hand.`);
   }
-  const system = rejected.length === 0 ? null : trustRepair(rejected, { owners: trust.root, system: true });
-  return mergeRepairs(system, seccompHelperRepair(options, packageRoot));
+  const system = faults.length === 0 && notes.length === 0 ? null : { faults, commands: [], notes };
+  // Not even through the helper's repair: no command touches a path a system program's check failed on.
+  const helper = seccompHelperRepair(options, packageRoot);
+  const off = new Set(faults.map(one => one.path));
+  const kept = helper === null ? null : { ...helper, commands: helper.commands.filter(command => ![...off].some(path => command.endsWith(` '${path.replace(/'/g, `'\\''`)}'`))) };
+  return mergeRepairs(system, kept);
 }

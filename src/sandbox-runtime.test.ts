@@ -186,32 +186,32 @@ describe("the Linux sandbox's own programs: root's own, by exact path, checked a
     } finally { delete process.env["npm_config_prefix"]; }
   });
 
-  test("an installed program that fails its check is a trust failure with its paths, not missing; the repair covers it and every folder above, and then it passes", () => {
-    const run = (commands: readonly string[]) => { for (const one of commands) expect(spawnSync("/bin/sh", ["-c", one]).status, one).toBe(0); };
+  test("an installed program that fails its check is a trust failure with its paths, not missing; it is reinstalled, never chmod-ed or chown-ed", () => {
+    const reinstall = (pkg: string) => `reinstall ${pkg} from your system package manager (${linuxSandboxInstallLine([pkg])})`;
     // A writable bwrap (the others fine).
     const system = folder("system");
     const seccomp = helper(system);
     chmodSync(join(system, "bwrap"), 0o777);
     const writable = resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp });
     expect(writable).toMatchObject({ ok: false, failure: "untrusted", rejected: [join(system, "bwrap")] });
-    expect(!writable.ok && writable.why).toMatch(/^bubblewrap \(bwrap\) has no copy Toolroll can trust in .*fix those paths \(`toolroll doctor` prints how\), or install bubblewrap/);
+    expect(!writable.ok && writable.why).toMatch(/^bubblewrap \(bwrap\) has no copy Toolroll can trust in .*: reinstall bubblewrap from your system package manager/);
     const fileRepair = sandboxToolsRepair({ ...standIn, folders: [system], seccomp }, null)!;
-    expect(fileRepair.commands).toEqual([`chmod go-w '${join(system, "bwrap")}'`]);
-    run(fileRepair.commands);
-    expect(resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp }).ok).toBe(true);
-    // A writable folder above every program: each of them fails, and one command fixes the folder.
+    expect(fileRepair.commands).toEqual([]);
+    expect(fileRepair.faults).toContainEqual({ path: join(system, "bwrap"), kind: "world-write" });
+    expect(fileRepair.notes).toEqual([`${join(system, "bwrap")} can't be trusted (everyone can change ${join(system, "bwrap")}): ${reinstall("bubblewrap")}, and don't change its permissions by hand.`]);
+    // A writable folder above all of them: each program is to be reinstalled; still nothing changes a mode.
+    chmodSync(join(system, "bwrap"), 0o755);
     chmodSync(system, 0o775);
     expect(resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp })).toMatchObject({ ok: false, failure: "untrusted" });
     const folderRepair = sandboxToolsRepair({ ...standIn, folders: [system], seccomp }, null)!;
-    expect(folderRepair.commands).toEqual([`chmod go-w '${system}'`]);
-    run(folderRepair.commands);
-    expect(resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp }).ok).toBe(true);
-    expect(sandboxToolsRepair({ ...standIn, folders: [system], seccomp }, null)).toBeNull();
-    // A copy this user owns where only root's count: why, and the package manager, never a chown.
+    expect(folderRepair.commands.filter(one => one.includes(system))).toEqual([]);
+    for (const pkg of ["bubblewrap", "socat", "bash", "ripgrep", "which"]) expect(folderRepair.notes.join("\n")).toContain(reinstall(pkg));
+    // Copies root doesn't own (here this user's, where only root's count): why and the package manager, never a chown.
     const users = folder("usr-local-bin");
-    const mine = sandboxToolsRepair({ folders: [users], root: [0], codeOwner: me, seccomp: helper(users) }, null)!;
-    expect(mine.commands.some(one => one.startsWith("chown"))).toBe(false);
-    expect(mine.notes.join(" ")).toContain(`${join(users, "bwrap")} is yours, but the sandbox runs only programs root owns`);
+    const theirs = sandboxToolsRepair({ folders: [users], root: [0], codeOwner: me, seccomp: helper(users) }, null)!;
+    expect(theirs.commands.filter(one => /chown|chmod/.test(one) && one.includes(users))).toEqual([]);
+    expect(theirs.notes.join("\n")).toContain(`${join(users, "bwrap")} can't be trusted (${join(users, "bwrap")} belongs to another user`);
+    expect(theirs.notes.join("\n")).toContain(reinstall("bubblewrap"));
   });
 
   test("a missing program refuses with a plain reason, and nothing falls back to a PATH lookup", () => {

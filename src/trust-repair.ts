@@ -7,6 +7,8 @@
  * - Toolroll's own installed package (its folder, its dependencies inside it) gets one recursive command; chmod -R
  *   never follows a symlink it meets inside. Nothing else ever does: a shared prefix, a home folder or another
  *   program's install (an agent's) gets one command per failing path.
+ * - Ownership is never changed (no chown, even as root): a path someone else owned may hold what they put there, so it
+ *   is reinstalled instead. A system program (bwrap, socat, …) is never repaired here at all (sandbox-tools.ts).
  * - Paths are single-quoted; a path with a control, separator or invisible format character gets no command (reinstall
  *   instead), and every path shown is escaped (shown-text.ts): a name can't forge a line of the repair.
  * - Removing write access doesn't prove nothing was changed while others could write: the repair says to reinstall
@@ -39,8 +41,6 @@ export type TrustRepairOptions = {
   /** The effective uid running the commands (sudo is added for a root-owned path when this isn't root). */
   euid?: number;
   platform?: NodeJS.Platform;
-  /** System programs, which must be root's own: a copy this user owns is told to come from the package manager. */
-  system?: boolean;
 };
 
 const quote = (path: string): string => `'${path.replace(/'/g, `'\\''`)}'`;
@@ -124,9 +124,9 @@ export function trustRepair(paths: string | readonly string[], options: TrustRep
     const kinds = new Set(rest.filter(one => one.path === at).map(one => one.kind));
     if (kinds.has("owner")) {
       const owner = rest.find(one => one.path === at && one.kind === "owner")?.owner;
-      if (euid === 0 && options.owners.includes(0)) planned.push({ at, command: `chown 0 ${quote(at)}` });
-      else if (options.system === true && owner === euid) notes.push(`${shownText(at)} is yours, but the sandbox runs only programs root owns: install it from your system package manager instead.`);
-      else notes.push(`${shownText(at)} belongs to another user (uid ${owner ?? "unknown"}), so only that user or an administrator can fix it; or reinstall into a folder you own.`);
+      // Never a chown, even as root: handing a path someone else owned to root would make whatever they put there look
+      // trusted. Only a reinstall from a trusted source fixes it.
+      notes.push(`${shownText(at)} belongs to another user (uid ${owner ?? "unknown"}), so what is in it can't be trusted: reinstall into a folder that you or root own.`);
     }
     if (kinds.has("acl")) planned.push({ at, command: platform === "darwin" ? `${sudo(at)}chmod -N ${quote(at)}` : `${sudo(at)}setfacl -b ${quote(at)}` });
     if (kinds.has("group-write") || kinds.has("world-write") || (kinds.has("acl") && platform !== "darwin")) planned.push({ at, command: `${sudo(at)}chmod go-w ${quote(at)}` });

@@ -91,6 +91,13 @@ describe("trust repair: exact canonical paths, by kind, with commands that make 
     expect(mode(outside.dirs[0]!)).toBe(0o775);
   });
 
+  test("never a chown, even as root: a path someone else owned is reinstalled, never handed to root", () => {
+    const { file } = tree(["theirs-as-root"], 0o755);
+    const asRoot = trustRepair(file, { owners: [0], acl: noAcl, euid: 0 })!;
+    expect(asRoot.commands.some(one => one.includes("chown"))).toBe(false);
+    expect(asRoot.notes.join(" ")).toContain("can't be trusted: reinstall into a folder that you or root own");
+  });
+
   test("owned by another user: no chmod or chown for someone who can't, just why; a control character gets no command", () => {
     const { file } = tree(["theirs"], 0o755);
     const other = trustRepair(file, { owners: [me + 1], acl: noAcl, euid: me })!;
