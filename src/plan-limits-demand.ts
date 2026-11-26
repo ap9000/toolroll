@@ -7,18 +7,21 @@
  * read; it only answers whether one is wanted.
  */
 import type { Store } from "./store.js";
-import { realCustodyIO, startIdentityOf } from "./flexible-custody.js";
+import { realCustodyIO, type ProcRow } from "./flexible-custody.js";
 
 /** Whether the process `pid` that started as `start` (its recorded start identity) is still that process now. */
 export type ProcessAlive = (pid: number, start: string) => boolean;
-/** This computer's process table, read once per question and only when a turn names a process. */
+/** This computer's process table, read once per question (one snapshot for every row asked about) and only when a turn
+ * names a process. A table that can't be read proves nothing alive. */
 function processesNow(): ProcessAlive {
-  let io: ReturnType<typeof realCustodyIO> | null = null;
+  let table: readonly ProcRow[] | null | undefined;
   return (pid, start) => {
-    io ??= realCustodyIO(() => null);
-    return startIdentityOf(pid, io) === start;
+    if (table === undefined) table = realCustodyIO(() => null).table();
+    return table?.some(row => row.pid === pid && !row.zombie && row.start === start) ?? false;
   };
 }
+/** More turns than any real install runs at once: every eligible one is asked about, up to this. */
+const PROCESS_ROWS_AT_MOST = 500;
 
 /** How long opening a page that shows plan limits keeps them fresh. */
 export const PLAN_LIMITS_VIEW_WINDOW_MS = 10 * 60_000;
@@ -71,9 +74,9 @@ export function agentWorkActive(store: Store, now: Date, alive: ProcessAlive = p
     || any(store, `SELECT 1 FROM lead_queue q JOIN mate_turn m ON m.id = q.turn_id WHERE q.status = 'running' AND q.claimed_at > ?
       AND m.state = 'running' AND m.deadline_at > ? LIMIT 1`, runningSince, at)
     || living(processesOf(store, `SELECT l.leader_pid AS pid, l.leader_start AS start FROM thread_turn t JOIN flexible_thread_launch l ON l.turn = t.id
-      WHERE t.status = 'running' AND t.started_at > ? AND l.state = 'live' LIMIT 8`, runningSince))
+      WHERE t.status = 'running' AND t.started_at > ? AND l.state = 'live' LIMIT ${PROCESS_ROWS_AT_MOST}`, runningSince))
     || living(processesOf(store, `SELECT pid, start_identity AS start FROM direct_chat_turn WHERE status = 'running' AND created_at > ?
-      LIMIT 8`, runningSince));
+      LIMIT ${PROCESS_ROWS_AT_MOST}`, runningSince));
 }
 
 /** Whether the limits loop may read now: work is active, or a person opened plan limits in the last ten minutes. */

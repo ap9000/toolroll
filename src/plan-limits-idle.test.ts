@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { scheduleLimitsLoop } from "./codex-limits.js";
-import { notePlanLimitsViewed, PLAN_LIMITS_VIEW_WINDOW_MS } from "./plan-limits-demand.js";
+import { agentWorkActive, notePlanLimitsViewed, PLAN_LIMITS_VIEW_WINDOW_MS } from "./plan-limits-demand.js";
 import type { LimitReading } from "./provider-limits.js";
 import { openStore, type Store } from "./store.js";
 
@@ -59,7 +59,7 @@ function threadTurn(store: Store, mark: string, pid: number | null, start: strin
 function directChatTurn(store: Store, id: string, pid: number, start: string): void {
   store.handle.prepare("PRAGMA foreign_keys = OFF").run();
   store.handle.prepare(`INSERT INTO direct_chat_turn (id, thread_id, seq, user_prompt, log_path, stderr_path, pid, start_identity, status, created_at)
-    VALUES (?, 'dct', 1, 'hi', '/l', '/e', ?, ?, 'running', ?)`).run(id, pid, start, new Date().toISOString());
+    VALUES (?, ?, 1, 'hi', '/l', '/e', ?, ?, 'running', ?)`).run(id, `dct-${id}`, pid, start, new Date().toISOString());
   store.handle.prepare("PRAGMA foreign_keys = ON").run();
 }
 /** A lead message the lead's queue claimed now, bound to a turn in `turn`'s state (none: no turn bound). */
@@ -172,6 +172,19 @@ describe("no idle model spend (everyday 9, B3)", () => {
       store.handle.prepare("UPDATE lead_queue SET status = 'answered' WHERE message = 4").run();
     }
     loop.stop();
+  });
+
+  test("every eligible turn is asked about (review round 2): eight stale rows never hide the ninth, which runs", () => {
+    store = openStore(":memory:");
+    const now = new Date();
+    for (let i = 1; i <= 9; i++) directChatTurn(store, `dc-${i}`, 600 + i, `s${600 + i}`);
+    expect(agentWorkActive(store, now, (pid, start) => pid === 609 && start === "s609")).toBe(true);
+    expect(agentWorkActive(store, now, () => false)).toBe(false);
+    store.close();
+    store = openStore(":memory:");
+    for (let i = 1; i <= 9; i++) threadTurn(store, String(i), 700 + i, `s${700 + i}`);
+    expect(agentWorkActive(store, now, (pid, start) => pid === 709 && start === "s709")).toBe(true);
+    expect(agentWorkActive(store, now, () => false)).toBe(false);
   });
 
   test("opening Spend reads at once and keeps limits fresh for ten minutes, then goes quiet again", async () => {
