@@ -1343,6 +1343,11 @@ pub struct App {
     pub thread_scroll: usize,
     /// The title of the task New task is filing (kept for Build's "plan it first").
     pub filing: String,
+    /// A new thread's first message on its way (its project and words), until the console answers it.
+    pub thread_asked: Option<(Option<String>, String)>,
+    /// A first message a thread start sent back for a setup step (project and words): T puts it back in the box after
+    /// the setup, in the same project. Never sent by itself.
+    pub thread_draft: Option<(Option<String>, String)>,
     pub fetching_live: bool,
     pub fetching_work: bool,
     /// The task and situation a row that lagged its steps was read again for (once each).
@@ -1480,6 +1485,8 @@ impl App {
             notifier: crate::notify::Notifier::default(),
             facts: crate::settings::RowFacts::default(),
             filing: String::new(),
+            thread_asked: None,
+            thread_draft: None,
             answer_shown: false,
             threads: crate::thread::Threads::default(),
             thread_shown: false,
@@ -2482,9 +2489,13 @@ impl App {
                 vec![]
             }
             Msg::Acted(Ok(ActOutcome::NextStep { words, next })) => {
-                // Said in the console's words; the next step's page and command one key away.
+                // Said in the console's words; the next step's page and command one key away. The first message
+                // waits for T after the setup (never sent by itself).
                 self.say(Tone::Refused, words);
                 self.sent_thread();
+                if let Some(asked) = self.thread_asked.take() {
+                    self.thread_draft = Some(asked);
+                }
                 self.mode = Mode::ThreadNext(next);
                 vec![]
             }
@@ -3896,6 +3907,8 @@ impl App {
                     }
                     (KeyCode::Char('c'), Some(step)) if step.command.is_some() => {
                         let command = step.command(self.project.as_deref());
+                        // What was said belonged to the screen left; the copy screen shows only the command.
+                        self.status = None;
                         self.mode = Mode::Copied;
                         vec![Effect::Scrollback(vec![command])]
                     }
@@ -5219,7 +5232,12 @@ impl App {
                     self.say(Tone::Refused, crate::thread::THREADS_OFF);
                     return vec![];
                 }
-                self.mode = Mode::NewThread(String::new());
+                // A first message a setup step sent back, in this same project: back in the box, to send again.
+                let draft = match self.thread_draft.take() {
+                    Some((project, text)) if project == self.project => text,
+                    _ => String::new(),
+                };
+                self.mode = Mode::NewThread(draft);
                 vec![]
             }
             // A plan waiting for this person's yes: `a` reads its terms (the approval card), then asks.
@@ -7123,8 +7141,10 @@ impl App {
         if message.is_empty() {
             return vec![];
         }
-        // Kept for the terms card the engine answers with (the start posts this message under its key).
+        // Kept for the terms card the engine answers with (the start posts this message under its key), and for T
+        // after a setup step the start names.
         self.filing = message.clone();
+        self.thread_asked = Some((self.project.clone(), message.clone()));
         let mut fields = vec![("message", message)];
         if let Some(project) = &self.project {
             fields.push(("repo", project.clone()));

@@ -1608,3 +1608,49 @@ fn a_threads_diff_never_shows_a_tasks_review_card_only_its_own_save() {
     assert!(shown.contains("Check this result"), "{shown}");
     assert!(!shown.contains("Save as branch"), "{shown}");
 }
+
+#[test]
+fn a_first_message_a_setup_step_sent_back_waits_for_t_after_the_setup_and_never_sends_itself() {
+    let (mut app, fx) = start_app();
+    assert!(
+        fx.iter()
+            .any(|e| matches!(e, Effect::Act { path, .. } if path == "/agents/live/thread")),
+        "{fx:?}"
+    );
+    app.update(Msg::Acted(Ok(ActOutcome::NextStep {
+        words: "This project isn't set up for threads yet.".into(),
+        next: "project-terms".into(),
+    })));
+    assert!(matches!(app.mode, Mode::ThreadNext(_)), "{:?}", app.mode);
+    // c: only the command (its folder quoted) on the copy screen; what was said before is gone.
+    assert_eq!(
+        app.key(key('c')),
+        vec![Effect::Scrollback(vec![
+            "toolroll project flexible enable --repo '/home/me/shop'".into()
+        ])]
+    );
+    assert!(app.status.is_none(), "{:?}", app.status);
+    assert_eq!(app.mode, Mode::Copied);
+    assert_eq!(app.key(key('x')), vec![Effect::ResumeScreen]);
+    // After the setup, T: the message back in its box, sent only by Enter.
+    let fx = app.key(key('T'));
+    assert!(!fx.iter().any(|e| matches!(e, Effect::Act { .. })), "{fx:?}");
+    assert_eq!(app.mode, Mode::NewThread("Fix the README".into()));
+    // Taken once: Esc and T again is an empty box.
+    app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.key(key('T'));
+    assert_eq!(app.mode, Mode::NewThread(String::new()));
+}
+
+#[test]
+fn the_copied_setup_command_quotes_the_folder_and_leaves_out_one_it_cant_write_safely() {
+    let step = toolroll_tui::thread::next_step("project-terms").unwrap();
+    assert_eq!(
+        step.command(Some("/home/me/it's mine")),
+        "toolroll project flexible enable --repo '/home/me/it'\\''s mine'"
+    );
+    assert_eq!(
+        step.command(Some("/home/me/a\u{202e}b")),
+        "toolroll project flexible enable"
+    );
+}

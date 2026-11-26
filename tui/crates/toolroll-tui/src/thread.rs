@@ -34,11 +34,20 @@ pub struct NextStep {
     pub command: Option<&'static str>,
 }
 impl NextStep {
-    /// The command to copy, with this terminal's project where it needs one.
+    /// The command to copy, with this terminal's project where it needs one: its folder POSIX single-quoted (`'` as
+    /// `'\''`), and left out (run it in the project folder) when its name holds a character no copied command may
+    /// (toolroll_api::client::copyable_command, the console's own set).
     pub fn command(&self, project: Option<&str>) -> String {
         let base = self.command.unwrap_or_default();
         match (base, project) {
-            ("toolroll project flexible enable", Some(p)) => format!("{base} --repo {}", clean(p)),
+            ("toolroll project flexible enable", Some(p)) => {
+                let command = format!("{base} --repo '{}'", p.replace('\'', "'\\''"));
+                if toolroll_api::client::copyable_command(&command) {
+                    command
+                } else {
+                    base.to_string()
+                }
+            }
             _ => base.to_string(),
         }
     }

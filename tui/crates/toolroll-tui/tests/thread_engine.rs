@@ -229,6 +229,6 @@ async fn a_start_refused_for_your_sign_in_offers_its_page_and_its_command() {
         toolroll_tui::thread::next_step("project-terms")
             .unwrap()
             .command(Some("/home/me/shop")),
-        "toolroll project flexible enable --repo /home/me/shop"
+        "toolroll project flexible enable --repo '/home/me/shop'"
     );
 }
