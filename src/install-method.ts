@@ -41,11 +41,12 @@ function installKind(bin: string | undefined, probe: InstallProbe): InstallKind 
     // A bin that cannot be resolved is judged by the path it was run by.
   }
   const path = real.replace(/\\/g, "/");
-  // A plane deployed from a checkout by scripts/deploy-browser.mjs runs from staged-upgrades/browser-*: it updates
-  // by deploying from source, never from npm.
-  if (path.includes("/staged-upgrades/browser-")) return "source";
   if (/\.app\/Contents\/Resources\//.test(path)) return "desktop";
-  if (/\/staged-upgrades\/(release|rollback)-/.test(path)) return "managed";
+  // A runtime in the plane's own runtimes folder updates itself: one `toolroll update` installed
+  // (staged-upgrades/release-* or rollback-*), and one a release deployed from a checkout (staged-upgrades/browser-*,
+  // scripts/deploy-browser.mjs). Its launchd service and links name that runtime, which is all the updater switches, so
+  // a released version reaches it from npm like any other install (never a downgrade without --allow-downgrade).
+  if (/\/staged-upgrades\/(release|rollback|browser)-/.test(path)) return "managed";
   if (/\/Cellar\/toolroll\//i.test(path)) return "homebrew";
   if (path.includes("/_npx/")) return "npx";
   if (/\/\.bun\/install\/global\//.test(path)) return "bun";
