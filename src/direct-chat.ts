@@ -1073,11 +1073,14 @@ export class DirectChatHost {
 
   refreshDiffCache(thread: DirectChatThreadRow): DirectChatDiffSummary {
     const binding = this.bindingOf(thread);
-    const read = binding === null ? { ...EMPTY_DIFF } : this.readDiffFn({ binding, baseSha: thread.baseSha });
+    // No clone binding to read through: unread, never "no changes" (review round 1), except an imported chat's history,
+    // which has no copy of its own and keeps exactly what it was saved with.
+    const read = binding === null ? thread.isLegacy ? null : { ...UNREAD_DIFF } : this.readDiffFn({ binding, baseSha: thread.baseSha });
     // A read that failed never replaces what an earlier read saw with "no changes": the saved files stay, marked unread
     // (everyday-9 E4: a first turn's changes were shown as none after a later read failed).
-    const saved = this.store.handle.prepare(`SELECT diff_cache_json FROM direct_chat_thread WHERE id = ?`).get(thread.id)?.["diff_cache_json"];
-    const diff: DirectChatDiffSummary = read.unread === true ? { ...diffCacheOf(saved), unread: true } : { changedFiles: read.changedFiles, diffText: read.diffText, dirty: read.dirty };
+    const saved = diffCacheOf(this.store.handle.prepare(`SELECT diff_cache_json FROM direct_chat_thread WHERE id = ?`).get(thread.id)?.["diff_cache_json"]);
+    if (read === null) return saved;
+    const diff: DirectChatDiffSummary = read.unread === true ? { ...saved, unread: true } : { changedFiles: read.changedFiles, diffText: read.diffText, dirty: read.dirty };
     this.store.handle
       .prepare(`UPDATE direct_chat_thread SET diff_cache_json = ? WHERE id = ?`)
       .run(JSON.stringify(diff), thread.id);

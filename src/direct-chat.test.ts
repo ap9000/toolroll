@@ -959,6 +959,10 @@ describe("DirectChatHost & helpers", () => {
       expect(host.getThread("alex", started.thread.id)?.diff).toMatchObject({ changedFiles: ["math.js"], unread: true });
       fails = false;
       expect(host.refreshDiffCache(thread)).toEqual({ changedFiles: ["math.js"], diffText: "+divide\n", dirty: true });
+      // No clone binding to read through (its git binding gone from the record): unread too, the saved patch kept (review round 1).
+      store.handle.prepare("UPDATE direct_chat_thread SET git_dir = NULL WHERE id = ?").run(thread.id);
+      const unbound = host.getThreadRecord("alex", started.thread.id)!;
+      expect(host.refreshDiffCache(unbound)).toEqual({ changedFiles: ["math.js"], diffText: "+divide\n", dirty: true, unread: true });
     } finally {
       store.close();
     }
