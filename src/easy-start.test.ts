@@ -501,9 +501,9 @@ describe("l1: a Linux computer missing the sandbox's programs (stranger test, Ub
   test("preflight: a sandbox that can't start stops the first start before anything is made, with its repair and an explicit password road", async () => {
     const problem = "bubblewrap can't start a sandbox here (unprivileged user namespaces may be off)";
     const { seams, lines, inits, calls } = scripted({ proofs: [NONE], local: ["absent"], problem });
-    seams.sandbox = async () => ({ missing: [], problem, repair: ["Fix it with:", "  chmod go-w '/home/dev/.npm-global'"] });
+    seams.sandbox = async () => ({ missing: [], problem, repair: ["Fix it with:", "  chmod go-w '/home/someone/.npm-global'"] });
     expect(await runEasyStart("start", bare, seams)).toBe(3);
-    expect(lines).toEqual([`Agents can't run in a sandbox here: ${problem}.`, "Fix it with:", "  chmod go-w '/home/dev/.npm-global'", "Then run toolroll again.",
+    expect(lines).toEqual([`Agents can't run in a sandbox here: ${problem}.`, "Fix it with:", "  chmod go-w '/home/someone/.npm-global'", "Then run toolroll again.",
       "To start now with a password instead, run `toolroll up`. Agents then run only once the sandbox works, or if an instance operator lets them run without OS confinement (`toolroll config unconfined-agents allow`)."]);
     expect(inits).toEqual([]);
     expect(calls).toEqual([]);

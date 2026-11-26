@@ -187,7 +187,7 @@ describe("a completion stays complete when the check command changes", () => {
     storeEvidence(store, root(), runId, "structured-output", "follow-up-check-1.log", Buffer.from("1 failed\n"), FOLLOW_UP_LOG, LATER, { captureStatus: "ok" });
     storeEvidence(store, root(), runId, "structured-output", "follow-up-check-1.json", Buffer.from("{}"), FOLLOW_UP_RECEIPT, LATER, { captureStatus: "ok" });
     // The check ran again after acceptance and failed: its own ledger lines, as result-follow-ups.ts writes them.
-    const request = store.recordAction({ at: LATER.toISOString(), actor: "cli", repo: REPO, taskId: "t-recheck", runId, action: CHECKS_REQUESTED, outcome: "full", source: "work" });
+    const request = store.recordAction({ at: LATER.toISOString(), actor: "cli", repo: REPO, taskId: "t-recheck", runId, action: CHECKS_REQUESTED, outcome: "full", source: "work", detail: `${HEAD} · person · ${store.liveVerifyCommand(REPO)!.digest}` });
     store.recordAction({ at: LATER.toISOString(), actor: "system", repo: REPO, taskId: "t-recheck", runId, action: CHECKS_FINISHED, outcome: `${request}:failed`, source: "work", detail: "exit 1" });
     const after = snapshot("t-recheck");
     expect(after.state).toBe("complete");

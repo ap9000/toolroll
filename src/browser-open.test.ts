@@ -52,8 +52,8 @@ test.each([
 test("headless with a chosen browser and no xdg-open: the chosen program is what runs, with the address alone (operate and connect share this)", () => {
   const calls: { command: string; args: readonly string[] }[] = [];
   const fake: Spawner = (command, args) => { calls.push({ command, args }); return { on: () => undefined, unref: () => undefined } as unknown as ChildProcess; };
-  expect(openAddress(URL, { env: { TOOLROLL_BROWSER_COMMAND: "/home/dev/bin/open-url" }, platform: "linux", spawn: fake })).toBe(true);
+  expect(openAddress(URL, { env: { TOOLROLL_BROWSER_COMMAND: "/home/someone/bin/open-url" }, platform: "linux", spawn: fake })).toBe(true);
   expect(openAddress(URL, { env: { BROWSER: "w3m", SSH_TTY: "/dev/pts/1" }, platform: "linux", spawn: fake })).toBe(true);
   expect(openAddress(URL, { env: {}, platform: "linux", spawn: fake })).toBe(false);
-  expect(calls).toEqual([{ command: "/home/dev/bin/open-url", args: [URL] }, { command: "w3m", args: [URL] }]);
+  expect(calls).toEqual([{ command: "/home/someone/bin/open-url", args: [URL] }, { command: "w3m", args: [URL] }]);
 });

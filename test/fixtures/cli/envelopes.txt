@@ -6882,6 +6882,7 @@ $ task show t-readme --json → 0
     "problem": "approvals bind exact routing — the planner (claude) has no exact model: set one once with `config set plan --provider claude --model <model>`"
   },
   "base": null,
+  "landing": null,
   "runs": [],
   "deliverable": "branch",
   "report": null,
