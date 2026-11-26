@@ -51,6 +51,7 @@ import {
 import { DirectChatHost, type DirectChatProvider } from "./direct-chat.js";
 import { TerminalHost, type Pty } from "./live-terminal.js";
 import { createDecisionServer } from "./serve.js";
+import { fakePid } from "../test/fake-pid.js";
 import { createHash as sha } from "node:crypto";
 
 const dirs: string[] = [];
@@ -460,7 +461,8 @@ describe("Skill Library (schema v186)", () => {
         const skillsDir = input.env["TOOLROLL_SKILLS_DIR"];
         const hasFile = typeof skillsDir === "string" && existsSync(join(skillsDir, "pinned-guide", "SKILL.md"));
         spawnedCalls.push({ provider, args: input.args, skillsDir, hasFile });
-        return { pid: 99999, pgid: 99999, startIdentity: "fake" };
+        const pid = fakePid(1 + spawnedCalls.length);
+        return { pid, pgid: pid, startIdentity: "fake" };
       },
       readDiff: () => ({ changedFiles: [], diffText: "", dirty: false }),
     });
@@ -487,17 +489,18 @@ describe("Skill Library (schema v186)", () => {
     // 4. Live Terminal receives TOOLROLL_SKILLS_DIR with read-only SKILL.md and cleans it up on remove.
     let termSkillsDir: string | undefined;
     let termAlive = true;
+    const termPid = fakePid(10);
     const termHost = new TerminalHost({
       worktreeRoot: join(stateDir, "live-worktrees"),
       programs: { shell: { file: "/bin/sh", args: [] } },
       skillsForRepo: (r) => effectiveSkillsForRepo(store, r),
       closeGraceMs: 50,
-      processes: () => termAlive ? new Map([[12345, { ppid: process.pid, uid: process.getuid?.() ?? 0, tty: "?", started: "fake-start" }]]) : new Map(),
+      processes: () => termAlive ? new Map([[termPid, { ppid: process.pid, uid: process.getuid?.() ?? 0, tty: "?", started: "fake-start" }]]) : new Map(),
       spawn: (_file, _args, opts): Pty => {
         termSkillsDir = opts.env["TOOLROLL_SKILLS_DIR"];
         let exitCb: ((e: { exitCode: number }) => void) | null = null;
         return {
-          pid: 12345,
+          pid: termPid,
           tty: null,
           pendingInput: () => 0,
           onData: () => {},
