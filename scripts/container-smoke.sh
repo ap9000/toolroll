@@ -15,6 +15,7 @@
 #   fedora            Fedora, no procps-ng, sandbox working: opens, both times.
 #   debian12          Debian 12's git 2.39: refused at the git floor, nothing made.
 #   debian13          Debian 13 (git 2.47), sandbox working: opens, both times.
+#   node26            Ubuntu 24.04 with Node 26 (the runner's, mounted at /opt/node), sandbox working: opens, both times.
 set -eu
 lane="$1"
 tarball=$(ls /work/toolroll-*.tgz)
@@ -23,12 +24,16 @@ apt_install() { export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt
 
 case "$lane" in
   ubuntu-umask002|no-userns|debian12|debian13) apt_install $packages_apt ;;
+  node26) apt_install $packages_apt libatomic1 ;;
   alpine) apk add --no-cache nodejs npm git bubblewrap socat ripgrep bash util-linux-misc >/dev/null ;;
   fedora) dnf install -y -q nodejs npm git bubblewrap socat ripgrep util-linux which >/dev/null ;;
   *) echo "unknown lane: $lane" >&2; exit 2 ;;
 esac
 # Node: the image's own, else the runner's, mounted read-only at /opt/node.
 command -v node >/dev/null 2>&1 || PATH="/opt/node/bin:$PATH"
+if [ "$lane" = node26 ]; then PATH="/opt/node/bin:$PATH"; fi
+# The runner's Node is mounted read-only: global installs go to /usr/local, as a system Node's would.
+case "$(command -v node)" in /opt/node/*) export NPM_CONFIG_PREFIX=/usr/local ;; esac
 node --version
 
 smoke() { node --disable-warning=ExperimentalWarning /work/container-smoke.mjs --tarball "$tarball" "$@"; }
@@ -41,4 +46,5 @@ case "$lane" in
   no-userns) smoke --first refuse --words 'Agents can.t run in a sandbox here' --words 'toolroll up' --again refuse ;;
   debian12) smoke --first refuse --words 'needs git 2\.41' --again refuse ;;
   alpine|fedora|debian13) smoke --first open --again open ;;
+  node26) smoke --node-major 26 --first open --again open ;;
 esac

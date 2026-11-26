@@ -9,8 +9,9 @@ name: Install smoke
 # lane): the packed tarball installed, then `toolroll` at a real pseudo-terminal, first and again, asserting the
 # outcome and the state it leaves (local mode on, or nothing made): a desktop user with umask 0002 (refused with the
 # exact repair; after it, a clean start), on x64 and arm64; Docker's default profile with no user namespaces; Alpine
-# (musl, busybox ps); Fedora without procps-ng; Debian 12 (refused at the git floor) and Debian 13 (opens). None has
-# xdg-open or a display.
+# (musl, busybox ps); Fedora without procps-ng; Debian 12 (refused at the git floor), Debian 13 (opens), and Node 26
+# (Homebrew's current `node`). An open lane is stopped with `toolroll stop`, its recorded worker awaited until gone, and
+# the second start must be a new worker on the same installation. None has xdg-open or a display.
 #
 # Which runs: pull requests that change what gets packed or installed (a release-* pull request always does: it changes
 # package.json, and its head is the tree the tag publishes), and by hand (on a tag too: Run workflow, pick the tag). The
@@ -112,6 +113,7 @@ jobs:
           - { name: "fedora", lane: fedora, image: "fedora:43", runner: ubuntu-24.04, privileged: true }
           - { name: "debian 12", lane: debian12, image: "node:22-bookworm", runner: ubuntu-24.04, privileged: true }
           - { name: "debian 13", lane: debian13, image: "node:22-trixie", runner: ubuntu-24.04, privileged: true }
+          - { name: "node 26", lane: node26, image: "ubuntu:24.04", runner: ubuntu-24.04, privileged: true, node: "26" }
     steps:
       - uses: actions/checkout@v5
         with:
@@ -122,9 +124,10 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      # Node 22 (the floor) unless the lane names another: its container runs the runner's Node, mounted at /opt/node.
       - uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: ${{ matrix.node || '22' }}
           check-latest: true
           cache: npm
       - run: npm ci

@@ -124,7 +124,7 @@ const ADVISORY = ["youiyoux · UI drift", "journeys · app (scripted)", "journey
 /** install-smoke.yml: advisory too, but only on pull requests that change what gets packed or installed. */
 const INSTALL_SMOKE_HOSTS = ["install smoke · ubuntu-24.04", "install smoke · macos-latest"];
 /** Its container lanes (scripts/container-smoke.sh): the first terminal start on the Linux machines people have. */
-const INSTALL_SMOKE_CONTAINERS = ["ubuntu umask 0002", "ubuntu umask 0002 · arm64", "no user namespaces", "alpine", "fedora", "debian 12", "debian 13"].map(lane => `install smoke · ${lane}`);
+const INSTALL_SMOKE_CONTAINERS = ["ubuntu umask 0002", "ubuntu umask 0002 · arm64", "no user namespaces", "alpine", "fedora", "debian 12", "debian 13", "node 26"].map(lane => `install smoke · ${lane}`);
 const INSTALL_SMOKE = [...INSTALL_SMOKE_HOSTS, ...INSTALL_SMOKE_CONTAINERS];
 /** wire-budgets.yml: advisory too, on pull requests that touch the server, the browser app, the work index or the store. */
 const WIRE = ["wire budgets"];
@@ -304,6 +304,10 @@ describe("the CI workflows", () => {
     const lanes = smoke.jobs["containers"]!;
     expect((lanes as { "timeout-minutes"?: number })["timeout-minutes"]).toBeLessThanOrEqual(20);
     expect(runsOf(lanes).join("\n")).toContain("sh /work/container-smoke.sh");
+    // The Node 26 lane runs Node 26 (the runner's, in its container); every other lane the floor's major.
+    const include = (lanes as { strategy?: { matrix?: { include?: { name: string; node?: string }[] } } }).strategy?.matrix?.include ?? [];
+    expect(include.find(one => one.name === "node 26")?.node).toBe("26");
+    expect(lanes.steps?.find(step => step.uses?.startsWith("actions/setup-node@"))?.with).toMatchObject({ "node-version": "${{ matrix.node || '22' }}", "check-latest": true });
     expect(lanes.steps?.find(step => step.uses?.startsWith("actions/checkout@"))?.with).toMatchObject({ ref: "${{ env.TESTED_SHA }}", "persist-credentials": false });
     const job = smoke.jobs["smoke"]!;
     expect(job.if).toBeUndefined();
