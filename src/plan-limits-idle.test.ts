@@ -10,7 +10,7 @@ import { openStore, type Store } from "./store.js";
 const HOUR = 3_600_000;
 const START = Date.parse("2026-11-25T09:00:00.000Z");
 
-function harness(store: Store) {
+function harness(store: Store, alive: (pid: number, start: string) => boolean = () => false) {
   const calls = { claude: 0, codex: 0, gemini: 0, signIn: 0 };
   const reading = (provider: "claude" | "codex"): LimitReading => ({ provider, plan: null, windows: [{ window: "five_hour", usedPercent: 10, windowMinutes: 300, resetsAt: new Date(Date.now() + 5 * HOUR).toISOString(), reached: false }] });
   const stop = scheduleLimitsLoop(store, {
@@ -22,6 +22,7 @@ function harness(store: Store) {
       gemini: async now => { calls.gemini += 1; return { connected: false, provider: "antigravity", topModel: null, modelCount: 0, observedAt: now.toISOString(), note: null }; },
     },
     clock: () => new Date(),
+    alive,
   });
   return { calls, stop, total: () => calls.claude + calls.codex + calls.gemini + calls.signIn };
 }
@@ -42,6 +43,37 @@ function building(store: Store, id: string, liveFor = 3 * HOUR, provider: "claud
     store.handle.prepare("UPDATE run SET outcome = 'built', finished_at = ? WHERE lease_id = ?").run(now, `l-${id}`);
     store.handle.prepare("UPDATE task SET state = 'done', updated_at = ? WHERE id = ?").run(now, id);
   } };
+}
+
+/** A thread turn that started now, with its launch live under `pid` and `start` (no launch when pid is null). */
+function threadTurn(store: Store, mark: string, pid: number | null, start: string | null): void {
+  const now = new Date().toISOString(), turn = mark.repeat(32), thread = "b".repeat(31) + mark;
+  store.handle.prepare(`INSERT INTO thread_turn (id, thread, seq, repo, owner, owner_generation, terms_id, terms_digest, level, provider, model, billing,
+    request_key, holder, admitted_at, utc_day, status, started_at) VALUES (?, ?, 1, '/p', 'alex', 1, 1, 'd', 'supervised', 'claude', 'sonnet',
+    'subscription', ?, 'h', ?, ?, 'running', ?)`).run(turn, thread, `k${mark}`, now, now.slice(0, 10), now);
+  if (pid === null) return;
+  store.handle.prepare(`INSERT INTO flexible_thread_launch (id, thread, turn, provider, level, fence_digest, holder, host, marker, leader_pid, leader_start, state, started_at)
+    VALUES (?, ?, ?, 'claude', 'supervised', ?, 'h', 'here', ?, ?, ?, 'live', ?)`).run("f".repeat(31) + mark, thread, turn, "0".repeat(32), "1".repeat(32), pid, start, now);
+}
+/** A Direct Chat turn running now under `pid` and `start`. */
+function directChatTurn(store: Store, id: string, pid: number, start: string): void {
+  store.handle.prepare("PRAGMA foreign_keys = OFF").run();
+  store.handle.prepare(`INSERT INTO direct_chat_turn (id, thread_id, seq, user_prompt, log_path, stderr_path, pid, start_identity, status, created_at)
+    VALUES (?, 'dct', 1, 'hi', '/l', '/e', ?, ?, 'running', ?)`).run(id, pid, start, new Date().toISOString());
+  store.handle.prepare("PRAGMA foreign_keys = ON").run();
+}
+/** A lead message the lead's queue claimed now, bound to a turn in `turn`'s state (none: no turn bound). */
+function leadMessage(store: Store, message: number, turn: { state: string; deadline: Date } | null): void {
+  const now = new Date().toISOString();
+  store.handle.prepare("PRAGMA foreign_keys = OFF").run();
+  let turnId: number | null = null;
+  if (turn !== null) {
+    turnId = Number(store.handle.prepare(`INSERT INTO mate_turn (approver, session, thread, credential_key, state, created_at, deadline_at, reserved_microusd)
+      VALUES ('alex', 1, 1, 'k', ?, ?, ?, 0)`).run(turn.state, now, turn.deadline.toISOString()).lastInsertRowid);
+  }
+  store.handle.prepare(`INSERT INTO lead_queue (message, thread, approver, approver_generation, session, ceiling_digest, request_id, payload_hash, status, claimed_at, turn_id, created_at)
+    VALUES (?, 1, ?, 1, 1, 'c', ?, 'p', 'running', ?, ?, ?)`).run(message, `person-${message}`, `r${message}`, now, turnId, now);
+  store.handle.prepare("PRAGMA foreign_keys = ON").run();
 }
 
 let store: Store | null = null;
@@ -98,20 +130,47 @@ describe("no idle model spend (everyday 9, B3)", () => {
     loop.stop();
   });
 
-  test("a queued task parked for days is not work; a running thread turn is", async () => {
+  test("a queued task parked for days is not work; a running thread turn whose agent is running is", async () => {
     vi.useFakeTimers({ now: START });
     store = openStore(":memory:");
     const old = new Date(START - 3 * 24 * HOUR).toISOString();
     store.handle.prepare("INSERT INTO task (id, title, state, created_at, updated_at) VALUES ('t2', 'Parked', 'queued', ?, ?)").run(old, old);
-    const loop = harness(store);
+    const loop = harness(store, (pid, start) => pid === 4242 && start === "s4242");
     await vi.advanceTimersByTimeAsync(3 * HOUR);
     expect(loop.total()).toBe(0);
-    const now = new Date().toISOString();
-    store.handle.prepare(`INSERT INTO thread_turn (id, thread, seq, repo, owner, owner_generation, terms_id, terms_digest, level, provider, model, billing,
-      request_key, holder, admitted_at, utc_day, status, started_at) VALUES (?, ?, 1, '/p', 'alex', 1, 1, 'd', 'supervised', 'claude', 'sonnet',
-      'subscription', 'k', 'h', ?, ?, 'running', ?)`).run("a".repeat(32), "b".repeat(32), now, now.slice(0, 10), now);
+    threadTurn(store, "a", 4242, "s4242");
     await vi.advanceTimersByTimeAsync(10 * 60_000);
     expect(loop.calls.claude).toBe(1);
+    loop.stop();
+  });
+
+  test("a recent running row nothing holds is not work (review round 1): a crashed thread agent or Direct Chat, a lead message with no running turn", async () => {
+    vi.useFakeTimers({ now: START });
+    store = openStore(":memory:");
+    const live = new Set<string>();
+    const loop = harness(store, (pid, start) => live.has(`${pid}:${start}`));
+    // Each path's stale rows: its process is gone (or another process now has its pid), or nothing runs its turn.
+    threadTurn(store, "a", 501, "s501");
+    threadTurn(store, "c", null, null);
+    directChatTurn(store, "dc-1", 502, "s502");
+    leadMessage(store, 1, null);
+    leadMessage(store, 2, { state: "running", deadline: new Date(START - 60_000) });
+    leadMessage(store, 3, { state: "answered", deadline: new Date(START + HOUR) });
+    await vi.advanceTimersByTimeAsync(2 * HOUR);
+    expect(loop.total()).toBe(0);
+    // Actual execution on each path reads usage.
+    for (const [index, start] of [() => { live.add("502:s502"); }, () => { threadTurn(store!, "e", 503, "s503"); live.add("503:s503"); },
+      () => { leadMessage(store!, 4, { state: "running", deadline: new Date(Date.now() + HOUR) }); }].entries()) {
+      live.clear();
+      store.handle.prepare("DELETE FROM provider_limit").run();
+      const before = loop.calls.claude;
+      start();
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      expect(loop.calls.claude, `path ${index}`).toBeGreaterThan(before);
+      // Done (its process gone, its lead turn answered): quiet again.
+      live.clear();
+      store.handle.prepare("UPDATE lead_queue SET status = 'answered' WHERE message = 4").run();
+    }
     loop.stop();
   });
 
