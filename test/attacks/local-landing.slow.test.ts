@@ -22,7 +22,7 @@ import { sealVerificationReceipt } from "../../src/verification-evidence.js";
 import { recordRunCheckLevel } from "../../src/check-levels.js";
 import { acceptAndCompleteAsOperator, assignmentOf } from "../../src/assignment.js";
 import { verifyApproverByPassword, type VerifiedApprover } from "../../src/principal.js";
-import { broughtInOnBranch, handoffsOf, handoffWords, land, landableBranch, landingOf, landingWords, LAND_INTENT, LAND_SETTLED, readLanding, recognisedOnBranch, shownName, type LandAuthority } from "../../src/local-landing.js";
+import { broughtInOnBranch, handoffsOf, handoffWords, land, landableBranch, landedStanding, landingOf, landingWords, LAND_INTENT, LAND_SETTLED, readLanding, recognisedOnBranch, shownName, type LandAuthority } from "../../src/local-landing.js";
 import { readGit } from "../../src/task-base.js";
 import { recordActionWhole } from "../../src/action-ledger.js";
 import { run as execRun } from "../../src/exec.js";
@@ -570,7 +570,7 @@ describe("checked-out main (everyday-9 A1): never touched; a kept commit and the
     const { landed } = await landNow("t");
     if (landed?.ok !== true || landed.handoff === null) throw new Error(JSON.stringify(landed));
     git(repo, "merge", "-q", "--ff-only", landed.commit);
-    expect(recognisedOnBranch(store, repo, "t", git(repo, "rev-parse", "toolroll/t"), readGit)).toBe("On main");
+    expect(recognisedOnBranch(store, repo, "t", git(repo, "rev-parse", "toolroll/t"), readGit)).toEqual({ words: `Landed on main (${landed.commit.slice(0, 7)})`, reverted: false });
     expect(broughtInOnBranch(store, repo, "t", readGit)).toBe(true);
     // With main still checked out, Undo says the exact revert to run there.
     const there = await readLanding(store, "t", access(), NOW, { ...options(), undo: true });
@@ -699,7 +699,7 @@ describe("already on main (everyday-9 A3): recognised for display, never grantin
     git(repo, "update-ref", "refs/heads/main", head);
     expect(recognisedOnBranch(store, repo, "t", head, readGit)).toBeNull(); // nothing recorded and the folder is on work
     git(repo, "checkout", "-q", "main");
-    expect(recognisedOnBranch(store, repo, "t", head, readGit)).toBe("On main");
+    expect(recognisedOnBranch(store, repo, "t", head, readGit)).toEqual({ words: `Landed on main (${head.slice(0, 7)})`, reverted: false });
     expect(await readLanding(store, "t", access(), NOW, options())).toMatchObject({ ok: false, reason: "nothing" });
     expect(landingOf(store, "t")).toBeNull();
   });
@@ -713,8 +713,44 @@ describe("already on main (everyday-9 A3): recognised for display, never grantin
     const head = assignmentOf(store, "t", NOW, { principal: "operator", repos: [repo] }, root)!.receipt!.head;
     expect(recognisedOnBranch(store, repo, "t", head, readGit)).toBeNull();
     git(repo, "merge", "-q", "--ff-only", landed.commit);
-    expect(recognisedOnBranch(store, repo, "t", head, readGit)).toBe("On main");
+    expect(recognisedOnBranch(store, repo, "t", head, readGit)).toEqual({ words: `Landed on main (${landed.commit.slice(0, 7)})`, reverted: false });
     expect(await readLanding(store, "t", access(), NOW, options())).toMatchObject({ ok: false, reason: "nothing" });
+  });
+
+  test("the person's own revert (everyday-9 #3): said only when a later commit is exactly the inverse; ancestry alone claims nothing", async () => {
+    built("t", { "a.txt": "two\n" });
+    git(repo, "checkout", "-q", "main");
+    const { landed } = await landNow("t");
+    if (landed?.ok !== true || landed.handoff === null) throw new Error(JSON.stringify(landed));
+    const head = assignmentOf(store, "t", NOW, { principal: "operator", repos: [repo] }, root)!.receipt!.head;
+    git(repo, "merge", "-q", "--ff-only", landed.commit);
+    writeFileSync(join(repo, "other.txt"), "later work\n");
+    git(repo, "add", "other.txt");
+    git(repo, "commit", "-qm", "later work");
+    expect(recognisedOnBranch(store, repo, "t", head, readGit)?.reverted).toBe(false);
+    // A commit that undoes it and changes something else too is not its revert.
+    writeFileSync(join(repo, "a.txt"), "one\n");
+    writeFileSync(join(repo, "other.txt"), "changed\n");
+    git(repo, "commit", "-qam", "undo and more");
+    expect(recognisedOnBranch(store, repo, "t", head, readGit)?.reverted).toBe(false);
+    git(repo, "reset", "-q", "--hard", "HEAD~1");
+    // The exact inverse, after other work: said, as history.
+    git(repo, "revert", "--no-edit", landed.commit);
+    expect(recognisedOnBranch(store, repo, "t", head, readGit)).toEqual({ words: `Landed on main (${landed.commit.slice(0, 7)}) · a later commit reverted it`, reverted: true });
+    // It grants nothing: the task stays as it was, and nothing is recorded.
+    expect(landingOf(store, "t")).toBeNull();
+  });
+
+  test("a recorded landing stays history: Landed, never On main now; a later exact inverse is said (everyday-9 #3)", async () => {
+    built("t", { "a.txt": "two\n" });
+    const before = at();
+    const { landed } = await landNow("t");
+    if (landed?.ok !== true || landed.handoff !== null) throw new Error(JSON.stringify(landed));
+    expect(landedStanding(store, "t", readGit)).toEqual({ words: `Landed on main (${landed.commit.slice(0, 7)}).`, reverted: false });
+    const inverse = git(repo, "commit-tree", `${before}^{tree}`, "-p", landed.commit, "-m", "Revert it");
+    git(repo, "update-ref", "refs/heads/main", inverse);
+    expect(landedStanding(store, "t", readGit)).toEqual({ words: `Landed on main (${landed.commit.slice(0, 7)}) · a later commit reverted it`, reverted: true });
+    expect(landingOf(store, "t")).toMatchObject({ undone: false });
   });
 
   test("recognition never grants acceptance: work not accepted stays not accepted, and Land still refuses it", async () => {
