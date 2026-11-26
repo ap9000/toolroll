@@ -361,6 +361,10 @@ describe("the thread fence's terms", () => {
       [{ "user.email": "sam@example.com" }, { name: "Toolroll thread", email: "sam@example.com" }],
       [{ "user.name": "Sam Lee", "user.email": "sam@example.com" }, { name: "Sam Lee", email: "sam@example.com" }],
       [{ "user.name": "Sam <sam@evil.local>", "user.email": "sam@example.com" }, { name: "Toolroll thread", email: "sam@example.com" }],
+      // C1 controls, separators, bidi and invisible characters: that half unset, never passed on.
+      [{ "user.name": "Sam\u0085Lee", "user.email": "sam\u202e@example.com" }, THREAD_IDENTITY],
+      [{ "user.name": "Sam\u2028Lee", "user.email": "sam@example.com\u200b" }, THREAD_IDENTITY],
+      [{ "user.name": "\ufeffSam", "user.email": "sam@example.com\u2066" }, THREAD_IDENTITY],
     ];
     for (const [config, expected] of rows) {
       for (const key of ["user.name", "user.email"]) unsetConfig(world.project, key);
@@ -376,6 +380,13 @@ describe("the thread fence's terms", () => {
     writeFileSync(join(home, ".gitconfig"), `[user]\n\tname = Sam Global\n[include]\n\tpath = ${join(world.dir, "included")}\n`);
     expect(identityFrom("user.email\nsam@example.com\0", THREAD_IDENTITY, home, {})).toEqual({ name: "Sam Global", email: "sam@example.com" });
     expect(identityFrom("", THREAD_IDENTITY, home, {})).toEqual({ name: "Sam Global", email: "thread@toolroll.local" });
+    // git's XDG file under ~/.gitconfig, which wins where both say; a hostile global value is unset, not passed on.
+    const xdg = join(world.dir, "xdg");
+    mkdirSync(join(xdg, "git"), { recursive: true });
+    writeFileSync(join(xdg, "git", "config"), "[user]\n\tname = Sam Xdg\n\temail = xdg@example.com\n");
+    expect(identityFrom("", THREAD_IDENTITY, home, { XDG_CONFIG_HOME: xdg })).toEqual({ name: "Sam Global", email: "xdg@example.com" });
+    writeFileSync(join(home, ".gitconfig"), "[user]\n\tname = Sam\u202eGlobal\n\temail = home\u0085@example.com\n");
+    expect(identityFrom("", THREAD_IDENTITY, home, { XDG_CONFIG_HOME: xdg })).toEqual({ name: "Sam Xdg", email: "xdg@example.com" });
   });
 
   test("no sandbox here: the thread refuses to start, even where an operator allowed unconfined agents (D7)", async () => {

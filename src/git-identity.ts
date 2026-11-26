@@ -10,7 +10,9 @@
  *   read is the caller's refusal, never a quiet neutral identity.
  * - The global values come from the person's own global files (git's XDG file, then ~/.gitconfig, which wins), read as
  *   plain files with includes off, no system config and nothing run. A file that can't be read gives nothing.
- * - A value with a control character, `<` or `>`, or over 200 characters, counts as unset.
+ * - A value holding a character no copied command may (local-landing.ts unsafeInCommand: C0/C1 controls, line and
+ *   paragraph separators, bidi marks and invisible formatting characters), `<` or `>`, or over 200 characters, counts
+ *   as unset: checked on the value as read, before trimming.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -19,6 +21,7 @@ import { isAbsolute, join } from "node:path";
 import { run } from "./exec.js";
 import type { Runner } from "./worktree.js";
 import { hardenedGit, refusal } from "./teardown-git.js";
+import { unsafeInCommand } from "./local-landing.js";
 
 export type GitIdentity = { name: string; email: string };
 type Values = { name: string | null; email: string | null };
@@ -29,9 +32,9 @@ export const THREAD_IDENTITY: GitIdentity = Object.freeze({ name: "Toolroll thre
 export const DIRECT_CHAT_IDENTITY: GitIdentity = Object.freeze({ name: "Toolroll Direct Chat", email: "direct-chat@toolroll.local" });
 
 const plain = (value: string | undefined): string | null => {
-  if (value === undefined) return null;
+  if (value === undefined || unsafeInCommand(value) || /[<>]/.test(value)) return null;
   const trimmed = value.trim();
-  return trimmed !== "" && trimmed.length <= 200 && !/[\u0000-\u001f\u007f<>]/.test(trimmed) ? trimmed : null;
+  return trimmed !== "" && trimmed.length <= 200 ? trimmed : null;
 };
 
 /** The last `user.name` and `user.email` of a `git config --list -z` listing (no scopes), each only when plain. */
