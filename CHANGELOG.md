@@ -4,6 +4,29 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.122 — 2026-11-26
+
+Share one pinned skill library across every project and agent, approve releases on one clear screen, and enjoy a cleaner Mac titlebar.
+
+### New
+
+- **Global Skill Library:** add skills or import a pinned GitHub skill bundle (including 59+ skill packs) once in **Settings → Skills**, shared across all projects by default with whole-library or per-skill project opt-out.
+- **Automatic skill bundle updates & rollback:** daily checks apply clean updates automatically, hold suspicious changes for review with reasons, and offer one-step rollback without touching your manual skills.
+- **Also install on this computer:** mirror enabled global skills into your detected local Claude Code, Codex, and Gemini CLI folders in **Settings → Skills** without overwriting your own skills.
+- **Unified skills across every agent:** tasks, coding sessions, Direct Chat (Claude, Codex, Gemini), Flexible threads, live terminals, and the lead all receive the same pinned skill set.
+
+### Changed
+
+- **One-screen release sheet:** `/t/<id>/release` now shows a compact summary card with optional disclosure sections instead of two pages of boilerplate.
+- **Solo-owner skill library management:** solo installs can manage the global skill library, bundles, project opt-outs, and local sync without a password prompt.
+
+### Fixed
+
+- **Mac app titlebar alignment:** the top bar now sits cleanly on a single line beside the macOS window controls.
+- **Workbench help layout:** `T`/`S` keys fit on one row with shorter Land labels.
+- **Skill sandbox hardening:** custom evidence roots are denied across all launch kinds, and exact skill file digests and ancestor folders are re-verified at spawn time.
+- **`toolroll update` on checkout-deployed planes:** updating a plane originally deployed from a local checkout now works cleanly.
+
 ## 0.9.121 — 2026-11-26
 
 Share one pinned skill library across every project and agent, approve releases on one clear screen, and enjoy a cleaner Mac titlebar.
