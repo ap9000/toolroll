@@ -26,7 +26,7 @@ case "$lane" in
   ubuntu-umask002|no-userns|debian12|debian13) apt_install $packages_apt ;;
   node26) apt_install $packages_apt libatomic1 ;;
   alpine) apk add --no-cache nodejs npm git bubblewrap socat ripgrep bash util-linux-misc >/dev/null ;;
-  fedora) dnf install -y -q nodejs npm git bubblewrap socat ripgrep util-linux which >/dev/null ;;
+  fedora) dnf install -y -q nodejs npm git bubblewrap socat ripgrep util-linux util-linux-script which >/dev/null ;;
   *) echo "unknown lane: $lane" >&2; exit 2 ;;
 esac
 # Node: the image's own, else the runner's, mounted read-only at /opt/node.
