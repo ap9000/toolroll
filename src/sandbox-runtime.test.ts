@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { checkLinuxDependencies } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 import { LINUX_SANDBOX_TOOLS, SANDBOX_LAUNCH_SPEC, linuxSandboxInstallLine, missingLinuxSandboxTools, sandboxRuntimeProblem, srtSpawn, type SandboxLaunchSpec, type SrtTerms } from "./sandbox-runtime.js";
+import { managerLine, packageSystem } from "./linux-packages.js";
 import { checkSeccompHelper, resolveLinuxSandboxTools, sandboxToolExclusions, seccompHelperPath, verifyLinuxSandboxTools, type LinuxSandboxTools, type ToolTrust } from "./sandbox-tools.js";
 import { toolrollInstall } from "./agent-fence.js";
 import { outsideTempDir } from "../test/short-temp.js";
@@ -37,31 +38,48 @@ describe("the Linux sandbox's programs: one list", () => {
     expect(named.length).toBeGreaterThan(0);
     for (const error of named) expect(LINUX_SANDBOX_TOOLS.some(tool => error.includes(tool.command)), error).toBe(true);
     // With every listed program there, the runtime names none missing.
-    for (const tool of LINUX_SANDBOX_TOOLS) stub(tool.command);
+    // `which` is the real one linked above (never written through).
+    for (const tool of LINUX_SANDBOX_TOOLS) if (tool.command !== "which") stub(tool.command);
     expect(checkLinuxDependencies().errors.filter(error => /not installed/.test(error))).toEqual([]);
   });
 
   test("a missing program is found and named by its package, with the line that installs it", () => {
     stub("bwrap");
+    stub("bash");
+    stub("which");
     stub("rg", 0o644); // not executable: not there
     expect(missingLinuxSandboxTools(bin)).toEqual(["socat", "ripgrep"]);
-    expect(missingLinuxSandboxTools("")).toEqual(["bubblewrap", "socat", "ripgrep"]);
+    expect(missingLinuxSandboxTools("")).toEqual(["bubblewrap", "socat", "ripgrep", "bash", "which"]);
     stub("socat");
     stub("rg");
     expect(missingLinuxSandboxTools(bin)).toEqual([]);
     process.env["PATH"] = join(bin, "nothing-here");
-    expect(sandboxRuntimeProblem("linux")).toBe("bubblewrap, socat and ripgrep are not installed (sudo apt update && sudo apt install bubblewrap socat ripgrep (Fedora: sudo dnf install bubblewrap socat ripgrep))");
+    expect(sandboxRuntimeProblem("linux")).toBe(`bubblewrap, socat, ripgrep, bash and which are not installed (${linuxSandboxInstallLine(["bubblewrap", "socat", "ripgrep", "bash", "which"])})`);
+  });
+
+  test.each([
+    ["apt", false, "sudo apt update && sudo apt install bubblewrap socat ripgrep bash debianutils"],
+    ["apt", true, "apt update && apt install bubblewrap socat ripgrep bash debianutils"],
+    ["dnf", false, "sudo dnf install bubblewrap socat ripgrep bash which"],
+    ["zypper", false, "sudo zypper install bubblewrap socat ripgrep bash which"],
+    ["pacman", false, "sudo pacman -S --needed bubblewrap socat ripgrep bash which"],
+    ["apk", true, "apk add bubblewrap socat ripgrep bash which"],
+  ] as const)("the install line for %s (root: %s) uses its own manager and package names, sudo only when not root", (manager, isRoot, line) => {
+    expect(linuxSandboxInstallLine(undefined, { manager, root: isRoot })).toBe(line);
+    // Found by the manager's fixed system path; none found: every manager's line, named.
+    expect(packageSystem(path => path === { apt: "/usr/bin/apt-get", dnf: "/usr/bin/dnf", zypper: "/usr/bin/zypper", pacman: "/usr/bin/pacman", apk: "/sbin/apk" }[manager], isRoot ? 0 : 1000)).toEqual({ manager, root: isRoot });
   });
 
   test("install.sh, the Linux guide and the README name exactly these", () => {
     expect(root("install.sh")).toContain(`for tool in ${LINUX_SANDBOX_TOOLS.map(tool => `${tool.command}:${tool.package}`).join(" ")}; do`);
-    const packages = LINUX_SANDBOX_TOOLS.map(tool => tool.package).join(" ");
-    expect(linuxSandboxInstallLine()).toBe(`sudo apt update && sudo apt install ${packages} (Fedora: sudo dnf install ${packages})`);
+    const packages = LINUX_SANDBOX_TOOLS.map(tool => tool.package);
+    expect(linuxSandboxInstallLine(undefined, { manager: null, root: false }).split("; ")).toEqual([
+      `${managerLine("apt", packages, false)} (Debian, Ubuntu)`, `${managerLine("dnf", packages, false)} (Fedora)`, `${managerLine("zypper", packages, false)} (openSUSE)`,
+      `${managerLine("pacman", packages, false)} (Arch)`, `${managerLine("apk", packages, false)} (Alpine)`]);
     const guide = root("docs/guide/linux.md");
-    expect(guide).toContain(`sudo apt update && sudo apt install ${packages}`);
-    expect(guide).toContain(`sudo dnf install ${packages}`);
-    expect(root("README.md")).toContain(`sudo apt update && sudo apt install ${packages}`);
-    expect(root("docs/guide/getting-started.md")).toContain(`sudo apt update && sudo apt install ${packages}`);
+    for (const manager of ["apt", "dnf", "zypper", "pacman", "apk"] as const) expect(guide).toContain(managerLine(manager, packages, false));
+    expect(root("README.md")).toContain(managerLine("apt", packages, false));
+    expect(root("docs/guide/getting-started.md")).toContain(managerLine("apt", packages, false));
   });
 });
 
@@ -108,7 +126,7 @@ describe("the Linux sandbox's own programs: root's own, by exact path, checked a
     expect(refused.ok).toBe(false);
     if (!refused.ok) {
       expect(refused.why).toContain(`${join(users, "bwrap")}: ${join(users, "bwrap")} isn't owned by root`);
-      expect(refused.why).toContain("install bubblewrap from your system package manager (sudo apt install bubblewrap; Fedora: sudo dnf install bubblewrap)");
+      expect(refused.why).toContain(`install bubblewrap from your system package manager (${linuxSandboxInstallLine(["bubblewrap"])})`);
     }
   });
 
@@ -116,7 +134,7 @@ describe("the Linux sandbox's own programs: root's own, by exact path, checked a
     const system = folder("system", ["rg"]);
     process.env["PATH"] = `${folder("cargo-bin")}:${system}`;
     expect(resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp: helper(system) })).toEqual({ ok: false,
-      why: `ripgrep (rg) has no copy owned by root in ${system}: install ripgrep from your system package manager (sudo apt install ripgrep; Fedora: sudo dnf install ripgrep)` });
+      why: `ripgrep (rg) has no copy owned by root in ${system}: install ripgrep from your system package manager (${linuxSandboxInstallLine(["ripgrep"])})` });
   });
 
   test("a cached program swapped or loosened between launches is refused on the next launch", () => {
@@ -172,7 +190,7 @@ describe("the Linux sandbox's own programs: root's own, by exact path, checked a
     const system = folder("system", ["socat"]);
     process.env["PATH"] = folder("on-path");
     const resolved = resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp: helper(system) });
-    expect(resolved).toEqual({ ok: false, why: `socat has no copy owned by root in ${system}: install socat from your system package manager (sudo apt install socat; Fedora: sudo dnf install socat)` });
+    expect(resolved).toEqual({ ok: false, why: `socat has no copy owned by root in ${system}: install socat from your system package manager (${linuxSandboxInstallLine(["socat"])})` });
     if (!resolved.ok) expect(() => srtSpawn("/bin/true", [], terms(system), system, undefined, "linux", () => resolved)).toThrow(resolved.why);
   });
 

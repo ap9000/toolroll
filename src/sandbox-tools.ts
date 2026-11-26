@@ -28,6 +28,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SrtTerms } from "./sandbox-runtime.js";
+import { installLine } from "./linux-packages.js";
 import { toolrollPackageRoot, trustRepair, type TrustRepair } from "./trust-repair.js";
 import { platformAcl, rootOwnedBinary, rootOwnedFolders, type AclReader } from "./trusted-path.js";
 
@@ -93,8 +94,7 @@ export function sandboxToolExclusions(terms: SrtTerms, cwd: string): ToolExclusi
 const mayWrite = (writes: NonNullable<ToolExclusions["writes"]>, path: string): boolean =>
   writes.allow.some(root => insideOrAt(path, root)) && !writes.deny.some(root => insideOrAt(path, root));
 
-const installWords = (pkg: string): string =>
-  `install ${pkg} from your system package manager (sudo apt install ${pkg}; Fedora: sudo dnf install ${pkg})`;
+const installWords = (pkg: string): string => `install ${pkg} from your system package manager (${installLine([pkg])})`;
 
 type Trust = { root: readonly number[]; codeOwner: number | undefined; acl: AclReader | null };
 type Checked = { ok: true; tool: SandboxTool } | { ok: false; why: string };

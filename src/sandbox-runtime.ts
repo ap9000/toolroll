@@ -23,6 +23,7 @@ import { checkLinuxDependencies, getLinuxDependencyStatus } from "@anthropic-ai/
 import type { FsReadRestrictionConfig, FsWriteRestrictionConfig } from "@anthropic-ai/sandbox-runtime";
 import { linuxSandboxTools, sandboxToolExclusions, seccompHelperRepair, type LinuxSandboxTools, type LinuxSandboxToolsVerdict, type ToolExclusions } from "./sandbox-tools.js";
 import { trustRepairLines } from "./trust-repair.js";
+import { installLine, packageSystem, type PackageSystem } from "./linux-packages.js";
 
 const require = createRequire(import.meta.url);
 
@@ -199,15 +200,18 @@ export function sandboxRuntimeRepair(platform: NodeJS.Platform = process.platfor
 }
 
 /**
- * The programs the Linux sandbox needs on PATH, each with the package that installs it (the same name in apt, dnf and
- * pacman). bubblewrap and socat are what the runtime's own check (checkLinuxDependencies) requires; ripgrep is how it
- * finds nested protected names. The one list: every message, install.sh's tip and docs/guide/linux.md name exactly
- * these (sandbox-runtime.test.ts holds them to it).
+ * The programs the Linux sandbox needs on PATH, each with the package that installs it (linux-packages.ts names it per
+ * manager). bubblewrap and socat are what the runtime's own check (checkLinuxDependencies) requires; ripgrep is how it
+ * finds nested protected names; bash and which are what it runs commands with and looks the shell up by
+ * (sandbox-tools.ts checks every one). The one list: every message, install.sh's tip and docs/guide/linux.md name
+ * exactly these (sandbox-runtime.test.ts holds them to it).
  */
 export const LINUX_SANDBOX_TOOLS: readonly { command: string; package: string }[] = [
   { command: "bwrap", package: "bubblewrap" },
   { command: "socat", package: "socat" },
   { command: "rg", package: "ripgrep" },
+  { command: "bash", package: "bash" },
+  { command: "which", package: "which" },
 ];
 
 /** "bubblewrap, socat and ripgrep": packages, in words. */
@@ -224,9 +228,10 @@ export function missingLinuxSandboxTools(path: string = process.env["PATH"] ?? "
   return LINUX_SANDBOX_TOOLS.filter(tool => !found(tool.command)).map(tool => tool.package);
 }
 
-/** The line that installs these packages: apt (its package lists refreshed first: a fresh image's are empty), then dnf. */
-export function linuxSandboxInstallLine(packages: readonly string[] = LINUX_SANDBOX_TOOLS.map(tool => tool.package)): string {
-  return `sudo apt update && sudo apt install ${packages.join(" ")} (Fedora: sudo dnf install ${packages.join(" ")})`;
+/** The line that installs these packages with this computer's package manager (linux-packages.ts: apt with its lists
+ * refreshed first, dnf, zypper, pacman or apk; sudo only when not root; every manager's line when none is found). */
+export function linuxSandboxInstallLine(packages: readonly string[] = LINUX_SANDBOX_TOOLS.map(tool => tool.package), system: PackageSystem = packageSystem()): string {
+  return installLine(packages, system);
 }
 
 /** "bubblewrap, socat and ripgrep": what every "Install …" sentence names. */

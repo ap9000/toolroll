@@ -5,6 +5,7 @@
  * ask-once about the background, and what quitting does to the `up` it owns. And the gate in cli.ts: without a
  * terminal, with --json or under a coding agent, nothing here runs and bare `toolroll` behaves exactly as before.
  */
+import { linuxSandboxInstallLine } from "./sandbox-runtime.js";
 import { describe, expect, test, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -433,7 +434,7 @@ describe("l1: a Linux computer missing the sandbox's programs (stranger test, Ub
         expect(await runEasyStart("start", args, seams), local).toBe(3);
         expect(lines).toEqual([
           "Toolroll needs socat and ripgrep to run agents in a sandbox on this computer.",
-          "Install them, then run toolroll again: sudo apt update && sudo apt install socat ripgrep (Fedora: sudo dnf install socat ripgrep)",
+          `Install them, then run toolroll again: ${linuxSandboxInstallLine(["socat", "ripgrep"])}`,
         ]);
         expect(inits).toEqual([]);
         expect(calls).toEqual([]);
@@ -551,7 +552,7 @@ describe("l1: a Linux computer missing the sandbox's programs (stranger test, Ub
       spawnUp: () => { throw Error("started an up"); }, runUpForeground: async () => { throw Error("started an up"); },
     } } });
     expect(code).toBe(3);
-    expect(out.join("\n")).toContain("sudo apt update && sudo apt install socat (Fedora: sudo dnf install socat)");
+    expect(out.join("\n")).toContain(linuxSandboxInstallLine(["socat"]));
     expect(existsSync(file)).toBe(false);
   });
 });

@@ -21,12 +21,18 @@ you own: https://docs.npmjs.com/resolving-eacces-permissions-errors-when-install
 ## Install the sandbox tools
 
 ```sh
-sudo apt update && sudo apt install bubblewrap socat ripgrep   # Debian, Ubuntu
-sudo dnf install bubblewrap socat ripgrep                      # Fedora
+sudo apt update && sudo apt install bubblewrap socat ripgrep bash debianutils   # Debian, Ubuntu
+sudo dnf install bubblewrap socat ripgrep bash which                            # Fedora
+sudo zypper install bubblewrap socat ripgrep bash which                         # openSUSE
+sudo pacman -S --needed bubblewrap socat ripgrep bash which                     # Arch
+sudo apk add bubblewrap socat ripgrep bash which                                # Alpine
 ```
 
-Toolroll runs Claude and Gemini agents in a sandbox where its own secrets
-don't exist, and the sandbox needs all three. Until they're installed,
+Leave out `sudo` when you are already root (a container). Toolroll runs
+Claude and Gemini agents in a sandbox where its own secrets don't exist, and
+the sandbox needs all of these (`which` is in `debianutils` on Debian and
+Ubuntu). It runs on 64-bit Linux only (x86_64, aarch64): a 32-bit system
+such as 32-bit Raspberry Pi OS has no sandbox for it. Until they're installed,
 `toolroll` says which are missing and doesn't start. See
 [Security](security.md).
 
@@ -86,6 +92,23 @@ with a password", you can start over without one:
    (`$XDG_CONFIG_HOME/toolroll` when `XDG_CONFIG_HOME` is set). Older
    installs may use `standing-orders` or `nightorders` instead of
    `toolroll`; if you set `TOOLROLL_DB`, it's the folder holding that file.
+
+## Uninstall
+
+Removing Toolroll and removing its data are two separate steps.
+
+1. Stop it and remove its services: `toolroll stop`, then
+   `toolroll background off` if you turned that on (it removes the login
+   service) and `toolroll daemon uninstall` if you set up a watch service,
+   and quit every terminal running `toolroll`.
+2. Remove the command: `npm uninstall -g toolroll` (and
+   `npm uninstall -g standing-orders` if an older install left it).
+3. Only if you also want its data gone: tasks, results, settings, saved
+   password, keys you gave it and the runtimes `toolroll update` staged all
+   live in `~/.config/toolroll` (`$XDG_CONFIG_HOME/toolroll` when that is
+   set). Moving it aside (`mv ~/.config/toolroll ~/.config/toolroll.old`)
+   keeps a way back; deleting it can't be undone. Your projects' own
+   folders aren't touched either way.
 
 ## Process containment
 

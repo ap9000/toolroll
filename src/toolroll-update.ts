@@ -919,6 +919,8 @@ function assertNoneActive(stateDir: string): void {
 export function prepareRuntimeUpdate(o: StartOptions, now: Date): RuntimeUpdateJournal | { refused: string } {
   if (!/^\d+\.\d+\.\d+$/.test(o.version)) return { refused: `${o.version} is not a release version (x.y.z).` };
   if (!o.allowDowngrade && !isNewer(o.version, o.current.version)) return { refused: `Toolroll ${o.version} is not newer than ${o.current.version}. To go back to an older release, run toolroll update --version ${o.version} --allow-downgrade.` };
+  // Nothing set up here: refused before anything is staged or drained, and no database is made to update.
+  if (!existsSync(o.databaseFile)) return { refused: `Toolroll isn't set up on this computer yet (there's no database at ${o.databaseFile}), so there's nothing to update. Nothing was changed. To get the newest command, run npm install -g toolroll@latest.` };
   try { assertNoneActive(o.stateDir); keepCompletedUpdate(o.stateDir); } catch (error) { return { refused: (error as Error).message }; }
   const at = o.when === "at" ? nextAt(o.at ?? "03:00", now).toISOString() : null;
   const j = newJournal("update", { stateDir: o.stateDir, databaseFile: o.databaseFile, from: o.current, to: { version: o.version, dist: "" }, when: o.when, at, actor: o.actor }, now);
