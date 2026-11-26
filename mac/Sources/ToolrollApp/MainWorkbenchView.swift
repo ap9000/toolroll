@@ -87,6 +87,7 @@ public struct MainWorkbenchView: View {
                         }
                     }
                 }
+                .ignoresSafeArea(.container, edges: .top)
             }
 
             if store.isCommandPaletteOpen {
@@ -195,7 +196,7 @@ public struct MainWorkbenchView: View {
 
     private var topChromeBar: some View {
         HStack(spacing: 8) {
-            Spacer().frame(width: 70)
+            Spacer().frame(width: 78)
 
             ChromeIconButton(systemName: "sidebar.left", isOn: store.isSidebarVisible, help: "Show or Hide Sidebar (⌘B)") {
                 withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) { store.isSidebarVisible.toggle() }
@@ -303,8 +304,10 @@ public struct MainWorkbenchView: View {
                 withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) { store.isInspectorVisible.toggle() }
             }
         }
+        .padding(.top, 2)
+        .padding(.bottom, 6)
         .padding(.trailing, 10)
-        .frame(height: 44)
+        .frame(height: 36)
     }
 
     @ViewBuilder
