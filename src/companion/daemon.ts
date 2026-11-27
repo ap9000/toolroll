@@ -34,6 +34,7 @@ import {
   signRelayToken,
 } from "./relay-auth.js";
 import {
+  deviceAccountStands,
   getPairedDevice,
   listPairedDevices,
   loadOrCreateCompanionHostKeys,
@@ -84,13 +85,17 @@ export interface CompanionReadHandlers {
   /** Pure read helper (`mintNonce: false`) — NEVER calls GET /t/<task>/approval. */
   taskApprovalRead: (principal: PairedDevicePrincipal, params: Record<string, unknown>) => Promise<unknown> | unknown;
   runWindowRead: (principal: PairedDevicePrincipal, params: Record<string, unknown>) => Promise<unknown> | unknown;
+  /** What the account may see right now, as an opaque fingerprint (its standing, credential generation, projects and
+   * the console's ceiling). Taken before a read; anything queued for the phone is sent only while it still matches. */
+  accessSignature?: (principal: PairedDevicePrincipal) => string;
   /** Subscribe to live run deltas; returned `unsubscribe` stops watching ONLY (never stops the run). */
   runWatchSubscribe?: (
     principal: PairedDevicePrincipal,
     params: Record<string, unknown>,
     emit: (record: Buffer) => void,
-    /** The run finished (or the watch can't go on): the phone gets END after what was emitted. */
-    end?: () => void,
+    /** The run finished: the phone gets END after everything emitted is delivered. `denied`: the account can no longer
+     * see it — whatever is queued is discarded and the phone gets an error instead. */
+    end?: (reason?: "denied") => void,
   ) => { ok: true; unsubscribe: () => void } | { ok: false; code: string; message: string };
 }
 
@@ -114,6 +119,8 @@ export interface PendingPairingState {
   /** Who may see, confirm and cancel this pairing: the console's binding of the person and the very session that
    * started it (opaque to the engine). A different session — even the same account's — gets "unknown pairing". */
   binding: string;
+  /** The account's credential generation that authorized the pairing: it must still hold when the phone is saved. */
+  accountGeneration: number | null;
   connId: number | null;
   confirmCode: string | null;
   deviceName: string | null;
@@ -132,8 +139,12 @@ interface ActivePeerConn {
   principal: PairedDevicePrincipal | null;
   streamGuard: CompanionStreamGuard;
   unaryPacers: Map<number, UnaryResponsePacer>;
-  watchStreams: Map<number, { buffer: LiveWatchBuffer; unsubscribe: () => void; seq: number }>;
+  watchStreams: Map<number, WatchEntry>;
+  /** Each open stream's access fingerprint when its read began (accessSignature). */
+  streamAccess: Map<number, string>;
 }
+
+interface WatchEntry { buffer: LiveWatchBuffer; unsubscribe: () => void; seq: number; ending: boolean }
 
 export interface CompanionDaemonOptions {
   store: Store;
@@ -181,9 +192,9 @@ export class CompanionDaemonEngine {
 
   /** Step 1 of pairing: initiated ONLY by a signed-in approver account on the Mac. `binding` names the person and
    * the session that started it; status, confirmation and cancellation answer only to the same binding. */
-  startPairing(accountName: string, binding: string = accountName): { ok: true; qr: PairingQrPayload; expiresAtMs: number } | { ok: false; error: string } {
+  startPairing(accountName: string, binding: string = accountName, accountGeneration: number | null = null): { ok: true; qr: PairingQrPayload; expiresAtMs: number } | { ok: false; error: string } {
     const account = this.store.accountOf(accountName);
-    if (account === null || account.revokedAt !== null || account.role !== "approver") {
+    if (account === null || account.revokedAt !== null || account.role !== "approver" || (accountGeneration !== null && account.generation !== accountGeneration)) {
       return { ok: false, error: "Only an active approver account can start pairing." };
     }
     // One pairing at a time per binding: a new QR retires the previous one (its phone, if any, is dropped).
@@ -216,6 +227,7 @@ export class CompanionDaemonEngine {
       expiresAtMs,
       status: "awaiting_scan",
       binding,
+      accountGeneration,
       connId: null,
       confirmCode: null,
       deviceName: null,
@@ -241,7 +253,7 @@ export class CompanionDaemonEngine {
   }
 
   /** A pairing's state, for the binding that started it only (anyone else: null, as if it didn't exist). */
-  getPairingStatus(pairSessionId: string, binding?: string): Omit<PendingPairingState, "pairPsk" | "session" | "phoneStaticPub" | "deviceRelayPub" | "binding"> | null {
+  getPairingStatus(pairSessionId: string, binding?: string): Omit<PendingPairingState, "pairPsk" | "session" | "phoneStaticPub" | "deviceRelayPub" | "binding" | "accountGeneration"> | null {
     const p = this.pairings.get(pairSessionId);
     if (p === undefined || (binding !== undefined && p.binding !== binding)) return null;
     if ((p.status === "awaiting_scan" || p.status === "awaiting_confirm") && this.nowMs() > p.expiresAtMs) {
@@ -280,7 +292,7 @@ export class CompanionDaemonEngine {
       return { ok: false, error: "Pairing session expired." };
     }
     const account = this.store.accountOf(p.accountName);
-    if (account === null || account.revokedAt !== null || account.role !== "approver") {
+    if (account === null || account.revokedAt !== null || account.role !== "approver" || (p.accountGeneration !== null && account.generation !== p.accountGeneration)) {
       this.abortPairing(pairSessionId, "aborted_rejected");
       return { ok: false, error: "Approver account standing changed." };
     }
@@ -301,14 +313,16 @@ export class CompanionDaemonEngine {
       devicePsk,
       pskVersion: 1,
       recoveryGeneration: identity.recoveryGeneration,
+      accountGeneration: p.accountGeneration ?? account.generation,
       createdAt: new Date(this.nowMs()).toISOString(),
     });
 
     try {
       await this.onDeviceRegistered?.(deviceId, deviceRelayPub.toString("base64url"));
     } catch {
-      // The relay never admitted the phone: undo the record rather than leave a device that can never connect.
-      revokePairedDeviceRecord(this.store.handle, deviceId, new Date(this.nowMs()));
+      // The relay may or may not have admitted the phone: undo the record here and ask the relay to forget it too
+      // (revokeDevice's removal; a reconcile on the next connect settles it if that can't land either).
+      await this.revokeDevice(deviceId);
       this.abortPairing(pairSessionId, "aborted_rejected");
       p.status = "failed";
       return { ok: false, error: "The relay didn't accept the phone. Check phone access in Settings and pair again." };
@@ -316,7 +330,7 @@ export class CompanionDaemonEngine {
     // Standing, the phone's socket and the pairing itself may have changed while the relay answered.
     const after = this.store.accountOf(p.accountName);
     const still = this.peers.get(connId);
-    if (p.status !== "confirming" || after === null || after.revokedAt !== null || after.role !== "approver"
+    if (p.status !== "confirming" || after === null || after.revokedAt !== null || after.role !== "approver" || after.generation !== account.generation
       || still === undefined || still.peerId !== pairSessionId || still.state !== "pair_pending_confirm") {
       await this.revokeDevice(deviceId);
       this.abortPairing(pairSessionId, "aborted_rejected");
@@ -455,6 +469,7 @@ export class CompanionDaemonEngine {
       streamGuard: new CompanionStreamGuard(this.globalBudget),
       unaryPacers: new Map(),
       watchStreams: new Map(),
+      streamAccess: new Map(),
     });
   }
 
@@ -565,7 +580,7 @@ export class CompanionDaemonEngine {
       return;
     }
     const account = this.store.accountOf(dev.accountName);
-    if (account === null || account.revokedAt !== null) {
+    if (!deviceAccountStands(dev, account)) {
       this.dropPeer(peer.connId, "account_revoked");
       return;
     }
@@ -625,8 +640,24 @@ export class CompanionDaemonEngine {
     }
     const dev = getPairedDevice(this.store.handle, principal.deviceId);
     if (dev === null || dev.revokedAt !== null) return false;
-    const account = this.store.accountOf(principal.accountName);
-    return account !== null && account.revokedAt === null;
+    return deviceAccountStands(dev, this.store.accountOf(principal.accountName));
+  }
+
+  /** The stream's read-time access still holds (no fingerprint taken: nothing to compare). */
+  private accessHolds(peer: ActivePeerConn, streamId: number): boolean {
+    const taken = peer.streamAccess.get(streamId);
+    if (taken === undefined || this.handlers.accessSignature === undefined || peer.principal === null) return true;
+    return this.handlers.accessSignature(peer.principal) === taken;
+  }
+
+  /** Ends a stream whose account can no longer see what it carries: nothing queued is sent. */
+  private denyStream(peer: ActivePeerConn, streamId: number): void {
+    const watch = peer.watchStreams.get(streamId);
+    if (watch !== undefined) { watch.unsubscribe(); peer.watchStreams.delete(streamId); }
+    peer.unaryPacers.delete(streamId);
+    peer.streamAccess.delete(streamId);
+    peer.streamGuard.closeStream(streamId);
+    this.sendEncryptedFrame(peer, { type: FrameType.ERROR, streamId, seq: 0, payload: encodeErrorPayload("not_found", "That's no longer available to you.") });
   }
 
   private async handleAuthenticatedFrame(peer: ActivePeerConn, frame: CompanionFrame): Promise<void> {
@@ -649,6 +680,7 @@ export class CompanionDaemonEngine {
         peer.watchStreams.delete(frame.streamId);
       }
       peer.unaryPacers.delete(frame.streamId);
+      peer.streamAccess.delete(frame.streamId);
       peer.streamGuard.closeStream(frame.streamId);
       return;
     }
@@ -727,6 +759,8 @@ export class CompanionDaemonEngine {
     params: Record<string, unknown>,
   ): Promise<void> {
     const principal = peer.principal!;
+    // The account's access as the read begins: what it yields is delivered only while this still holds.
+    if (this.handlers.accessSignature !== undefined) peer.streamAccess.set(streamId, this.handlers.accessSignature(principal));
     try {
       if (method === "device.self.revoke") {
         this.sendRpcResult(peer, streamId, { ok: true, revoked: true });
@@ -759,18 +793,17 @@ export class CompanionDaemonEngine {
           return;
         }
         const buffer = new LiveWatchBuffer();
-        const watchEntry = { buffer, unsubscribe: () => {}, seq: 0 };
+        const watchEntry: WatchEntry = { buffer, unsubscribe: () => {}, seq: 0, ending: false };
         const sub = this.handlers.runWatchSubscribe(principal, params, record => {
           if (peer.watchStreams.get(streamId) !== watchEntry) return; // stopped watching, or not admitted yet
           buffer.push(record);
           this.pumpWatchStream(peer, streamId, watchEntry);
-        }, () => {
-          // Ended by the read side: whatever is buffered goes first, then END; the stream is closed.
+        }, reason => {
           if (peer.watchStreams.get(streamId) !== watchEntry) return;
+          if (reason === "denied") { this.denyStream(peer, streamId); return; }
+          // Ended by the read side: everything buffered is delivered (as credit allows), then END.
+          watchEntry.ending = true;
           this.pumpWatchStream(peer, streamId, watchEntry);
-          peer.watchStreams.delete(streamId);
-          peer.streamGuard.closeStream(streamId);
-          this.sendEncryptedFrame(peer, { type: FrameType.END, streamId, seq: watchEntry.seq++, payload: Buffer.alloc(0) });
         });
         if (!sub.ok) {
           peer.streamGuard.closeStream(streamId);
@@ -827,6 +860,7 @@ export class CompanionDaemonEngine {
   }
 
   private pumpUnaryPacer(peer: ActivePeerConn, streamId: number, pacer: UnaryResponsePacer): void {
+    if (!this.accessHolds(peer, streamId)) { this.denyStream(peer, streamId); return; }
     const pulled = pacer.pullAvailable(this.nowMs());
     if (!pulled.ok) {
       peer.unaryPacers.delete(streamId);
@@ -844,15 +878,13 @@ export class CompanionDaemonEngine {
     }
     if (pacer.done) {
       peer.unaryPacers.delete(streamId);
+      peer.streamAccess.delete(streamId);
       peer.streamGuard.closeStream(streamId);
     }
   }
 
-  private pumpWatchStream(
-    peer: ActivePeerConn,
-    streamId: number,
-    watch: { buffer: LiveWatchBuffer; unsubscribe: () => void; seq: number },
-  ): void {
+  private pumpWatchStream(peer: ActivePeerConn, streamId: number, watch: WatchEntry): void {
+    if (!this.accessHolds(peer, streamId)) { this.denyStream(peer, streamId); return; }
     for (const rec of watch.buffer.drainAvailable()) {
       this.sendEncryptedFrame(peer, {
         type: FrameType.CHUNK,
@@ -861,9 +893,17 @@ export class CompanionDaemonEngine {
         payload: rec,
       });
     }
+    // An ended watch closes once everything it buffered has gone out.
+    if (watch.ending && watch.buffer.length === 0 && watch.buffer.pendingCut === 0 && peer.watchStreams.get(streamId) === watch) {
+      peer.watchStreams.delete(streamId);
+      peer.streamAccess.delete(streamId);
+      peer.streamGuard.closeStream(streamId);
+      this.sendEncryptedFrame(peer, { type: FrameType.END, streamId, seq: watch.seq++, payload: Buffer.alloc(0) });
+    }
   }
 
   private sendRpcError(peer: ActivePeerConn, streamId: number, code: string, message: string): void {
+    peer.streamAccess.delete(streamId);
     peer.streamGuard.closeStream(streamId);
     this.sendEncryptedFrame(peer, {
       type: FrameType.ERROR,

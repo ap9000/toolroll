@@ -82,12 +82,14 @@ export function createPhoneSettingsHandlers(runtime: Pick<ServerRuntime, "store"
     const state = !on ? " · Off" : access.problem() !== null ? " · Not running" : status?.state === "connected" ? " · On" : status?.state === "unreachable" ? " · Can't reach the relay" : " · Starting";
     const accessSection = settingsSection({
       id: "phone-access", title: "Phone access", state,
-      lead: on ? "Your paired iPhone can see what needs you, read plans, steps and changes, and watch agents work. Approving still happens here." : "Let the Toolroll iPhone app see your work. Nothing is shared until you pair a phone.",
+      lead: on ? "Your paired iPhone can see what needs you, read plans, steps and changes, and watch agents work. Approving still happens here."
+        : access.relayKind() === "external" || process.env["TOOLROLL_RELAY_URL"] ? "Let the Toolroll iPhone app see your work. Nothing is shared until you pair a phone."
+          : "Let the Toolroll iPhone app see your work. Nothing is shared until you pair a phone. Without a relay set (TOOLROLL_RELAY_URL), only the iOS Simulator on this Mac can connect.",
       body: joinHtml([
         access.problem() === null ? "" : notice(access.problem()!),
         status?.state === "unreachable" ? notice(html`The relay didn't answer: ${status.error}. Toolroll keeps trying.`) : "",
         on ? reach : "",
-        kitSectionForm({ proof: "phone-access", action: "/settings/phone/access", id: "phone-access-form", native: true,
+        !store.isInstanceOperator(who.name) ? note(on ? "Whoever runs this Toolroll turned phone access on." : "Ask whoever runs this Toolroll to turn on phone access.") : kitSectionForm({ proof: "phone-access", action: "/settings/phone/access", id: "phone-access-form", native: true,
           hidden: { act: on ? "off" : "on" },
           save: on ? { label: "Turn off phone access", variant: "danger" } : { label: "Turn on phone access" },
           confirm: on ? "Turn off phone access" : "Turn on phone access",
@@ -162,8 +164,10 @@ export function createPhoneSettingsHandlers(runtime: Pick<ServerRuntime, "store"
     if (body.getAll("password").length > 1 || body.getAll("act").length !== 1) return show(ctx.response, 400, page(who, { problem: "Submit one value for each field." }).body);
     const act = body.get("act");
     if (act !== "on" && act !== "off") return show(ctx.response, 400, page(who, { problem: "Choose on or off." }).body);
+    // An installation-wide switch: an instance operator's, proved again here (the route's role gate drew the form).
+    if (!store.isInstanceOperator(who.name)) return show(ctx.response, 403, page(who, { problem: "An instance operator turns phone access on or off." }).body);
     if (!passwordHolds(who, body.get("password") ?? "")) return show(ctx.response, 403, page(who, { problem: passwordProblem(who) }).body);
-    await deps.access.turn(act === "on", who.name, runtime.clock());
+    await deps.access.turn(act === "on", who.name, runtime.clock(), () => store.isInstanceOperator(who.name));
     return redirect(ctx.response, "/settings/phone");
   }
 
@@ -176,7 +180,7 @@ export function createPhoneSettingsHandlers(runtime: Pick<ServerRuntime, "store"
     const service = deps.access.service();
     if (service === null) return show(ctx.response, 409, page(who, { problem: "Turn on phone access first." }).body);
     const binding = bindingOf(who);
-    const started = service.startPairing(who.name, binding);
+    const started = service.startPairing(who.name, binding, who.session.generation);
     if (!started.ok) return show(ctx.response, 409, page(who, { problem: started.error }).body);
     openPairings.set(binding, started.qr.pairSessionId);
     const built = page(who, { qr: { payload: JSON.stringify(started.qr), expiresAtMs: started.expiresAtMs } });

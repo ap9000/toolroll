@@ -445,6 +445,11 @@ export class LiveWatchBuffer {
     return this.usedBytes;
   }
 
+  /** Records dropped and not yet reported to the phone (a `cut` marker is still owed). */
+  get pendingCut(): number {
+    return this.droppedCount;
+  }
+
   get length(): number {
     return this.records.length;
   }

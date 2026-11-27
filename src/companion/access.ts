@@ -69,7 +69,8 @@ export interface PhoneAccess {
   /** Why it isn't running although on (a bad relay setting, a port in use), if so. */
   problem(): string | null;
   relayKind(): "built-in" | "external" | null;
-  turn(on: boolean, by: string, now: Date): Promise<void>;
+  /** `allowed` is re-proved inside the serialized change (the switch's authority, checked at the moment it applies). */
+  turn(on: boolean, by: string, now: Date, allowed?: () => boolean): Promise<void>;
   /** Start it when the saved choice says so (the console's start). */
   resume(): Promise<void>;
   stop(): Promise<void>;
@@ -114,7 +115,8 @@ export function createPhoneAccess(opts: { store: Store; reads: CompanionReadHand
     enabled: () => phoneAccessEnabled(opts.store.handle),
     problem: () => problem,
     relayKind: () => kind,
-    turn: (on, by, now) => serially(async () => {
+    turn: (on, by, now, allowed) => serially(async () => {
+      if (allowed !== undefined && !allowed()) return;
       savePhoneAccess(opts.store.handle, on, by, now);
       if (on) {
         await start();

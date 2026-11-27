@@ -254,6 +254,29 @@ export class MachineRoomDO {
         await this.state.storage.put(`dev:${body.deviceId}`, body.deviceRelayPub);
         return jsonResponse(200, { ok: true, deviceId: body.deviceId });
       }
+      // Replace the whole admitted set (the daemon reconciles after every connect); a phone that left it is closed.
+      if (request.method === "PUT" && !devMatch[2]) {
+        const body = (await request.json().catch(() => null)) as { devices?: unknown } | null;
+        const list = Array.isArray(body?.devices) ? (body!.devices as unknown[]) : null;
+        if (list === null || list.length > 64) return jsonResponse(400, { error: "invalid_body" });
+        const next = new Map<string, string>();
+        for (const item of list) {
+          const entry = item !== null && typeof item === "object" ? (item as { deviceId?: unknown; deviceRelayPub?: unknown }) : null;
+          if (typeof entry?.deviceId !== "string" || entry.deviceId.length === 0 || entry.deviceId.length > 128
+            || typeof entry.deviceRelayPub !== "string" || fromB64Url(entry.deviceRelayPub).length !== 32) {
+            return jsonResponse(400, { error: "invalid_body" });
+          }
+          next.set(entry.deviceId, entry.deviceRelayPub);
+        }
+        const existing = await this.state.storage.list<string>({ prefix: "dev:" });
+        for (const key of existing.keys()) if (!next.has(key.slice(4))) await this.state.storage.delete(key);
+        for (const [deviceId, pub] of next) await this.state.storage.put(`dev:${deviceId}`, pub);
+        for (const ws of this.state.getWebSockets()) {
+          const att = ws.deserializeAttachment() as SocketAttachment | null;
+          if (att?.role === "device" && !next.has(att.peerId)) ws.close(1000, "device_revoked");
+        }
+        return jsonResponse(200, { ok: true, devices: next.size });
+      }
       if (request.method === "DELETE" && devMatch[2]) {
         const deviceId = decodeURIComponent(devMatch[2]);
         await this.state.storage.delete(`dev:${deviceId}`);

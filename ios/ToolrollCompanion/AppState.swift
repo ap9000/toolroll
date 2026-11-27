@@ -365,8 +365,10 @@ final class CompanionAppState {
     func handleBackground() async {
         isActive = false
         guard !isDemoMode, pairing == .idle else { return }
-        // Reads in flight fail with `closed` and keep their last good state (see failurePhase).
+        // Reads in flight fail with `closed` and keep their last good state (see failurePhase). A connect still in
+        // flight belongs to the old epoch: retire it, so foreground starts a fresh one instead of joining it.
         connectEpoch += 1
+        connectTask = nil
         await client.disconnect()
     }
 

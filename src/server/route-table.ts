@@ -859,7 +859,7 @@ post("settings", "settings.telegram-retry", "/settings/telegram/retry", { limite
 for (const one of ["confirm", "save", "off"]) post("settings", `settings.chat-approval-${one}`, `/settings/chat-approval/${one}`, { limited: "self", callers: ["cookie"], ...(one === "save" ? { scope: "step-up" as const } : {}), ...approver("An approver turns on approving from their own chat.", "/settings") });
 post("settings", "settings.telegram-pair", "/settings/telegram/pair", { limited: "self", scope: "step-up", ...approver("An approver can pair their own phone.", "/settings") });
 post("settings", "settings.telegram-unpair", "/settings/telegram/unpair", { limited: "self", scope: "step-up", ...approver("An approver can pair their own phone.", "/settings") });
-post("settings", "settings.phone-access", "/settings/phone/access", { limited: "self", scope: "step-up", ...approver("An approver can turn phone access on or off.", "/settings") });
+post("settings", "settings.phone-access", "/settings/phone/access", { limited: "deny", scope: "step-up", ...operator("An instance operator turns phone access on or off.", "/settings/phone") });
 post("settings", "settings.phone-pair", "/settings/phone/pair", { limited: "self", scope: "step-up", ...approver("An approver can pair their own phone.", "/settings") });
 post("settings", "settings.phone-confirm", "/settings/phone/confirm", { limited: "self", ...approver("An approver can pair their own phone.", "/settings") });
 post("settings", "settings.phone-cancel", "/settings/phone/cancel", { limited: "self", ...approver("An approver can pair their own phone.", "/settings") });

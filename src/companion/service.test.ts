@@ -43,14 +43,24 @@ function testStore(): Store {
 }
 
 const watchEnds: (() => void)[] = [];
+/** The stand-in account's access fingerprint: a test changes it to narrow the account mid-stream. */
+let accessNow = "projects:a,b";
+/** A controllable watch: the test emits and ends it. */
+const controlled: { emit: ((n: number) => void) | null; end: ((reason?: "denied") => void) | null } = { emit: null, end: null };
 const reads: CompanionReadHandlers = {
+  accessSignature: () => accessNow,
   deviceHello: p => ({ version: 1, workspaceId: p.workspaceId, workspaceLabel: "Test Mac", account: p.accountName, deviceId: p.deviceId, toolroll: "test" }),
   workRows: (p, params) => ({ rows: [{ id: "t-1", title: "A task" }], account: p.accountName, params }),
   taskSteps: (_p, params) => { if (params["task"] !== "t-1") throw Object.assign(new Error("No such task."), { code: "not_found" }); return { cards: [] }; },
   taskDiff: () => ({ files: [] }),
   taskApprovalRead: () => ({ terms: [] }),
-  runWindowRead: () => ({ big: "x".repeat(200_000) }),
-  runWatchSubscribe: (_p, _params, emit, end) => {
+  runWindowRead: (_p, params) => ({ big: "x".repeat(params["size"] === "huge" ? 1_000_000 : 200_000) }),
+  runWatchSubscribe: (_p, params, emit, end) => {
+    if (params["run"] === "controlled") {
+      controlled.emit = n => emit(Buffer.from(JSON.stringify({ k: "say", n })));
+      controlled.end = reason => end?.(reason);
+      return { ok: true, unsubscribe: () => { controlled.emit = null; } };
+    }
     let n = 0;
     const timer = setInterval(() => { emit(Buffer.from(JSON.stringify({ k: "say", n: n++ }))); }, 5);
     const stop = () => clearInterval(timer);
@@ -60,6 +70,7 @@ const reads: CompanionReadHandlers = {
 };
 
 async function startService(store: Store): Promise<CompanionService> {
+  accessNow = "projects:a,b";
   const service = new CompanionService({ store, reads, relay: { kind: "built-in", port: 0 }, backoff: { first: 50, max: 200 } });
   cleanups.push(() => service.stop());
   await service.start();
@@ -314,5 +325,88 @@ describe("phone access over the built-in relay", () => {
     await until(() => s.socket.closed);
     expect(service.status()).toEqual({ state: "stopped" });
     await expect(PhoneSession.connect(phone)).rejects.toThrow();
+  });
+});
+
+describe("what reaches a phone after access changes (review round 2)", () => {
+  test("a response waiting on credit is refused, not delivered, once the account's access changes", async () => {
+    const store = testStore();
+    const service = await startService(store);
+    const s = await PhoneSession.connect(await pairPhone(service));
+    expect(await s.call("device.hello")).toMatchObject({ ok: true });
+    // ~1 MB: more chunks than the opening credit, so the tail waits for the phone's CREDIT.
+    const id = s.open("run.window.read", { run: "1", size: "huge" });
+    let chunks = 0;
+    for (;;) { const f = await s.frame(); if (f?.streamId === id && f.type === FrameType.CHUNK) { chunks++; if (chunks === 16) break; } }
+    accessNow = "projects:a"; // narrowed on the web while the tail is queued
+    s.credit(id, 4);
+    const next = await s.frame();
+    expect(next?.streamId).toBe(id);
+    expect(next?.type).toBe(FrameType.ERROR);
+    expect(JSON.parse(next!.payload.toString("utf8"))).toMatchObject({ code: "not_found" });
+  });
+
+  test("a watch that loses access is ended as refused and drops what it buffered; a finished watch drains before END", async () => {
+    const store = testStore();
+    const service = await startService(store);
+    const s = await PhoneSession.connect(await pairPhone(service));
+    expect(await s.call("device.hello")).toMatchObject({ ok: true });
+
+    // Finished: 20 records against 16 credits, then END only after the last 4 go out.
+    const w = s.open("run.watch.subscribe", { run: "controlled" });
+    await until(() => controlled.emit !== null);
+    for (let n = 0; n < 20; n++) controlled.emit!(n);
+    controlled.end!();
+    const seen: number[] = [];
+    while (seen.length < 16) { const f = await s.frame(); if (f?.streamId === w && f.type === FrameType.CHUNK) seen.push((JSON.parse(f.payload.toString()) as { n: number }).n); }
+    s.credit(w, 4);
+    for (;;) {
+      const f = await s.frame();
+      if (f?.streamId !== w) continue;
+      if (f.type === FrameType.CHUNK) { seen.push((JSON.parse(f.payload.toString()) as { n: number }).n); continue; }
+      expect(f.type).toBe(FrameType.END);
+      break;
+    }
+    expect(seen).toEqual([...Array(20).keys()]);
+
+    // Refused: buffered records past the credit are never sent.
+    controlled.emit = null;
+    const w2 = s.open("run.watch.subscribe", { run: "controlled" });
+    await until(() => controlled.emit !== null);
+    for (let n = 0; n < 20; n++) controlled.emit!(n);
+    let got = 0;
+    while (got < 16) { const f = await s.frame(); if (f?.streamId === w2 && f.type === FrameType.CHUNK) got++; }
+    accessNow = "projects:none";
+    s.credit(w2, 8);
+    const f = await s.frame();
+    expect(f?.streamId).toBe(w2);
+    expect(f?.type).toBe(FrameType.ERROR);
+  });
+
+  test("a credential change (password, rotation) retires the paired phone; it must pair again", async () => {
+    const store = testStore();
+    const service = await startService(store);
+    const phone = await pairPhone(service);
+    const s = await PhoneSession.connect(phone);
+    expect(await s.call("device.hello")).toMatchObject({ ok: true });
+    store.handle.prepare("UPDATE approver SET generation = generation + 1 WHERE name = ?").run("owner");
+    // The live session is dropped at its next frame, and a reconnect is refused at the handshake.
+    await s.call("work.rows").catch(() => null);
+    await until(() => s.socket.closed);
+    await expect(PhoneSession.connect(phone)).rejects.toThrow();
+  });
+
+  test("a pairing started under one credential generation can't be confirmed under the next", async () => {
+    const store = testStore();
+    const service = await startService(store);
+    const generation = store.accountOf("owner")!.generation;
+    const started = service.startPairing("owner", "owner:A", generation);
+    if (!started.ok) throw new Error(started.error);
+    const { finished } = await scan(started.qr);
+    await until(() => service.engine.getPairingStatus(started.qr.pairSessionId, "owner:A")?.status === "awaiting_confirm");
+    store.handle.prepare("UPDATE approver SET generation = generation + 1 WHERE name = ?").run("owner");
+    expect((await service.engine.confirmPairing(started.qr.pairSessionId, "owner:A")).ok).toBe(false);
+    expect(await finished).toBeNull();
+    expect(service.devices()).toHaveLength(0);
   });
 });

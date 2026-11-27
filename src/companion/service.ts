@@ -65,6 +65,8 @@ export class CompanionService {
   private keepalive: ReturnType<typeof setInterval> | null = null;
   private retry: ReturnType<typeof setTimeout> | null = null;
   private attempt = 0;
+  /** Bumped by every connect and every stop: an older connect that finishes late sees it moved on and stands down. */
+  private connectGeneration = 0;
   private stopped = true;
   private current: CompanionServiceState = { state: "stopped" };
   /** A removal the relay didn't hear (it was unreachable): the next connect's reconcile settles it. */
@@ -123,6 +125,7 @@ export class CompanionService {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.connectGeneration += 1;
     if (this.retry !== null) clearTimeout(this.retry);
     this.retry = null;
     this.closeSocket("stopping");
@@ -135,9 +138,9 @@ export class CompanionService {
     this.current = { state: "stopped" };
   }
 
-  startPairing(accountName: string, binding: string): { ok: true; qr: PairingQrPayload; expiresAtMs: number } | { ok: false; error: string } {
+  startPairing(accountName: string, binding: string, accountGeneration: number | null = null): { ok: true; qr: PairingQrPayload; expiresAtMs: number } | { ok: false; error: string } {
     if (this.current.state !== "connected") return { ok: false, error: "Phone access isn't connected to its relay yet. Try again in a moment." };
-    return this.engine.startPairing(accountName, binding);
+    return this.engine.startPairing(accountName, binding, accountGeneration);
   }
 
   devices(): PairedDeviceRow[] {
@@ -147,12 +150,16 @@ export class CompanionService {
 
   private async connect(): Promise<void> {
     if (this.stopped || this.addresses === null) return;
+    const generation = ++this.connectGeneration;
+    const current = () => !this.stopped && generation === this.connectGeneration;
     const relay = this.addresses.ws;
     try {
       await this.register();
+      if (!current()) return;
       await this.reconcile();
+      if (!current()) return;
       const socket = await this.openSocket();
-      if (this.stopped) { socket.close(1000, "stopping"); return; }
+      if (!current()) { socket.close(1000, "stopping"); return; }
       this.socket = socket;
       this.attempt = 0;
       this.current = { state: "connected", relay, since: new Date(this.nowMs()).toISOString() };
@@ -179,7 +186,7 @@ export class CompanionService {
       });
       socket.on("error", () => { /* "close" follows */ });
     } catch (error) {
-      this.scheduleRetry(error instanceof Error ? error.message : String(error));
+      if (current()) this.scheduleRetry(error instanceof Error ? error.message : String(error));
     }
   }
 

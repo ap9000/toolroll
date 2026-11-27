@@ -33,6 +33,9 @@ export interface PairedDeviceRow {
   nextDevicePsk: Buffer | null;
   pskVersion: number;
   recoveryGeneration: string;
+  /** The account's credential generation when it was paired (null: paired before this was kept). A password change
+   * or any credential rotation moves the account on, and the phone with it must pair again. */
+  accountGeneration: number | null;
   createdAt: string;
   lastSeenAt: string | null;
   revokedAt: string | null;
@@ -117,6 +120,8 @@ export function ensureCompanionTables(db: CompanionDb): void {
       PRIMARY KEY (device_id, idempotency_key)
     );
   `);
+  const columns = db.prepare("PRAGMA table_info(companion_paired_device)").all().map(c => String(c["name"]));
+  if (!columns.includes("account_generation")) db.exec("ALTER TABLE companion_paired_device ADD COLUMN account_generation INTEGER");
 }
 
 export function loadOrCreateCompanionHostKeys(
@@ -161,12 +166,12 @@ export function loadOrCreateCompanionHostKeys(
   };
 }
 
-export function savePairedDevice(db: CompanionDb, row: Omit<PairedDeviceRow, "nextDevicePsk" | "lastSeenAt" | "revokedAt">): void {
+export function savePairedDevice(db: CompanionDb, row: Omit<PairedDeviceRow, "nextDevicePsk" | "lastSeenAt" | "revokedAt" | "accountGeneration"> & { accountGeneration?: number | null }): void {
   ensureCompanionTables(db);
   db.prepare(`
     INSERT INTO companion_paired_device
-      (device_id, account_name, device_name, phone_static_pub, device_relay_pub, device_psk, psk_version, recovery_generation, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (device_id, account_name, device_name, phone_static_pub, device_relay_pub, device_psk, psk_version, recovery_generation, created_at, account_generation)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     row.deviceId,
     row.accountName,
@@ -177,6 +182,7 @@ export function savePairedDevice(db: CompanionDb, row: Omit<PairedDeviceRow, "ne
     row.pskVersion,
     row.recoveryGeneration,
     row.createdAt,
+    row.accountGeneration ?? null,
   );
 }
 
@@ -194,6 +200,7 @@ export function getPairedDevice(db: CompanionDb, deviceId: string): PairedDevice
     nextDevicePsk: row["next_device_psk"] == null ? null : Buffer.from(String(row["next_device_psk"]), "base64url"),
     pskVersion: Number(row["psk_version"]),
     recoveryGeneration: String(row["recovery_generation"]),
+    accountGeneration: row["account_generation"] == null ? null : Number(row["account_generation"]),
     createdAt: String(row["created_at"]),
     lastSeenAt: row["last_seen_at"] == null ? null : String(row["last_seen_at"]),
     revokedAt: row["revoked_at"] == null ? null : String(row["revoked_at"]),
@@ -210,6 +217,12 @@ export function touchPairedDeviceLastSeen(db: CompanionDb, deviceId: string, now
   ensureCompanionTables(db);
   db.prepare("UPDATE companion_paired_device SET last_seen_at = ? WHERE device_id = ? AND revoked_at IS NULL")
     .run(now.toISOString(), deviceId);
+}
+
+/** The paired device still answers to its account as paired: active, and at the credential generation it was paired
+ * under (a device paired before generations were kept stands on the account alone). */
+export function deviceAccountStands(device: PairedDeviceRow, account: { revokedAt: unknown; generation: number } | null): boolean {
+  return account !== null && account.revokedAt === null && (device.accountGeneration === null || device.accountGeneration === account.generation);
 }
 
 export function revokePairedDeviceRecord(db: CompanionDb, deviceId: string, now: Date): boolean {

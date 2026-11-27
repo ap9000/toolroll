@@ -24,7 +24,7 @@ import type { HandlerContext } from "../server/handler-context.js";
 import { requestContext } from "../server/request-context.js";
 import { ROUTES } from "../server/route-table.js";
 import type { ServerRuntime } from "../server/runtime.js";
-import { getPairedDevice } from "./store.js";
+import { deviceAccountStands, getPairedDevice } from "./store.js";
 import type { CompanionReadHandlers, PairedDevicePrincipal } from "./daemon.js";
 
 /** A refusal the phone sees as an RPC error code (daemon.ts sends `{code, message}`). */
@@ -34,7 +34,7 @@ export class CompanionReadError extends Error {
   }
 }
 
-export type CompanionReadRuntime = Pick<ServerRuntime, "store" | "clock" | "evidenceRoot" | "visible" | "familyOf" | "runVisible" | "taskRepoOf" | "workAccess" | "options">;
+export type CompanionReadRuntime = Pick<ServerRuntime, "store" | "clock" | "evidenceRoot" | "visible" | "familyOf" | "runVisible" | "taskRepoOf" | "workAccess" | "options" | "liveCeiling">;
 
 export interface CompanionReadDeps {
   runtime: CompanionReadRuntime;
@@ -51,7 +51,8 @@ export interface CompanionReadDeps {
 
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const RUN_ID = /^[1-9][0-9]{0,14}$/;
-const WORK_VIEWS = new Set(["all", "needs-you", "running", "queued", "done"]);
+/** The phone's view names: the web's own (workspace-ui.ts parseWorkView), and "done" as the web's Finished link says it. */
+const WORK_VIEWS = new Map([["all", "all"], ["needs-you", "needs-you"], ["running", "running"], ["queued", "queued"], ["ready", "ready"], ["completed", "completed"], ["done", "completed"]]);
 const MAX_CURSOR = 4_096;
 const WORK_ROUTE = ROUTES.find(route => route.id === "work.rows");
 
@@ -75,8 +76,16 @@ export function createCompanionReads(deps: CompanionReadDeps): CompanionReadHand
     const identity = store.workspaceIdentity();
     if (device === null || device.revokedAt !== null || device.recoveryGeneration !== identity.recoveryGeneration
       || device.accountName !== principal.accountName || identity.recoveryGeneration !== principal.recoveryGeneration) return false;
+    return deviceAccountStands(device, store.accountOf(principal.accountName));
+  }
+
+  /** What the account may see right now (daemon.ts sends queued data only while this is unchanged): the device's
+   * standing, the account's credential generation and projects, and the console's project ceiling. */
+  function accessSignature(principal: PairedDevicePrincipal): string {
     const account = store.accountOf(principal.accountName);
-    return account !== null && account.revokedAt === null;
+    const ceiling = runtime.liveCeiling();
+    return JSON.stringify([stands(principal), account?.generation ?? null, account?.revokedAt ?? null, account?.projects ?? null,
+      [...ceiling.repos].sort(), [...ceiling.roots].sort()]);
   }
 
   /** Runs `work` as the device's account (the shared guards read this actor), refusing before and after. */
@@ -120,6 +129,7 @@ export function createCompanionReads(deps: CompanionReadDeps): CompanionReadHand
   }
 
   return {
+    accessSignature,
     deviceHello: principal => asDevice(principal, () => ({
       version: ENGINE_API_VERSION,
       workspaceId: principal.workspaceId,
@@ -131,9 +141,9 @@ export function createCompanionReads(deps: CompanionReadDeps): CompanionReadHand
 
     workRows: (principal, params) => asDevice(principal, async () => {
       if (WORK_ROUTE === undefined) throw new CompanionReadError("unavailable", "Work isn't available.");
-      const view = stringParam(params, "view") ?? "all";
+      const view = WORK_VIEWS.get(stringParam(params, "view") ?? "all");
       const cursor = stringParam(params, "cursor");
-      if (!WORK_VIEWS.has(view)) throw new CompanionReadError("invalid_params", "Unknown view.");
+      if (view === undefined) throw new CompanionReadError("invalid_params", "Unknown view.");
       if (cursor !== null && (cursor.length === 0 || cursor.length > MAX_CURSOR)) throw new CompanionReadError("invalid_cursor", "Open the first page.");
       if (params["project"] !== undefined) throw new CompanionReadError("invalid_params", "Project filters aren't available on the phone yet.");
       const url = new URL("http://companion.invalid/work/rows");
@@ -156,7 +166,9 @@ export function createCompanionReads(deps: CompanionReadDeps): CompanionReadHand
         if (cursor !== null) throw new CompanionReadError("invalid_cursor", "This page has expired. Open the first page.");
         throw new CompanionReadError("invalid_params", "Work refused that view.");
       }
-      return { ...rows, spend: null, limits: null };
+      // The web's `next` is a link to the next page; the phone gets that page's cursor itself.
+      const nextCursor = rows.next === null ? null : new URL(rows.next, "http://companion.invalid").searchParams.get("cursor");
+      return { ...rows, next: nextCursor, spend: null, limits: null };
     }),
 
     taskSteps: (principal, params) => asDevice(principal, () => {
@@ -232,16 +244,18 @@ export function createCompanionReads(deps: CompanionReadDeps): CompanionReadHand
         if (reading) { again = true; return; }
         reading = true;
         try {
-          if (!stands(principal)) { stop(); return; }
+          // Lost standing or sight of the run: the watch ends as refused, and nothing it queued is sent.
+          if (!stands(principal)) { stop(); end?.("denied"); return; }
           const read = requestContext.run({ csrf: "", returnTo: "/", actor: principal.accountName }, () => {
             try { return liveWindowOf(runParam, cursor); } catch { return null; }
           });
-          if (read === null) { stop(); return; }
+          if (read === null) { stop(); end?.("denied"); return; }
           const window = read.window;
           if (window !== null && window.ok) {
             cursor = window.cursor;
             for (const record of window.records) {
-              if (closed || !stands(principal)) { stop(); return; }
+              if (closed) return;
+              if (!stands(principal)) { stop(); end?.("denied"); return; }
               emit(Buffer.from(JSON.stringify(record), "utf8"));
             }
           }

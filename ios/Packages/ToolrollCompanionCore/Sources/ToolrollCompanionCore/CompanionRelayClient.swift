@@ -343,18 +343,21 @@ public actor CompanionRelayClient {
 
         install(socket: ws, session: transport, generation: gen)
 
+        // Everything from here tears down only this attempt's own session: a newer connect that started while hello
+        // was in flight (actor reentrancy) keeps its socket.
         let hello: DeviceHello
         do {
             hello = try await call("device.hello", params: EmptyParams(), as: DeviceHello.self)
         } catch let error as CompanionRPCError {
-            teardown(CompanionConnectionError.closed)
+            teardown(CompanionConnectionError.closed, ifGeneration: gen)
             throw CompanionConnectionError.handshakeFailed(error.code)
         } catch {
-            teardown(CompanionConnectionError.closed)
+            teardown(CompanionConnectionError.closed, ifGeneration: gen)
             throw CompanionConnectionError.unreachable("closed during hello")
         }
+        guard gen == generation else { throw CompanionConnectionError.closed }
         guard hello.workspaceId == record.workspaceId, hello.deviceId == record.deviceId else {
-            teardown(CompanionConnectionError.closed)
+            teardown(CompanionConnectionError.closed, ifGeneration: gen)
             throw CompanionConnectionError.handshakeFailed("identity mismatch")
         }
         return hello
@@ -612,6 +615,12 @@ public actor CompanionRelayClient {
     }
 
     /// Bumps the generation, stops every task, and fails every pending call and watch exactly once.
+    /// Tears down only if the current session is still the one made at `gen` (a stale attempt never closes a newer one).
+    private func teardown(_ error: Error, ifGeneration gen: UInt64) {
+        guard gen == generation else { return }
+        teardown(error)
+    }
+
     private func teardown(_ error: Error) {
         generation &+= 1
         readerTask?.cancel()
