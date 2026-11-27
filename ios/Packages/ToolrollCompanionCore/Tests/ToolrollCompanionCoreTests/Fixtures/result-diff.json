@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "task": "t-done",
+  "run": 2,
+  "totals": null,
+  "files": [
+    {
+      "file": 0,
+      "path": "src/total.ts",
+      "oldPath": "src/total.ts",
+      "additions": 1,
+      "deletions": 1,
+      "binary": false,
+      "hunks": 1
+    },
+    {
+      "file": 1,
+      "path": "README.md",
+      "oldPath": "README.md",
+      "additions": 1,
+      "deletions": 0,
+      "binary": false,
+      "hunks": 1
+    }
+  ],
+  "patchTruncated": false,
+  "problem": null
+}

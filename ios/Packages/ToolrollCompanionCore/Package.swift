@@ -21,7 +21,8 @@ let package = Package(
         .testTarget(
             name: "ToolrollCompanionCoreTests",
             dependencies: ["ToolrollCompanionCore"],
-            path: "Tests/ToolrollCompanionCoreTests"
+            path: "Tests/ToolrollCompanionCoreTests",
+            resources: [.copy("Fixtures")]
         ),
     ]
 )
