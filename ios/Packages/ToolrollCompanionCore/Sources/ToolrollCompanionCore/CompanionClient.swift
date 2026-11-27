@@ -2,28 +2,55 @@ import CryptoKit
 import Foundation
 import Security
 
-/// Keychain storage for `ThisDeviceOnly` secrets (Noise static key, `devicePsk`,
-/// Ed25519 `deviceRelayPriv`, and App Group shared P-256 push decryption key + `authSecret`).
-///
-/// Transport secrets (`sharedAppGroup: false`) go to the app's default access group: the first entry of the app's
-/// `keychain-access-groups`, which is app-only (`<team>.dev.toolroll.ios`). The notification extension has no
-/// `keychain-access-groups` entitlement at all, so it can never read them; it reaches only the push items, which are
-/// saved to the App Group (`group.dev.toolroll.ios`).
+/// Keychain storage for the three `ThisDeviceOnly` transport secrets (Noise static key, `devicePsk`, Ed25519
+/// `deviceRelayPriv`), in the app's default access group (`<team>.dev.toolroll.ios`, app-only).
 public enum CompanionKeychain {
-    public static let appGroupAccessGroup = "group.dev.toolroll.ios"
     private static let service = "dev.toolroll.ios.companion"
+
+    /// What reading a set of items found (C1). Only "every item is errSecItemNotFound" means the keys are gone; any
+    /// other failure is transient and must never wipe a pairing.
+    public enum ReadOutcome: Equatable, Sendable {
+        case present([Data])
+        /// Every item is missing (a restored backup, a wiped keychain).
+        case missing
+        /// Some items exist and some don't: the pairing data is damaged.
+        case partial
+        /// The keychain couldn't be read (locked since boot, interaction not allowed, -34018, …). Retry later.
+        case unavailable(OSStatus)
+    }
+
+    /// One item's read: its data, or the OSStatus that stopped it.
+    public typealias ItemRead = Result<Data, KeychainStatus>
+
+    public struct KeychainStatus: Error, Equatable, Sendable {
+        public let status: OSStatus
+        public init(_ status: OSStatus) { self.status = status }
+    }
+
+    /// Classifies per-item reads (pure, so the rule is tested without a keychain).
+    public static func classify(_ reads: [ItemRead]) -> ReadOutcome {
+        var found: [Data] = []
+        var notFound = 0
+        for read in reads {
+            switch read {
+            case .success(let data): found.append(data)
+            case .failure(let error) where error.status == errSecItemNotFound: notFound += 1
+            case .failure(let error): return .unavailable(error.status)
+            }
+        }
+        if notFound == reads.count { return .missing }
+        if notFound > 0 { return .partial }
+        return .present(found)
+    }
 
     /// Writes in place (`SecItemUpdate`), adding the item only if it doesn't exist yet, so a failed write never
     /// leaves the old value deleted.
-    public static func save(_ data: Data, account: String, sharedAppGroup: Bool = false) throws {
-        var query: [String: Any] = [
+    public static func save(_ data: Data, account: String) throws {
+        let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        if sharedAppGroup {
-            query[kSecAttrAccessGroup as String] = appGroupAccessGroup
-        }
         let attributes: [String: Any] = [
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
@@ -37,32 +64,33 @@ public enum CompanionKeychain {
         }
     }
 
-    public static func load(account: String, sharedAppGroup: Bool = false) -> Data? {
-        var query: [String: Any] = [
+    /// One item: its data, or the status that stopped the read (`errSecItemNotFound` when it doesn't exist).
+    public static func read(account: String) -> ItemRead {
+        let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
-        if sharedAppGroup {
-            query[kSecAttrAccessGroup as String] = appGroupAccessGroup
-        }
         var out: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &out)
-        guard status == errSecSuccess else { return nil }
-        return out as? Data
+        guard status == errSecSuccess else { return .failure(KeychainStatus(status)) }
+        guard let data = out as? Data else { return .failure(KeychainStatus(errSecDecode)) }
+        return .success(data)
     }
 
-    public static func delete(account: String, sharedAppGroup: Bool = false) {
-        var query: [String: Any] = [
+    /// Reads every account and classifies the result.
+    public static func load(accounts: [String]) -> ReadOutcome {
+        classify(accounts.map(read(account:)))
+    }
+
+    public static func delete(account: String) {
+        let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        if sharedAppGroup {
-            query[kSecAttrAccessGroup as String] = appGroupAccessGroup
-        }
         SecItemDelete(query as CFDictionary)
     }
 }
@@ -87,19 +115,34 @@ public enum CompanionRelayAuth {
         return Data(base64Encoded: s)
     }
 
+    /// The relay's audience: the hosted URL's lowercase host, with `:port` when the URL names one (what the relay
+    /// sees as its public host).
+    public static func audience(forHostedURL url: String) -> String? {
+        guard let c = URLComponents(string: url), let host = c.host?.lowercased(), !host.isEmpty else { return nil }
+        if let port = c.port { return "\(host):\(port)" }
+        return host
+    }
+
+    /// A one-time WebSocket token for this device: exactly `v, role, machineId, deviceId, aud, jti, iat, exp`
+    /// (contract §3.3). `now` is this iPhone's clock already corrected by any offset learned from the relay.
     public static func signDeviceToken(
         privateKey: Curve25519.Signing.PrivateKey,
         machineId: String,
         deviceId: String,
+        audience: String,
+        now: Date = Date(),
         ttlSec: Int = 300
     ) throws -> String {
-        let nowSec = Int(Date().timeIntervalSince1970)
+        let nowSec = Int(now.timeIntervalSince1970)
+        var jti = Data(count: 16)
+        for i in jti.indices { jti[i] = UInt8.random(in: 0...255) }
         let payload: [String: Any] = [
             "v": 1,
             "role": "device",
             "machineId": machineId,
             "deviceId": deviceId,
-            "jti": UUID().uuidString.lowercased(),
+            "aud": audience,
+            "jti": base64UrlEncode(jti),
             "iat": nowSec,
             "exp": nowSec + min(max(1, ttlSec), 300),
         ]

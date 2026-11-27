@@ -73,7 +73,8 @@ public struct LiveCompanionSource: CompanionDataSource {
         return Self.decodeRecords(raw)
     }
 
-    /// Maps a stream of CHUNK payloads to live records. A record this build can't read is skipped, never fatal.
+    /// Maps a stream of CHUNK payloads to live records. A record this build can't read, or of a kind it doesn't know,
+    /// is skipped, never fatal (B3).
     /// Pulled on demand (nothing reads ahead of the consumer), so the watch's credit tracks what's actually been
     /// taken. Dropping the returned stream drops the inner one, which sends CANCEL.
     static func decodeRecords(_ raw: AsyncThrowingStream<Data, Error>) -> AsyncThrowingStream<LiveRecord, Error> {
@@ -93,7 +94,7 @@ private final class RecordPull: @unchecked Sendable {
 
     func next() async throws -> LiveRecord? {
         while let payload = try await iterator.next() {
-            if let record = try? decoder.decode(LiveRecord.self, from: payload) { return record }
+            if let record = try? decoder.decode(LiveRecord.self, from: payload), record.kind != .other { return record }
         }
         return nil
     }

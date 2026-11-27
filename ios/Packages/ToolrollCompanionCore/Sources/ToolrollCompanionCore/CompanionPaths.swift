@@ -70,7 +70,7 @@ public enum CompanionPathRules {
     // Canonical grammar, checked on the raw string (test/fixtures/companion-paths.json; src/companion/paths.ts runs
     // the same table):
     //   direct = ws://<private IPv4, four decimal octets, no leading zeros>:<port 1-65535, no leading zeros>/v1/direct
-    //   hosted = wss://<lowercase host>[:port]/v1/connect, or ws://127.0.0.1|localhost:<port>/v1/connect
+    //   hosted = wss://<lowercase host>[:port]/v1/connect, or (DEBUG builds only) ws://127.0.0.1|localhost:<port>/v1/connect
     // No userinfo, query, fragment or trailing slash: nothing may follow the path.
 
     /// One path's own rules.
@@ -79,12 +79,6 @@ public enum CompanionPathRules {
         case .direct: try validateDirect(path.url)
         case .hosted: try validateHosted(path.url)
         }
-    }
-
-    /// One path from raw strings (an unknown kind is invalid).
-    public static func validate(kind: String, url: String) throws {
-        guard let kind = CompanionPath.Kind(rawValue: kind) else { throw PairingPayloadError.invalid("unknown path kind") }
-        try validate(CompanionPath(kind: kind, url: url))
     }
 
     private nonisolated(unsafe) static let directPattern =
@@ -105,6 +99,12 @@ public enum CompanionPathRules {
         guard portAllowed(port) else { throw PairingPayloadError.invalid("direct port out of range") }
     }
 
+    #if DEBUG
+    static let allowsLoopbackHosted = true
+    #else
+    static let allowsLoopbackHosted = false
+    #endif
+
     static func validateHosted(_ url: String) throws {
         guard url.utf8.count <= maxURLLength else { throw PairingPayloadError.invalid("path URL too long") }
         if let m = try? hostedPattern.wholeMatch(in: url) {
@@ -113,7 +113,8 @@ public enum CompanionPathRules {
             }
             return
         }
-        if let m = try? loopbackPattern.wholeMatch(in: url), let port = m.output[1].substring, portAllowed(port) {
+        // A loopback relay is for development only: a release build never sends a token to its own loopback (E5).
+        if allowsLoopbackHosted, let m = try? loopbackPattern.wholeMatch(in: url), let port = m.output[1].substring, portAllowed(port) {
             return
         }
         throw PairingPayloadError.invalid("hosted path is not wss://<host>/v1/connect")
