@@ -98,6 +98,15 @@ public final class URLSessionCompanionSocket: CompanionSocket, @unchecked Sendab
 
 // MARK: - Client
 
+/// A connection that passed `device.hello`.
+public struct CompanionConnectResult: Equatable, Sendable {
+    public let hello: DeviceHello
+    /// The path this session runs over.
+    public let path: CompanionPath
+    /// The stored record, with `paths` replaced by the hello's when it sent a valid list. Persist it if it changed.
+    public let record: PairedWorkspaceRecord
+}
+
 /// The Noise IKpsk2 relay client.
 ///
 /// One connection at a time. All Noise state lives on this actor: frames are encrypted here and handed, in order,
@@ -109,11 +118,17 @@ public actor CompanionRelayClient {
         public var connect: Duration
         public var call: Duration
         public var ping: Duration
+        /// Each direct path's `/v1/health` probe.
+        public var probe: Duration
 
-        public init(connect: Duration = .seconds(15), call: Duration = .seconds(30), ping: Duration = .seconds(25)) {
+        public init(
+            connect: Duration = .seconds(15), call: Duration = .seconds(30), ping: Duration = .seconds(25),
+            probe: Duration = .milliseconds(1200)
+        ) {
             self.connect = connect
             self.call = call
             self.ping = ping
+            self.probe = probe
         }
     }
 
@@ -132,6 +147,7 @@ public actor CompanionRelayClient {
     private struct EmptyParams: Encodable, Sendable {}
 
     private let socketFactory: CompanionSocketFactory
+    private let healthProbe: CompanionHealthProbe
     private let timing: Timing
 
     private var generation: UInt64 = 0
@@ -148,14 +164,23 @@ public actor CompanionRelayClient {
     private var watches: [UInt32: AsyncThrowingStream<Data, Error>.Continuation] = [:]
     private var onConnectionLost: (@Sendable (Error) -> Void)?
     private var pairingSocket: (any CompanionSocket)?
+    /// Bumped by every `connect()` and `disconnect()`. A dial that sees it change (while probing, or before falling
+    /// back to hosted) stops: a newer connect or a disconnect owns the client now.
+    private var dialEpoch: UInt64 = 0
 
     public init(
         timing: Timing = Timing(),
+        healthProbe: @escaping CompanionHealthProbe = URLSessionHealthProbe.probe,
         socketFactory: @escaping CompanionSocketFactory = { URLSessionCompanionSocket(request: $0) }
     ) {
         self.timing = timing
+        self.healthProbe = healthProbe
         self.socketFactory = socketFactory
     }
+
+    /// Shown when no direct address answers and the Mac offers no hosted relay.
+    public static let noReachablePathMessage =
+        "Can't reach your Mac. Connect to the same Wi-Fi as your Mac (or Tailscale), or turn on 'Connect from anywhere' in Toolroll → Settings → Phone."
 
     /// Called (once per connection) when an established connection drops on its own: socket closed, two missed
     /// PONGs, a frame that didn't decrypt. Not called for `disconnect()`.
@@ -174,8 +199,8 @@ public actor CompanionRelayClient {
         deviceName: String,
         onCodeReady: @Sendable (String) async -> Void
     ) async throws -> (record: PairedWorkspaceRecord, devicePsk: Data, phoneNoisePriv: Data, deviceRelayPriv: Data) {
-        guard let url = URL(string: qr.relayUrl),
-              let macStaticPub = CompanionRelayAuth.base64UrlDecode(qr.macStaticPub),
+        try qr.validate()
+        guard let macStaticPub = CompanionRelayAuth.base64UrlDecode(qr.macStaticPub),
               let pairPsk = CompanionRelayAuth.base64UrlDecode(qr.pairPsk)
         else {
             throw CompanionNoiseError.invalidInput("Malformed pairing QR payload")
@@ -194,8 +219,20 @@ public actor CompanionRelayClient {
             prologue: prologue
         )
 
-        var req = URLRequest(url: url)
-        req.setValue("Bearer \(qr.pairConnToken)", forHTTPHeaderField: "Authorization")
+        // One path, one attempt: a healthy direct address, else the hosted relay. If this attempt's outcome is
+        // uncertain the person scans a fresh code; there is no fallback mid-pairing.
+        let req: URLRequest
+        if let direct = await firstHealthyDirect(qr.paths, machineId: qr.machineId),
+           let url = CompanionPathRules.directSocketURL(direct.url, role: "pair", id: qr.pairSessionId) {
+            req = URLRequest(url: url)
+        } else if let hosted = qr.hostedPath, let token = qr.pairConnToken, let url = URL(string: hosted.url) {
+            var hostedReq = URLRequest(url: url)
+            hostedReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            req = hostedReq
+        } else {
+            throw CompanionConnectionError.unreachable(Self.noReachablePathMessage)
+        }
+        try Task.checkCancellation()
         let ws = socketFactory(req)
         pairingSocket?.close()
         pairingSocket = ws
@@ -243,7 +280,7 @@ public actor CompanionRelayClient {
             workspaceId: qr.workspaceId,
             workspaceLabel: "Your Mac",
             machineId: qr.machineId,
-            relayUrl: qr.relayUrl,
+            paths: qr.paths,
             macStaticPubBase64Url: qr.macStaticPub,
             deviceId: deviceId,
             recoveryGeneration: recoveryGeneration,
@@ -260,50 +297,119 @@ public actor CompanionRelayClient {
 
     // MARK: Session
 
-    /// 1-RTT Noise IKpsk2 reconnect followed by the mandatory `device.hello` key confirmation.
-    /// The hello must name the stored workspace and device.
+    /// Dials the Mac and runs the 1-RTT Noise IKpsk2 reconnect followed by the mandatory `device.hello` key
+    /// confirmation. The hello must name the stored workspace and device.
+    ///
+    /// One handshake at a time, never two in parallel: probe every direct path's `/v1/health` at once; handshake on
+    /// the first that answers with this Mac's `machineId`, else on the hosted relay. A direct attempt that fails for a
+    /// network reason falls back to hosted exactly once; a refusal ("not recognized") from any path stands.
     @discardableResult
     public func connect(
         record: PairedWorkspaceRecord,
         devicePsk: Data,
         phoneNoisePriv: Data,
         deviceRelayPriv: Data
-    ) async throws -> DeviceHello {
+    ) async throws -> CompanionConnectResult {
         teardown(CompanionConnectionError.closed)
-        let gen = generation
+        dialEpoch &+= 1
+        let epoch = dialEpoch
 
-        guard let url = URL(string: record.relayUrl),
+        guard (try? CompanionPathRules.validate(record.paths)) != nil,
               let macStaticPub = CompanionRelayAuth.base64UrlDecode(record.macStaticPubBase64Url)
         else {
             throw CompanionConnectionError.handshakeFailed("invalid stored record")
         }
-        let initiator: NoiseIKpsk2Initiator
-        let token: String
+        let keys: SessionKeys
         do {
-            let phoneNoise = try X25519KeyPair(privateKey: phoneNoisePriv)
-            let relayKey = try Curve25519.Signing.PrivateKey(rawRepresentation: deviceRelayPriv)
-            token = try CompanionRelayAuth.signDeviceToken(
-                privateKey: relayKey,
-                machineId: record.machineId,
-                deviceId: record.deviceId
+            keys = SessionKeys(
+                phoneNoise: try X25519KeyPair(privateKey: phoneNoisePriv),
+                relayKey: try Curve25519.Signing.PrivateKey(rawRepresentation: deviceRelayPriv),
+                macStaticPub: macStaticPub,
+                devicePsk: devicePsk,
+                prologue: try CompanionDerivations.sessionPrologue(
+                    workspaceId: record.workspaceId,
+                    deviceId: record.deviceId,
+                    recoveryGeneration: record.recoveryGeneration
+                )
             )
-            let prologue = try CompanionDerivations.sessionPrologue(
-                workspaceId: record.workspaceId,
-                deviceId: record.deviceId,
-                recoveryGeneration: record.recoveryGeneration
-            )
-            initiator = try NoiseIKpsk2Initiator(
+            _ = try keys.initiator()
+        } catch {
+            throw CompanionConnectionError.handshakeFailed("invalid stored keys")
+        }
+
+        let hosted = record.paths.first { $0.kind == .hosted }
+        let direct = await firstHealthyDirect(record.paths, machineId: record.machineId)
+        guard epoch == dialEpoch else { throw CompanionConnectionError.closed }
+
+        if let direct {
+            do {
+                return try await attempt(direct, record: record, keys: keys)
+            } catch CompanionConnectionError.unreachable(let reason) {
+                guard let hosted else { throw CompanionConnectionError.unreachable(reason) }
+                guard epoch == dialEpoch else { throw CompanionConnectionError.closed }
+                return try await attempt(hosted, record: record, keys: keys)
+            }
+        }
+        if let hosted {
+            return try await attempt(hosted, record: record, keys: keys)
+        }
+        throw CompanionConnectionError.unreachable(Self.noReachablePathMessage)
+    }
+
+    /// Everything one session handshake needs, checked once before dialing. A fresh initiator per attempt.
+    private struct SessionKeys: Sendable {
+        let phoneNoise: X25519KeyPair
+        let relayKey: Curve25519.Signing.PrivateKey
+        let macStaticPub: Data
+        let devicePsk: Data
+        let prologue: Data
+
+        func initiator() throws -> NoiseIKpsk2Initiator {
+            try NoiseIKpsk2Initiator(
                 localStatic: phoneNoise,
                 remoteStaticPublicKey: macStaticPub,
                 psk: devicePsk,
                 prologue: prologue
             )
+        }
+    }
+
+    /// One socket, one handshake, one hello, on one path.
+    private func attempt(
+        _ path: CompanionPath,
+        record: PairedWorkspaceRecord,
+        keys: SessionKeys
+    ) async throws -> CompanionConnectResult {
+        let gen = generation
+        let initiator: NoiseIKpsk2Initiator
+        var req: URLRequest
+        do {
+            initiator = try keys.initiator()
+            switch path.kind {
+            case .direct:
+                // Straight into the Mac's engine: Noise from the first byte, no relay token.
+                guard let url = CompanionPathRules.directSocketURL(path.url, role: "device", id: record.deviceId) else {
+                    throw CompanionConnectionError.handshakeFailed("invalid stored record")
+                }
+                req = URLRequest(url: url)
+            case .hosted:
+                // A token goes only to the hosted URL the Mac gave us.
+                guard let url = URL(string: path.url) else {
+                    throw CompanionConnectionError.handshakeFailed("invalid stored record")
+                }
+                let token = try CompanionRelayAuth.signDeviceToken(
+                    privateKey: keys.relayKey,
+                    machineId: record.machineId,
+                    deviceId: record.deviceId
+                )
+                req = URLRequest(url: url)
+                req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
+        } catch let error as CompanionConnectionError {
+            throw error
         } catch {
             throw CompanionConnectionError.handshakeFailed("invalid stored keys")
         }
-
-        var req = URLRequest(url: url)
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let ws = socketFactory(req)
 
         let msg1Payload = try JSONSerialization.data(withJSONObject: [
@@ -360,11 +466,48 @@ public actor CompanionRelayClient {
             teardown(CompanionConnectionError.closed, ifGeneration: gen)
             throw CompanionConnectionError.handshakeFailed("identity mismatch")
         }
-        return hello
+        // Only a hello that passed the identity checks may change where we dial next time.
+        let refreshed = hello.validPaths.map { record.with(paths: $0) } ?? record
+        return CompanionConnectResult(hello: hello, path: path, record: refreshed)
+    }
+
+    /// Probes every direct path's `/v1/health` in parallel (each bounded by `timing.probe`) and returns the first to
+    /// answer with `machineId`. An address now held by a different machine (stale DHCP) is skipped.
+    private func firstHealthyDirect(_ paths: [CompanionPath], machineId: String) async -> CompanionPath? {
+        let directs = paths.filter { $0.kind == .direct }
+        guard !directs.isEmpty else { return nil }
+        let probe = healthProbe
+        let timeout = timing.probe
+        return await withTaskGroup(of: CompanionPath?.self) { group in
+            for path in directs {
+                guard let health = CompanionPathRules.healthURL(forDirect: path.url) else { continue }
+                group.addTask {
+                    let answered = await withTaskGroup(of: String?.self) { race in
+                        race.addTask { await probe(health, timeout) }
+                        race.addTask {
+                            try? await Task.sleep(for: timeout)
+                            return nil
+                        }
+                        let first = await race.next() ?? nil
+                        race.cancelAll()
+                        return first
+                    }
+                    return answered == machineId ? path : nil
+                }
+            }
+            for await healthy in group {
+                if let healthy {
+                    group.cancelAll()
+                    return healthy
+                }
+            }
+            return nil
+        }
     }
 
     /// Ends the session and fails every pending call with `.closed`.
     public func disconnect() {
+        dialEpoch &+= 1
         teardown(CompanionConnectionError.closed)
     }
 
