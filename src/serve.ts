@@ -196,6 +196,9 @@ import { sweepSkillBundleUpdates } from './skill-library.js';
 import { createFlowsHandlers } from './server/flows.js';
 import type { HandlerContext } from './server/handler-context.js';
 import { createPagesHandlers } from './server/pages.js';
+import { createPhoneSettingsHandlers } from './server/settings-phone.js';
+import { createPhoneAccess, workspaceLabelOf } from './companion/access.js';
+import { createCompanionReads } from './companion/reads.js';
 import { createPeopleHandlers } from './server/people-tokens.js';
 import type { RouteDeclaration } from './server/route-table.js';
 import type { ServerRuntime } from './server/runtime.js';
@@ -2302,6 +2305,8 @@ function buildDecisionServer(options: ServeOptions, leaveRehearsal: (() => void)
     const timer = setTimeout(done, SHUTDOWN_WAIT_MS);
     void Promise.resolve(work).catch(() => {}).finally(() => { clearTimeout(timer); done(); });
   });
+  /** Phone access, once made below (the close override runs later, after it exists). */
+  let phoneAccessRef: import('./companion/access.js').PhoneAccess | null = null;
   const closeServer = server.close.bind(server);
   server.close = ((callback?: (error?: Error) => void) => {
     leadClosing = true;
@@ -2312,7 +2317,7 @@ function buildDecisionServer(options: ServeOptions, leaveRehearsal: (() => void)
     directChatHandlers.close();
     detachReads();
     liveFollower.close();
-    void Promise.all([closeCoding(), terminalClosing.close?.().then(problem => { terminalClosing.problem = problem; }), bounded(team.close()), bounded(personalQueue.close()), bounded(leadMaintenance?.stop()), bounded(backgroundChecks?.stop()), bounded(reads?.close()), bounded(engineHandlers.close())])
+    void Promise.all([closeCoding(), terminalClosing.close?.().then(problem => { terminalClosing.problem = problem; }), bounded(team.close()), bounded(personalQueue.close()), bounded(leadMaintenance?.stop()), bounded(backgroundChecks?.stop()), bounded(reads?.close()), bounded(engineHandlers.close()), bounded(phoneAccessRef?.stop())])
       // The server always closes; a terminal whose processes couldn't be proved stopped is the close's error.
       .then(() => closeServer(error => callback?.(error ?? terminalClosing.problem ?? undefined))).catch(error => {
       if (callback) callback(error instanceof Error ? error : Error('Coding session shutdown failed.'));
@@ -2482,6 +2487,17 @@ function buildDecisionServer(options: ServeOptions, leaveRehearsal: (() => void)
   };
   const tasksHandlers = createTasksHandlers(handlerRuntime);
   const pagesHandlers = createPagesHandlers(handlerRuntime, { listFor: tasksHandlers.workListFor, showOrder: tasksHandlers.showOrder });
+  // Phone access (the Toolroll iPhone app): off until an approver turns it on in Settings → Phone. Its reads are the
+  // Engine API's own, for the paired device's account, in this process (companion/reads.ts).
+  const phoneAccess = createPhoneAccess({
+    store,
+    reads: createCompanionReads({ runtime: handlerRuntime, readWorkRows: pagesHandlers.readWorkRows, subscribeBus: listener => liveBus.subscribe(() => listener()),
+      workspaceLabel: workspaceLabelOf, toolrollVersion: PACKAGE_VERSION }),
+    log: line => console.error(line),
+  });
+  phoneAccessRef = phoneAccess;
+  void phoneAccess.resume();
+  const phoneSettingsHandlers = createPhoneSettingsHandlers(handlerRuntime, { access: phoneAccess });
   const engineHandlers = createEngineHandlers(handlerRuntime);
   const flowsHandlers = createFlowsHandlers(handlerRuntime);
   let directChatHandlersRef: ReturnType<typeof createDirectChatHandlers> | null = null;
@@ -2543,7 +2559,7 @@ function buildDecisionServer(options: ServeOptions, leaveRehearsal: (() => void)
   const registry = createHandlerRegistry([
     ...tasksHandlers.registrations, ...flowsHandlers.registrations, ...chatHandlers.registrations,
     ...settingsHandlers.registrations, ...peopleHandlers.registrations, ...pagesHandlers.registrations,
-    ...remoteHandlers.registrations, ...liveHandlers.registrations, ...terminalHandlers.registrations, ...directChatHandlers.registrations, ...createSweepHandlers(handlerRuntime).registrations,
+    ...remoteHandlers.registrations, ...phoneSettingsHandlers.registrations, ...liveHandlers.registrations, ...terminalHandlers.registrations, ...directChatHandlers.registrations, ...createSweepHandlers(handlerRuntime).registrations,
     ...createWelcomeHandlers(handlerRuntime).registrations, ...engineHandlers.registrations,
   ]);
   /** The row's role, after admission and before its one handler. */

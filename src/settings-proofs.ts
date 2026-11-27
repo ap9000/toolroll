@@ -157,6 +157,9 @@ export const PROOF_INVENTORY: readonly ProofRow[] = [
   { id: "people-projects", action: "Change a person's projects", routes: ["/people/projects"], form: "peopleProjects", field: "token", proof: "credential", ...CREDENTIAL, role: "operator", secrets: [], terms: ["name"] },
 
   // A typed password, checked by the handler itself.
+  { id: "phone-access", action: "Turn phone access on or off", routes: ["/settings/phone/access"], form: "phoneAccess", field: "password", proof: "typed-password", ...TYPED, role: "operator", secrets: [], terms: ["act"] },
+  { id: "phone-remove", action: "Remove a paired phone", routes: ["/settings/phone/remove"], form: "phoneRemove", field: "password", proof: "typed-password", ...TYPED, role: "approver", secrets: [], terms: ["device"] },
+  { id: "phone-pair", action: "Pair an iPhone with Toolroll", routes: ["/settings/phone/pair"], form: "phonePair", field: "password", proof: "typed-password", ...TYPED, role: "approver", secrets: [], terms: [] },
   { id: "telegram-pair", action: "Pair your phone with Telegram", routes: ["/settings/telegram/pair"], form: "telegramPair", field: "password", proof: "typed-password", ...TYPED, role: "approver", secrets: [], terms: [] },
   { id: "chat-approval-save", action: "Turn on approving from chat", routes: ["/settings/chat-approval/save"], form: "chatApproval", field: "token", proof: "typed-password", ...TYPED, role: "approver", secrets: [], terms: ["nonce", "digest", "scope", "full-access", "cap-usd"] },
   { id: "push-subscribe", action: "Get alerts on this device", routes: ["/push/subscribe"], form: "pushSubscribe", field: "token", proof: "typed-password", ...TYPED, role: "any", handlerRole: "an approver", secrets: [], terms: ["endpoint", "p256dh", "auth"] },

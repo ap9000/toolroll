@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "project": "/work/proj",
+  "projectName": "proj",
+  "needsCount": 1,
+  "groups": [
+    {
+      "key": "unblock",
+      "label": "Unblock",
+      "count": 1
+    },
+    {
+      "key": "rest",
+      "label": "Everything else",
+      "count": 4
+    }
+  ],
+  "rows": [
+    {
+      "id": "t-failed",
+      "title": "Add a subtract function",
+      "href": "/t/t-failed",
+      "project": "proj",
+      "age": "1m ago",
+      "status": {
+        "label": "Needs a retry",
+        "tone": "problem",
+        "token": "failed"
+      },
+      "word": {
+        "word": "Failed",
+        "tone": "failed"
+      },
+      "ask": "unblock",
+      "chip": "Failed",
+      "group": "unblock",
+      "rank": 0,
+      "detail": "A temporary problem on the machine stopped it.",
+      "problem": null,
+      "need": null,
+      "waiting": null
+    },
+    {
+      "id": "t-retry",
+      "title": "Rename the config loader",
+      "href": "/t/t-retry",
+      "project": "proj",
+      "age": "4m ago",
+      "status": {
+        "label": "Retrying",
+        "tone": "neutral",
+        "token": "assignment-working"
+      },
+      "word": {
+        "word": "Retrying in 2 min",
+        "tone": ""
+      },
+      "ask": null,
+      "chip": null,
+      "group": "rest",
+      "rank": 2,
+      "detail": "A temporary problem stopped the last attempt; it retries in 2 min.",
+      "problem": null,
+      "need": null,
+      "waiting": {
+        "retryAt": "2026-11-14T12:05:52.000Z",
+        "lastFailure": "The agent stopped with an error",
+        "attempt": "build"
+      }
+    },
+    {
+      "id": "t-queued",
+      "title": "Add a changelog entry",
+      "href": "/t/t-queued",
+      "project": "proj",
+      "age": "just now",
+      "status": {
+        "label": "Queued",
+        "tone": "muted",
+        "token": "ready"
+      },
+      "word": {
+        "word": "Queued",
+        "tone": ""
+      },
+      "ask": null,
+      "chip": null,
+      "group": "rest",
+      "rank": 2,
+      "detail": "Waiting for a builder.",
+      "problem": null,
+      "need": null,
+      "waiting": null
+    },
+    {
+      "id": "t-done",
+      "title": "Fix the date parser",
+      "href": "/t/t-done",
+      "project": "proj",
+      "age": "3d ago",
+      "status": {
+        "label": "Done",
+        "tone": "done",
+        "token": "assignment-complete"
+      },
+      "word": {
+        "word": "Done",
+        "tone": "done"
+      },
+      "ask": null,
+      "chip": null,
+      "group": "rest",
+      "rank": 3,
+      "detail": "Accepted.",
+      "problem": null,
+      "need": null,
+      "waiting": null
+    },
+    {
+      "id": "t-cancelled",
+      "title": "Try a new logger",
+      "href": "/t/t-cancelled",
+      "project": "proj",
+      "age": "5d ago",
+      "status": {
+        "label": "Cancelled",
+        "tone": "muted",
+        "token": "assignment-cancelled"
+      },
+      "word": {
+        "word": "Cancelled",
+        "tone": ""
+      },
+      "ask": null,
+      "chip": null,
+      "group": "rest",
+      "rank": 4,
+      "detail": "Nothing else will run for this task.",
+      "problem": null,
+      "need": null,
+      "waiting": null
+    }
+  ],
+  "needs": [
+    {
+      "key": "unblock",
+      "label": "Unblock",
+      "count": 1,
+      "rows": []
+    }
+  ],
+  "next": null,
+  "room": "workspace",
+  "spend": null,
+  "limits": null
+}

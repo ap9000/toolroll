@@ -42,6 +42,10 @@
 
 ---
 
+### Direct path exposure (added 2026-11-27)
+
+The Mac now accepts phone connections on its own network (`noise-relay-protocol.md` §4a). The listener is its own HTTP server (never the console's), reachable only from loopback, LAN, link-local and tailnet addresses, with two routes, no bearer tokens, and the engine's handshake deadline. Before Noise completes, nothing on a direct path is trusted by the phone: a LAN device answering the health probe can at most make the phone fall back to the hosted relay, never mark the phone "not recognized" or learn anything beyond the device id in the URL.
+
 ## 3. Explicit V1 RPC Allowlist (`PAIRED_DEVICE_ROUTES`)
 
 All methods bind `workspaceId`, `deviceId`, and `recoveryGeneration` in the Noise prologue at session open and re-check device non-revocation + account standing + project access (`store.accountCanAccess`) on every call.

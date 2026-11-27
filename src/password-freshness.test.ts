@@ -415,8 +415,11 @@ describe("where freshness may be honoured", () => {
   test("a password is checked only at known places, and every console empty-field step-up goes through proveAccountNow", () => {
     expect(hits["authenticateAccount()"]).toEqual({
       "src/operate.ts": 2, "src/principal.ts": 1, "src/scope.ts": 2, "src/server/guards.ts": 1, "src/server/people-tokens.ts": 3,
-      "src/server/settings.ts": 2, "src/tokens-cli.ts": 1,
+      "src/server/settings.ts": 2, "src/server/settings-phone.ts": 1, "src/tokens-cli.ts": 1,
     });
+    // Settings → Phone: turning phone access on or off, pairing (typed now) and removing a phone, one check of the
+    // posted password against this session's generation (settings-phone.ts passwordHolds).
+    for (const line of files.find(one => one.path === "src/server/settings-phone.ts")!.text.split("\n").filter(one => one.includes("authenticateAccount("))) expect(line).toMatch(/authenticateAccount\(store, who\.name, password\)/);
     // The two settings checks are typed-now ceremonies (they also compare the generation); never an empty field.
     for (const line of files.find(one => one.path === "src/server/settings.ts")!.text.split("\n").filter(one => one.includes("authenticateAccount("))) expect(line).toMatch(/body\.get\("(token|password)"\)/);
     expect(hits["proveAccountNow()"]).toEqual({ "src/device-pair.ts": 1, "src/scope.ts": 1, "src/server/people-tokens.ts": 1, "src/server/remote.ts": 1 });
@@ -473,6 +476,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#<module>": 2,
     "src/server/settings.ts#createSettingsHandlers@1>chatApprovalAct@81><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>telegramPairAct@82><anonymous>@1": 1,
+    // Settings → Phone (settings-phone.ts): one typed-password check for its three acts.
+    "src/server/settings-phone.ts#<module>": 2,
+    "src/server/settings-phone.ts#createPhoneSettingsHandlers@3>passwordHolds@2": 1,
     "src/tokens-cli.ts#<module>": 2,
     "src/tokens-cli.ts#runTokensCommand@1": 1,
     // `toolroll map`: a sign-in limits a read to that person's projects; no window is honoured there.

@@ -99,7 +99,7 @@ test("every edge row is in the inventory map, and the map names only edge rows",
   for (const id of ["edge.team-read", "edge.team-send", "edge.oauth-authorize", "edge.oauth-consent", "edge.google-callback", "edge.connect-callback"]) expect(EDGE_LOCAL[id]?.local, id).toBe("deny");
 });
 
-test("exactly one WebSocket upgrade listener exists in the server's source (the terminals', which admits a local owner only on a solo install)", () => {
+test("the WebSocket upgrade listeners in the server's source are exactly the known three, each narrowed", () => {
   const found: string[] = [];
   const walk = (dir: string) => {
     for (const name of readdirSync(dir)) {
@@ -110,8 +110,23 @@ test("exactly one WebSocket upgrade listener exists in the server's source (the 
     }
   };
   walk(join(import.meta.dirname, ".."));
-  expect(found).toHaveLength(1);
-  expect(found[0]).toContain("server/terminals.ts");
+  // The console's own: the terminals' (a local owner only on a solo install). The phone's direct path
+  // (companion/direct-server.ts): its own HTTP server, never the console's, dropping any peer outside loopback, LAN and
+  // tailnet ranges before HTTP is parsed, taking no bearer token, and admitting only a Noise handshake for a pairing or
+  // a paired device. The reference relay (companion/relay-server.ts): self-hosting and tests only — the console never
+  // starts it.
+  expect(found).toHaveLength(3);
+  expect(found.filter(one => one.includes("server/terminals.ts"))).toHaveLength(1);
+  expect(found.filter(one => one.includes("companion/direct-server.ts"))).toHaveLength(1);
+  expect(found.filter(one => one.includes("companion/relay-server.ts"))).toHaveLength(1);
+  const companion = (file: string) => readFileSync(join(import.meta.dirname, "..", "companion", file), "utf8");
+  expect(companion("service.ts")).not.toContain("startReferenceRelay(");
+  expect(companion("access.ts")).not.toContain("startReferenceRelay(");
+  const direct = companion("direct-server.ts");
+  expect(direct).toContain('createTcpServer({ pauseOnConnect: true }, (socket: Socket) => {\n    const address = addressOf(socket);\n    if (!directPeerAllowed(address)');
+  expect(direct).not.toMatch(/\bserver\.listen\(/); // HTTP only ever gets sockets the TCP server admitted
+  expect(direct).toContain("req.headers.authorization !== undefined");
+  expect(direct).toContain('url.pathname !== "/v1/direct"');
 });
 
 test("every lead proposal kind and chat operation is decided, and the decisions agree", () => {

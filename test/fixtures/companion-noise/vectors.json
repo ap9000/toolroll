@@ -1,0 +1,140 @@
+{
+  "schema_version": 1,
+  "generator": "snow 0.9 (Noise Protocol Framework Revision 34)",
+  "protocol_name": "Noise_IKpsk2_25519_ChaChaPoly_SHA256",
+  "handshakes": [
+    {
+      "name": "pairing_ikpsk2",
+      "protocol": "Noise_IKpsk2_25519_ChaChaPoly_SHA256",
+      "mode": "pair",
+      "workspace_id": "ws_0195a7b2c3d4",
+      "pair_session_id": "pair_9f8e7d6c5b4a",
+      "device_id": null,
+      "recovery_generation": null,
+      "prologue_hex": "746f6f6c726f6c6c2d6e6f6973652d763100706169720077735f30313935613762326333643400706169725f396638653764366335623461",
+      "init_static_priv_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "init_static_pub_hex": "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13",
+      "init_ephemeral_priv_hex": "2222222222222222222222222222222222222222222222222222222222222222",
+      "resp_static_priv_hex": "3333333333333333333333333333333333333333333333333333333333333333",
+      "resp_static_pub_hex": "7b0d47d93427f8311160781c7c733fd89f88970aef490d8aa0ee19a4cb8a1b14",
+      "resp_ephemeral_priv_hex": "4444444444444444444444444444444444444444444444444444444444444444",
+      "psk_hex": "5555555555555555555555555555555555555555555555555555555555555555",
+      "msg1_plaintext_utf8": "{\"protocolVersion\":1,\"mode\":\"pair\",\"deviceName\":\"Work iPhone\"}",
+      "msg1_hex": "0faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf2678570f205156c495be4bebdeef78b586df34c1d534ed3e55c51732d85c86d61168dc533e09b4df2bfa9dc5abe7fc80e547c28826444768c8370cc246266477c1dd4ecb9087fe55cd74200f8eea2f1154029354d45210793ffcfb4248d461fc075cfab2acb8049c557c89b42dafea41ce6b40856826cf1e37974288d115dfe979d59c",
+      "msg2_plaintext_utf8": "{\"protocolVersion\":1,\"status\":\"pending_confirm\"}",
+      "msg2_hex": "ff2ee45601ec1b67310c7790404585ae697331eee1c1f8cf2419731c1fff3e6bd3689b6391055757fb89915fa648b0b91337eaafbd1676140cfb5a3f0c1ea97887b5afabed313aafd87fb4dc1944b6c357e7b82ceed6a715ba866e28a2400eae",
+      "handshake_hash_hex": "b42c0ee1b0fac9bd769740f70514b0f8a18cf5ec94010bdb3ad9b1f4edafdd59",
+      "confirm_code": "4Q4-8KC",
+      "psk_entropy_hex": "6666666666666666666666666666666666666666666666666666666666666666",
+      "derived_device_psk_hex": "9813fc171d6fec3dc918751c4008468e351a39eb9e15f8af4be63a584cfc7781",
+      "transport": [
+        {
+          "direction": "i2r",
+          "nonce": "0",
+          "plaintext_utf8": "{\"method\":\"device.hello\",\"params\":{\"v\":1}}",
+          "ciphertext_hex": "fe388645c05925c43f954a0d622a9e2e3590479bebae91766c32323adb048d6c8abbc3df2e23867d6b1b4a09474d7579524afe5edb8c1f04c0f7"
+        },
+        {
+          "direction": "i2r",
+          "nonce": "1",
+          "plaintext_utf8": "{\"method\":\"work.rows\",\"params\":{}}",
+          "ciphertext_hex": "869d443c54b3dd425ade8cfca5b97b2db5dc878a8480d980a433c0f58762b623612ac003b2bca225a8dc25951fc2be821c59"
+        },
+        {
+          "direction": "i2r",
+          "nonce": "4294967303",
+          "plaintext_utf8": "high-64bit-nonce-i2r",
+          "ciphertext_hex": "d27ec0f24e9c57f405153c8d7254abd240cc2eec9a34281908b9568d31988ae0d44f1fa9"
+        },
+        {
+          "direction": "r2i",
+          "nonce": "0",
+          "plaintext_utf8": "{\"ok\":true,\"result\":{\"workspaceId\":\"ws_0195a7b2c3d4\"}}",
+          "ciphertext_hex": "95f1ea18bf87f3c9dacdcddf90f63757370c757352ec5f4f2ca70a1bcf7a35ddc849496015fd2081d7b3395c47968a60bb2f4f59a184033e5c9704bcce4825c540fd07a755af"
+        },
+        {
+          "direction": "r2i",
+          "nonce": "1",
+          "plaintext_utf8": "{\"ok\":true,\"result\":{\"groups\":[]}}",
+          "ciphertext_hex": "a11a2412ab30be65a943c9aae4fa844ddf4c57258f11e6ca140f37678c8b4333ab2f9d4d063353b9e3fa01aaad13c9fafb20"
+        },
+        {
+          "direction": "r2i",
+          "nonce": "4294967303",
+          "plaintext_utf8": "high-64bit-nonce-r2i",
+          "ciphertext_hex": "a7621e0d00b257d6ef46920ed4110012db355115c1158efea948dd6ef82ffb1e45dfd729"
+        }
+      ]
+    },
+    {
+      "name": "session_reconnect_ikpsk2",
+      "protocol": "Noise_IKpsk2_25519_ChaChaPoly_SHA256",
+      "mode": "session",
+      "workspace_id": "ws_0195a7b2c3d4",
+      "pair_session_id": null,
+      "device_id": "dev_11223344",
+      "recovery_generation": "0123456789abcdef0123456789abcdef",
+      "prologue_hex": "746f6f6c726f6c6c2d6e6f6973652d76310073657373696f6e0077735f303139356137623263336434006465765f3131323233333434003031323334353637383961626364656630313233343536373839616263646566",
+      "init_static_priv_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "init_static_pub_hex": "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13",
+      "init_ephemeral_priv_hex": "7777777777777777777777777777777777777777777777777777777777777777",
+      "resp_static_priv_hex": "3333333333333333333333333333333333333333333333333333333333333333",
+      "resp_static_pub_hex": "7b0d47d93427f8311160781c7c733fd89f88970aef490d8aa0ee19a4cb8a1b14",
+      "resp_ephemeral_priv_hex": "8888888888888888888888888888888888888888888888888888888888888888",
+      "psk_hex": "9813fc171d6fec3dc918751c4008468e351a39eb9e15f8af4be63a584cfc7781",
+      "msg1_plaintext_utf8": "{\"protocolVersion\":1,\"mode\":\"session\",\"deviceId\":\"dev_11223344\"}",
+      "msg1_hex": "1cf579aba45a10ba1d1ef06d91fca2aa9ed0a1150515653155405d0b18cb9a67fbdeb5e2e84865f7843c529c7c56f1e018b3826ef7e01b4c3c5a07fef9c74ee9f9d9f6617f8bb08544260cc6ce98f126f06f46244d48fa4db51536c583712b752c79b43aab2049c8381b49453b0ea7767d443a5976e82ec7e10bc22a7ae00fef27146d30bf70a16b4d8b78cee7abcb733f8391ba98263b8c1d8712bed72843fd",
+      "msg2_plaintext_utf8": "{\"protocolVersion\":1,\"status\":\"ready\"}",
+      "msg2_hex": "30d3c865a48fceb3d6118577cf2e5f228d6ff69866264757785b253cb7a4806a19743b5201db56b0083cc93d8ce51f2d10458265657c5c532a0322a9cfadc50087af2877958f88d1ce01acfaf0a37c951e64730789db",
+      "handshake_hash_hex": "ca901eee5c055478684e3bef5660518efdd4ccc6c28fd21309a10f7f45f0f690",
+      "confirm_code": null,
+      "psk_entropy_hex": null,
+      "derived_device_psk_hex": null,
+      "transport": [
+        {
+          "direction": "i2r",
+          "nonce": "0",
+          "plaintext_utf8": "{\"method\":\"device.hello\",\"params\":{\"v\":1}}",
+          "ciphertext_hex": "e5de54f5b293f67e684a53db87d2b0a72fa0c7a6e204748f064312b8d0d88ac5ff4908f02107d480067fe6e369ceaa0f5e27946e4abbc4c33175"
+        },
+        {
+          "direction": "i2r",
+          "nonce": "1",
+          "plaintext_utf8": "{\"method\":\"work.rows\",\"params\":{}}",
+          "ciphertext_hex": "243582a8214b1b0b1814525453426e9ffcbb190194476474d845fce8c4b0e0160d9f62631ebc3ed33c652d6f840615953c23"
+        },
+        {
+          "direction": "i2r",
+          "nonce": "4294967303",
+          "plaintext_utf8": "high-64bit-nonce-i2r",
+          "ciphertext_hex": "3d7be3676a840975036c092fd0d421eac834dd3e463ed76ca9fec6d6afa5881fbfbfa3d3"
+        },
+        {
+          "direction": "r2i",
+          "nonce": "0",
+          "plaintext_utf8": "{\"ok\":true,\"result\":{\"workspaceId\":\"ws_0195a7b2c3d4\"}}",
+          "ciphertext_hex": "c35585d24504a36b48ce9bc0be4efca2c37466961a392eb465bcd83022fb70ce830704c1618058fedee7e54fd2d323199f9f5381e3d8cce83b3729967198cb4645be422f99a2"
+        },
+        {
+          "direction": "r2i",
+          "nonce": "1",
+          "plaintext_utf8": "{\"ok\":true,\"result\":{\"groups\":[]}}",
+          "ciphertext_hex": "e234a0241f1e07eeccdf208748cdf5af2d6d4451ca68b6de567508a3cea870335886265c365fe58b10b89d2a45fd6128d5dd"
+        },
+        {
+          "direction": "r2i",
+          "nonce": "4294967303",
+          "plaintext_utf8": "high-64bit-nonce-r2i",
+          "ciphertext_hex": "ac7cc98beb033a6ba50a3fcdd166f52e8ab906d2b3089b192d1497c3c1f6d633996a755b"
+        }
+      ]
+    }
+  ],
+  "derivations": {
+    "relay_machine_pub_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    "machine_id": "cxcoklk57bmndk7pozlswcte6h",
+    "workspace_id": "ws_0195a7b2c3d4",
+    "account_name": "owner",
+    "passkey_user_handle_hex": "99de80f7f22f90ed72e756fbbfd2adb844ddb371a842de70b9b87a116ab2f513"
+  }
+}
