@@ -64,7 +64,9 @@ private final class WeakOwner: @unchecked Sendable {
 @Observable
 final class CompanionAppState {
     private(set) var connection: CompanionConnectionState = .unpaired
-    private(set) var pairing: CompanionPairingPhase = .idle
+    /// Which scan owns the pairing UI (a late callback from an older scan never overwrites a newer one).
+    private var pairingGate = CompanionPairingGate()
+    var pairing: CompanionPairingPhase { pairingGate.phase }
     private(set) var pairedRecord: PairedWorkspaceRecord?
     private(set) var workspaceLabel: String = "Your Mac"
     /// The last time live data was fetched successfully.
@@ -231,24 +233,28 @@ final class CompanionAppState {
             return
         }
         pairingTask?.cancel()
-        pairing = .contacting
+        let attempt = pairingGate.begin()
         let deviceName = UIDevice.current.name
-        pairingTask = Task { await runPairing(qr: qr, deviceName: deviceName) }
+        pairingTask = Task { await runPairing(qr: qr, deviceName: deviceName, attempt: attempt) }
     }
 
-    private func runPairing(qr: PairingQRPayload, deviceName: String) async {
+    /// One scan's pairing. Every callback (code ready, result, failure) checks that `attempt` still owns the pairing
+    /// UI before publishing anything, so a late answer from an older scan can't overwrite a newer one.
+    private func runPairing(qr: PairingQRPayload, deviceName: String, attempt: UInt64) async {
         do {
             let result = try await client.beginPairing(qr: qr, deviceName: deviceName) { code in
                 await MainActor.run { [weak self] in
-                    guard let self, self.pairing != .idle else { return }
-                    self.pairing = .awaitingMacConfirm(code: code)
+                    _ = self?.pairingGate.codeReady(code, attempt: attempt)
                 }
             }
-            guard pairing != .idle, !Task.isCancelled else { return }
+            guard pairingGate.owns(attempt), !Task.isCancelled else { return }
             try saveKeys([result.devicePsk, result.phoneNoisePriv, result.deviceRelayPriv])
             UserDefaults.standard.set(try JSONEncoder().encode(result.record), forKey: Self.recordStorageKey)
             UserDefaults.standard.removeObject(forKey: Self.labelStorageKey)
 
+            // Release the pairing UI before the first suspension: a scan started during the awaits below owns it.
+            pairingGate.end(attempt)
+            pairingTask = nil
             epoch += 1
             await client.disconnect()
             pairedRecord = result.record
@@ -258,26 +264,24 @@ final class CompanionAppState {
             liveCache = CompanionCache()
             demoCache = CompanionCache()
             lastUpdated = nil
-            pairing = .idle
-            pairingTask = nil
             connection = .connecting
             if await reconnect(quiet: false) { refreshTick += 1 }
         } catch {
-            guard pairing != .idle else { return } // cancelled by the person
-            pairing = .idle
+            // Cancelled by the person, or replaced by a newer scan: that one owns the UI now.
+            guard pairingGate.end(attempt) else { return }
             pairingTask = nil
             if case CompanionConnectionError.unreachable(let message) = error,
                message == CompanionRelayClient.noReachablePathMessage {
                 pairingError = message
             } else {
-                pairingError = "Pairing didn't finish. On your Mac, start pairing again for a new code."
+                pairingError = CompanionPairingError.interrupted.userMessage
             }
         }
     }
 
     func cancelPairing() {
         guard pairing != .idle || pairingTask != nil else { return }
-        pairing = .idle
+        pairingGate.cancel()
         pairingTask?.cancel()
         pairingTask = nil
         let client = self.client

@@ -64,50 +64,65 @@ public enum CompanionPathRules {
             throw PairingPayloadError.invalid("hosted path is not last")
         }
         guard Set(paths.map(\.url)).count == paths.count else { throw PairingPayloadError.invalid("duplicate path") }
-        for path in paths {
-            switch path.kind {
-            case .direct: try validateDirect(path.url)
-            case .hosted: try validateHosted(path.url)
-            }
+        for path in paths { try validate(path) }
+    }
+
+    // Canonical grammar, checked on the raw string (test/fixtures/companion-paths.json; src/companion/paths.ts runs
+    // the same table):
+    //   direct = ws://<private IPv4, four decimal octets, no leading zeros>:<port 1-65535, no leading zeros>/v1/direct
+    //   hosted = wss://<lowercase host>[:port]/v1/connect, or ws://127.0.0.1|localhost:<port>/v1/connect
+    // No userinfo, query, fragment or trailing slash: nothing may follow the path.
+
+    /// One path's own rules.
+    public static func validate(_ path: CompanionPath) throws {
+        switch path.kind {
+        case .direct: try validateDirect(path.url)
+        case .hosted: try validateHosted(path.url)
         }
     }
 
-    /// `ws`, a private or Tailscale IPv4 literal, an explicit port, path exactly `/v1/direct`,
-    /// no query, fragment or userinfo.
+    /// One path from raw strings (an unknown kind is invalid).
+    public static func validate(kind: String, url: String) throws {
+        guard let kind = CompanionPath.Kind(rawValue: kind) else { throw PairingPayloadError.invalid("unknown path kind") }
+        try validate(CompanionPath(kind: kind, url: url))
+    }
+
+    private nonisolated(unsafe) static let directPattern =
+        try! Regex(#"ws://([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}):([1-9][0-9]{0,4})/v1/direct"#)
+    private nonisolated(unsafe) static let hostedPattern =
+        try! Regex(#"wss://([a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*)(?::([1-9][0-9]{0,4}))?/v1/connect"#)
+    private nonisolated(unsafe) static let loopbackPattern =
+        try! Regex(#"ws://(?:127\.0\.0\.1|localhost):([1-9][0-9]{0,4})/v1/connect"#)
+
     static func validateDirect(_ url: String) throws {
-        let c = try components(url)
-        guard c.scheme == "ws" else { throw PairingPayloadError.invalid("direct path is not ws://") }
-        guard let host = c.host, let octets = ipv4Octets(host), isPrivateOrTailscale(octets) else {
+        guard url.utf8.count <= maxURLLength else { throw PairingPayloadError.invalid("path URL too long") }
+        guard let m = try? directPattern.wholeMatch(in: url),
+              let host = m.output[1].substring, let port = m.output[2].substring
+        else { throw PairingPayloadError.invalid("direct path is not ws://<IPv4>:<port>/v1/direct") }
+        guard let octets = ipv4Octets(String(host)), isPrivateOrTailscale(octets) else {
             throw PairingPayloadError.invalid("direct host is not a private IPv4 address")
         }
-        guard let port = c.port, (1...65535).contains(port) else {
-            throw PairingPayloadError.invalid("direct path has no port")
-        }
-        guard c.percentEncodedPath == "/v1/direct" else { throw PairingPayloadError.invalid("direct path is not /v1/direct") }
+        guard portAllowed(port) else { throw PairingPayloadError.invalid("direct port out of range") }
     }
 
-    /// `wss` (or `ws` to 127.0.0.1/localhost, for tests), path exactly `/v1/connect`.
     static func validateHosted(_ url: String) throws {
-        let c = try components(url)
-        guard let host = c.host?.lowercased(), !host.isEmpty else { throw PairingPayloadError.invalid("hosted path has no host") }
-        switch c.scheme {
-        case "wss": break
-        case "ws" where host == "127.0.0.1" || host == "localhost": break
-        default: throw PairingPayloadError.invalid("hosted path is not wss://")
+        guard url.utf8.count <= maxURLLength else { throw PairingPayloadError.invalid("path URL too long") }
+        if let m = try? hostedPattern.wholeMatch(in: url) {
+            if let port = m.output[2].substring, !portAllowed(port) {
+                throw PairingPayloadError.invalid("hosted port out of range")
+            }
+            return
         }
-        if let port = c.port, !(1...65535).contains(port) {
-            throw PairingPayloadError.invalid("hosted port out of range")
+        if let m = try? loopbackPattern.wholeMatch(in: url), let port = m.output[1].substring, portAllowed(port) {
+            return
         }
-        guard c.percentEncodedPath == "/v1/connect" else { throw PairingPayloadError.invalid("hosted path is not /v1/connect") }
+        throw PairingPayloadError.invalid("hosted path is not wss://<host>/v1/connect")
     }
 
-    private static func components(_ url: String) throws -> URLComponents {
-        guard url.count <= maxURLLength else { throw PairingPayloadError.invalid("path URL too long") }
-        guard let c = URLComponents(string: url) else { throw PairingPayloadError.invalid("path URL does not parse") }
-        guard c.user == nil, c.password == nil, c.query == nil, c.fragment == nil else {
-            throw PairingPayloadError.invalid("path URL has userinfo, a query or a fragment")
-        }
-        return c
+    /// Digits already checked by the pattern (no leading zero); 1–65535.
+    private static func portAllowed(_ digits: Substring) -> Bool {
+        guard let value = Int(digits) else { return false }
+        return (1...65535).contains(value)
     }
 
     /// A strict dotted-quad: four decimal parts, 0–255, no leading zeros. Anything else (names, IPv6, `0x…`) is nil.

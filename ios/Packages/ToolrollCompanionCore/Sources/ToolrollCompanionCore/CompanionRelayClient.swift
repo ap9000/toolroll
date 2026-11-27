@@ -13,6 +13,22 @@ public enum CompanionConnectionError: Error, Equatable, Sendable {
     case closed
 }
 
+/// A pairing that may have reached the Mac but didn't finish. Never retried on another path: the person scans a
+/// fresh code.
+public enum CompanionPairingError: Error, Equatable, Sendable {
+    case interrupted
+
+    public var userMessage: String { "Pairing didn't finish. Show a new code on your Mac and scan again." }
+}
+
+/// Set once, read from another task.
+private final class SentFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag = false
+    var value: Bool { lock.withLock { flag } }
+    func set() { lock.withLock { flag = true } }
+}
+
 /// A typed RPC failure: the ERROR frame's `{ code, message }`.
 public struct CompanionRPCError: Error, Equatable, Sendable {
     public let code: String
@@ -251,9 +267,8 @@ public actor CompanionRelayClient {
         try Task.checkCancellation()
         guard epoch == pairingEpoch else { throw CompanionConnectionError.closed }
 
-        // A healthy direct address first, else the hosted relay. Nothing on the direct path is authenticated until
-        // msg2 decrypts, so a direct handshake that breaks (any LAN device can answer /v1/health) gets one try on
-        // hosted. Once the code is shown there is no fallback: an uncertain outcome means scanning a fresh code.
+        // A healthy direct address first, else the hosted relay. Hosted gets one try only if the direct socket failed
+        // before message 1 was sent; after that the outcome is uncertain and the person scans a fresh code.
         let ws: any CompanionSocket
         let pairSession: NoiseTransportSession
         if let directReq {
@@ -312,8 +327,12 @@ public actor CompanionRelayClient {
         return (record, devicePsk, phoneNoise.privateKey, deviceRelay.rawRepresentation)
     }
 
-    /// Opens one pairing socket and runs msg1 → msg2. On a direct path every failure here is a network failure
-    /// (`unreachable`): nothing there is authenticated until msg2 decrypts.
+    /// Opens one pairing socket and runs msg1 → msg2.
+    ///
+    /// On a direct path, a failure before message 1 was sent (connect error, upgrade refused, timeout before open)
+    /// is `unreachable`, so hosted may be tried. Once message 1 may have reached the Mac, any failure is
+    /// `CompanionPairingError.interrupted`: a second socket naming the same pairing id would make the Mac abort the
+    /// pairing (its competing-scan safeguard), so the person scans a fresh code instead.
     private func openPairing(
         _ req: URLRequest,
         direct: Bool,
@@ -323,11 +342,13 @@ public actor CompanionRelayClient {
         let ws = socketFactory(req)
         pairingSocket?.close()
         pairingSocket = ws
+        let msg1Sent = SentFlag()
         do {
             let msg1 = try initiator.writeMessage1(payload: msg1Payload)
             let limit = direct ? timing.directHandshake : timing.connect
             let msg2 = try await Self.withDeadline(limit, onTimeout: { ws.close() }) {
                 try await ws.send(msg1)
+                msg1Sent.set()
                 return try await ws.receive()
             }
             let (_, session) = try initiator.readMessage2(msg2)
@@ -335,8 +356,9 @@ public actor CompanionRelayClient {
         } catch {
             ws.close()
             if pairingSocket === ws { pairingSocket = nil }
-            if direct { throw CompanionConnectionError.unreachable("direct pairing handshake failed") }
-            throw error
+            guard direct else { throw error }
+            if msg1Sent.value { throw CompanionPairingError.interrupted }
+            throw CompanionConnectionError.unreachable("direct pairing socket never opened")
         }
     }
 

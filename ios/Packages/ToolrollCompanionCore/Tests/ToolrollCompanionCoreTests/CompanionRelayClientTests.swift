@@ -50,6 +50,8 @@ private enum SocketMode: Sendable {
     case stallBeforeReply
     /// The handshake completes, then `device.hello` is never answered.
     case stallHello
+    /// The socket never opens: sending message 1 hangs.
+    case stallOpen
 }
 
 private final class PipeSocket: CompanionSocket, @unchecked Sendable {
@@ -92,6 +94,9 @@ private final class PipeSocket: CompanionSocket, @unchecked Sendable {
             return
         case .stallHello:
             if index >= 1 { return }
+        case .stallOpen:
+            try await Task.sleep(for: .seconds(60))
+            throw CompanionConnectionError.closed
         }
         try await mac.receive(data, socket: self)
     }
@@ -621,10 +626,10 @@ func helloInvalidPathsKeepStored(_ json: String?) async throws {
     #expect(await h.client.isConnected)
 }
 
-@Test("Pairing dials a healthy direct path with role=pair and no token; a broken direct handshake tries hosted once", arguments: [
-    SocketModeArg.garbageReply, .closeBeforeReply, .dropBeforeReply, .stallBeforeReply,
+@Test("Pairing: a direct socket that fails before message 1 is sent tries hosted once with the pair token", arguments: [
+    SocketModeArg.dropBeforeReply, .refused, .stallOpen,
 ])
-fileprivate func pairingDirectFallsBackOnce(_ mode: SocketModeArg) async throws {
+fileprivate func pairingDirectFallsBackBeforeMessage1(_ mode: SocketModeArg) async throws {
     let h = try Harness(timing: .init(directHandshake: .milliseconds(150)))
     h.box.answer("192.168.1.20", machineId: "m-1")
     h.box.setMode(.direct, mode.mode)
@@ -634,11 +639,27 @@ fileprivate func pairingDirectFallsBackOnce(_ mode: SocketModeArg) async throws 
         _ = try await h.client.beginPairing(qr: qr, deviceName: "Test iPhone") { _ in }
     }
     let requests = h.box.requests
-    #expect(requests.count == 2) // direct, then hosted once; both failing means a fresh QR
+    #expect(requests.count == 2)
     #expect(requests.first?.url?.absoluteString == "ws://192.168.1.20:4199/v1/direct?role=pair&id=ps-1")
     #expect(requests.first?.value(forHTTPHeaderField: "Authorization") == nil)
     #expect(requests.last?.url?.absoluteString == "wss://relay.toolroll.invalid/v1/connect")
     #expect(requests.last?.value(forHTTPHeaderField: "Authorization") == "Bearer pct-1")
+}
+
+@Test("Pairing: once message 1 may have reached the Mac, a direct failure never retries on hosted", arguments: [
+    SocketModeArg.garbageReply, .closeBeforeReply, .stallBeforeReply,
+])
+fileprivate func pairingDirectNoRetryAfterMessage1(_ mode: SocketModeArg) async throws {
+    let h = try Harness(timing: .init(directHandshake: .milliseconds(150)))
+    h.box.answer("192.168.1.20", machineId: "m-1")
+    h.box.setMode(.direct, mode.mode)
+    let qr = try PairingQRPayload.parse(PairingFixtures.json())
+    await #expect(throws: CompanionPairingError.interrupted) {
+        _ = try await h.client.beginPairing(qr: qr, deviceName: "Test iPhone") { _ in }
+    }
+    #expect(h.box.requests.count == 1)
+    #expect(h.box.requests.first?.url?.path == "/v1/direct")
+    #expect(CompanionPairingError.interrupted.userMessage == "Pairing didn't finish. Show a new code on your Mac and scan again.")
 }
 
 @Test("Pairing over direct with no hosted path makes a single attempt")
@@ -647,7 +668,7 @@ func pairingDirectOnlySingleAttempt() async throws {
     h.box.answer("10.1.2.3", machineId: "m-1")
     h.box.setMode(.direct, .garbageReply)
     let qr = try PairingQRPayload.parse(PairingFixtures.json(paths: [PairingFixtures.direct("ws://10.1.2.3:4199/v1/direct")], token: nil))
-    await #expect(throws: CompanionConnectionError.self) {
+    await #expect(throws: CompanionPairingError.interrupted) {
         _ = try await h.client.beginPairing(qr: qr, deviceName: "Test iPhone") { _ in }
     }
     #expect(h.box.requests.count == 1)
@@ -690,7 +711,7 @@ func slowProbeTimesOut() async throws {
 }
 
 fileprivate enum SocketModeArg: String, CaseIterable, Sendable, CustomTestStringConvertible {
-    case dropBeforeReply, dropOnHello, garbageReply, closeBeforeReply, refused, stallBeforeReply, stallHello
+    case dropBeforeReply, dropOnHello, garbageReply, closeBeforeReply, refused, stallBeforeReply, stallHello, stallOpen
     var mode: SocketMode {
         switch self {
         case .dropBeforeReply: return .dropBeforeReply
@@ -700,6 +721,7 @@ fileprivate enum SocketModeArg: String, CaseIterable, Sendable, CustomTestString
         case .refused: return .refused
         case .stallBeforeReply: return .stallBeforeReply
         case .stallHello: return .stallHello
+        case .stallOpen: return .stallOpen
         }
     }
     var testDescription: String { rawValue }
