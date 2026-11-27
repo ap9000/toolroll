@@ -38,6 +38,41 @@ public struct DeviceHello: Codable, Equatable, Sendable {
     public let workspaceLabel: String?
     public let account: String?
     public let deviceId: String
+    /// The Mac's current ways to reach it (same rules as the pairing QR). Nil when absent or malformed: a bad
+    /// list never fails the hello, it just isn't stored.
+    public let paths: [CompanionPath]?
+
+    private enum CodingKeys: String, CodingKey {
+        case version, workspaceId, workspaceLabel, account, deviceId, paths
+    }
+
+    public init(
+        version: Int? = 1, workspaceId: String, workspaceLabel: String? = nil, account: String? = nil,
+        deviceId: String, paths: [CompanionPath]? = nil
+    ) {
+        self.version = version
+        self.workspaceId = workspaceId
+        self.workspaceLabel = workspaceLabel
+        self.account = account
+        self.deviceId = deviceId
+        self.paths = paths
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decodeIfPresent(Int.self, forKey: .version)
+        workspaceId = try c.decode(String.self, forKey: .workspaceId)
+        workspaceLabel = try c.decodeIfPresent(String.self, forKey: .workspaceLabel)
+        account = try c.decodeIfPresent(String.self, forKey: .account)
+        deviceId = try c.decode(String.self, forKey: .deviceId)
+        paths = (try? c.decodeIfPresent([CompanionPath].self, forKey: .paths)) ?? nil
+    }
+
+    /// `paths` if present and valid under the pairing rules; otherwise nil.
+    public var validPaths: [CompanionPath]? {
+        guard let paths, (try? CompanionPathRules.validate(paths)) != nil else { return nil }
+        return paths
+    }
 }
 
 // MARK: - Work rows (`work.rows`, workRowsSchema)
