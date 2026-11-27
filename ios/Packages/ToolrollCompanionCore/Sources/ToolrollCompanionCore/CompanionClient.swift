@@ -4,10 +4,17 @@ import Security
 
 /// Keychain storage for `ThisDeviceOnly` secrets (Noise static key, `devicePsk`,
 /// Ed25519 `deviceRelayPriv`, and App Group shared P-256 push decryption key + `authSecret`).
+///
+/// Transport secrets (`sharedAppGroup: false`) go to the app's default access group: the first entry of the app's
+/// `keychain-access-groups`, which is app-only (`<team>.dev.toolroll.ios`). The notification extension has no
+/// `keychain-access-groups` entitlement at all, so it can never read them; it reaches only the push items, which are
+/// saved to the App Group (`group.dev.toolroll.ios`).
 public enum CompanionKeychain {
     public static let appGroupAccessGroup = "group.dev.toolroll.ios"
     private static let service = "dev.toolroll.ios.companion"
 
+    /// Writes in place (`SecItemUpdate`), adding the item only if it doesn't exist yet, so a failed write never
+    /// leaves the old value deleted.
     public static func save(_ data: Data, account: String, sharedAppGroup: Bool = false) throws {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -17,10 +24,14 @@ public enum CompanionKeychain {
         if sharedAppGroup {
             query[kSecAttrAccessGroup as String] = appGroupAccessGroup
         }
-        SecItemDelete(query as CFDictionary)
-        query[kSecValueData as String] = data
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let status = SecItemAdd(query as CFDictionary, nil)
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            status = SecItemAdd(query.merging(attributes) { _, new in new } as CFDictionary, nil)
+        }
         guard status == errSecSuccess else {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
         }
