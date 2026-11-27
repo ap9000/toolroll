@@ -53,6 +53,9 @@ export interface Env {
   RL_REGISTER?: RateLimit;
   /** Per machine + client address: WebSocket connects and admission calls. */
   RL_CONNECT?: RateLimit;
+  /** Per client address across every machine: checked first on connects and admission calls, before any Durable
+   * Object is touched (varying the machine id can't escape RL_CONNECT). */
+  RL_CLIENT?: RateLimit;
   /** The relay's public host: token `aud` and the registration signature's host. Required. */
   RELAY_PUBLIC_HOST?: string;
   /** HMAC keys for registration challenges (`wrangler secret put CHALLENGE_SECRET`); the previous one is accepted
@@ -105,7 +108,7 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     const route = routeOf(path);
-    const configured = { challengeSecret: challengeSecrets(env).length > 0, publicHost: publicHostOf(env).length > 0, rateLimits: env.RL_REGISTER !== undefined && env.RL_CONNECT !== undefined };
+    const configured = { challengeSecret: challengeSecrets(env).length > 0, publicHost: publicHostOf(env).length > 0, rateLimits: env.RL_REGISTER !== undefined && env.RL_CONNECT !== undefined && env.RL_CLIENT !== undefined };
 
     if (request.method === "GET" && path === "/v1/health") {
       const ok = configured.challengeSecret && configured.publicHost;
@@ -113,18 +116,19 @@ export default {
       if (!ok) {
         return new Response(JSON.stringify(body), {
           status: 503,
-          headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "toolroll-relay-error": "relay_unavailable" },
+          headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
         });
       }
       return jsonResponse(200, body);
     }
-    if (!configured.publicHost) return refuse(route, { status: 503, code: "relay_unavailable", retryAfterSec: 60 });
+    // Misconfigured (no public host): nothing can verify, so everything waits (health above says why).
+    if (!configured.publicHost) return refuse(route, { status: 429, code: "rate_limited", retryAfterSec: 60 });
     const client = rateKeyOf(request.headers.get("cf-connecting-ip"));
 
     if (request.method === "POST" && (path === "/v1/challenge" || path === "/v1/machines/register")) {
       if (await limited(env.RL_REGISTER, client)) return refuse(route, { status: 429, code: "rate_limited", retryAfterSec: 60 });
       const secrets = challengeSecrets(env);
-      if (secrets.length === 0) return refuse(route, { status: 503, code: "relay_unavailable", retryAfterSec: 60 });
+      if (secrets.length === 0) return refuse(route, { status: 429, code: "rate_limited", retryAfterSec: 60 });
       if (path === "/v1/challenge") {
         return jsonResponse(200, { challenge: await mintChallenge(secrets[0]!, Date.now()), expiresInSec: LIMITS.challengeTtlMs / 1000 });
       }
@@ -150,14 +154,16 @@ export default {
       const shapeOk = !devicesPath ? request.method === "DELETE"
         : machineMatch[3] === undefined ? request.method === "PUT" || request.method === "POST"
           : request.method === "DELETE";
-      if (!shapeOk) return refuse(route, { status: 404, code: "not_found" });
+      if (!shapeOk) return refuse(route, { status: 400, code: "bad_request" });
       const machineId = machineMatch[1]!;
+      if (await limited(env.RL_CLIENT, client)) return refuse(route, { status: 429, code: "rate_limited", retryAfterSec: 60 });
       if (await limited(env.RL_CONNECT, `${machineId}|${client}`)) return refuse(route, { status: 429, code: "rate_limited", retryAfterSec: 60 }, { machine: machineTag(machineId) });
       return env.MACHINE_ROOM.get(env.MACHINE_ROOM.idFromName(machineId)).fetch(request);
     }
 
     if (path === "/v1/connect") {
       if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return refuse(route, { status: 400, code: "bad_request" });
+      if (await limited(env.RL_CLIENT, client)) return refuse(route, { status: 429, code: "rate_limited", retryAfterSec: 60 });
       const auth = request.headers.get("authorization") ?? "";
       const parsed = auth.startsWith("Bearer ") ? parseToken(auth.slice(7).trim()) : null;
       if (parsed === null) return refuse(route, { status: 401, code: "token_invalid" });
@@ -167,7 +173,7 @@ export default {
       return env.MACHINE_ROOM.get(env.MACHINE_ROOM.idFromName(parsed.machineId)).fetch(request);
     }
 
-    return refuse(route, { status: 404, code: "not_found" });
+    return refuse(route, { status: 400, code: "bad_request" });
   },
 };
 
@@ -231,7 +237,8 @@ export class MachineRoomDO extends DurableObject<Env> {
     this.timing = timingFrom(env as unknown as Record<string, unknown>);
     this.machineUp = fullBucket(LIMITS.machineUp.bytesBurst, this.now());
     this.machineDown = fullBucket(LIMITS.machineDown.bytesBurst, this.now());
-    this.ensureSchema();
+    // No DDL here: a request for a machine nobody registered must leave no storage behind. register() creates the
+    // schema; every other path reads the machine row first and stops at machine_unknown when there is none.
   }
 
   private now(): number {
@@ -251,7 +258,10 @@ export class MachineRoomDO extends DurableObject<Env> {
     this.sql.exec("CREATE INDEX IF NOT EXISTS jti_kind ON jti (kind)");
   }
 
+  /** The machine row, or null for a room nobody registered (or one deleted) — read-only: an absent table is null. */
   private machine(): MachineRow | null {
+    const table = this.sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'machine'").toArray();
+    if (table.length === 0) return null;
     return this.sql.exec<MachineRow>("SELECT machine_id, pub, last_daemon_at, next_conn_id, epoch FROM machine WHERE k = 1").toArray()[0] ?? null;
   }
 
@@ -403,7 +413,6 @@ export class MachineRoomDO extends DurableObject<Env> {
     await this.state.storage.deleteAlarm();
     await this.state.storage.deleteAll();
     this.mem.clear();
-    this.ensureSchema();
   }
 
   // ---- token admission ----
@@ -456,6 +465,7 @@ export class MachineRoomDO extends DurableObject<Env> {
     const now = this.now();
     // The id is derived from the key, so a stored row never changes key: write the first time, then only refresh the
     // GC clock when it is old.
+    this.ensureSchema();
     const existing = this.machine();
     if (existing === null) {
       this.sql.exec("INSERT INTO machine (k, machine_id, pub, last_daemon_at, next_conn_id, epoch) VALUES (1, ?, ?, ?, 0, 0)", machineId, relayMachinePub, now);
@@ -471,7 +481,7 @@ export class MachineRoomDO extends DurableObject<Env> {
     const route = routeOf(path);
     const match = /^\/v1\/machines\/([a-z2-7]{26})(\/devices(?:\/([^/]*))?)?$/.exec(path);
     const method = request.method;
-    if (match === null || (method !== "PUT" && method !== "POST" && method !== "DELETE")) return refuse(route, { status: 404, code: "not_found" });
+    if (match === null || (method !== "PUT" && method !== "POST" && method !== "DELETE")) return refuse(route, { status: 400, code: "bad_request" });
     const machineId = match[1]!;
     const tag = { machine: machineTag(machineId) };
     const parsed = this.bearer(request);

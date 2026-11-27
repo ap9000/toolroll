@@ -61,7 +61,7 @@ export async function startWorker(opts: WorkerOptions = {}): Promise<RunningWork
   const port = await freePort();
   const publicHost = `127.0.0.1:${port}`;
   const sqlite = new Set(config.migrations.flatMap(m => m.new_sqlite_classes ?? []));
-  const limits: Record<string, number | undefined> = { RL_REGISTER: opts.registerPerMin, RL_CONNECT: opts.connectPerMin };
+  const limits: Record<string, number | undefined> = { RL_REGISTER: opts.registerPerMin, RL_CONNECT: opts.connectPerMin, RL_CLIENT: opts.clientPerMin };
   const timing = {
     phoneFirstFrameMs: opts.timing?.phoneFirstFrameMs ?? 10_000,
     phoneIdleMs: opts.timing?.phoneIdleMs ?? 90_000,

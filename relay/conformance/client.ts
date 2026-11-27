@@ -41,6 +41,8 @@ export interface RelayTargetOptions {
   registerPerMin?: number;
   /** Per machine + client address per minute (connect + admission calls). */
   connectPerMin?: number;
+  /** Per client address per minute across every machine (connect + admission calls). */
+  clientPerMin?: number;
 }
 
 export type RelayTargetFactory = (opts: RelayTargetOptions) => Promise<RelayTarget>;

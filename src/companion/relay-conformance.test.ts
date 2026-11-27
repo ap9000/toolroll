@@ -10,6 +10,7 @@ defineRelayConformance("reference relay", async opts => {
     ...(opts.timing?.daemonSilenceMs !== undefined ? { daemonSilenceMs: opts.timing.daemonSilenceMs } : {}),
     ...(opts.registerPerMin !== undefined ? { registerPerMin: opts.registerPerMin } : {}),
     ...(opts.connectPerMin !== undefined ? { connectPerMin: opts.connectPerMin } : {}),
+    ...(opts.clientPerMin !== undefined ? { clientPerMin: opts.clientPerMin } : {}),
   });
   return {
     name: "reference",

@@ -3,11 +3,15 @@
  * alarm's housekeeping (replay rows, tombstones, 90-day room GC), configuration and health, secret rotation, logs.
  * The shared wire contract is relay/conformance/suite.ts.
  */
+import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   admin,
+  adminToken,
   admit,
+  daemonWsToken,
   bounded,
   closeOf,
   connectDaemon,
@@ -17,6 +21,7 @@ import {
   register,
   sendBinary,
 } from "../../conformance/client.js";
+import { deriveMachineId } from "../../../src/companion/noise.js";
 import { generateEd25519KeyPair, RelayOp, signRegistrationPop } from "../../../src/companion/relay-auth.js";
 import { CLOSE, LIMITS, REPLAY, timingFrom } from "../src/contract.js";
 import { startWorker, TEST_CHALLENGE_SECRET, type RunningWorker } from "./miniflare.js";
@@ -30,7 +35,7 @@ afterEach(async () => {
 });
 
 async function worker(opts: Parameters<typeof startWorker>[0] = {}): Promise<RunningWorker> {
-  const w = await startWorker({ registerPerMin: 10_000, connectPerMin: 10_000, ...opts });
+  const w = await startWorker({ registerPerMin: 10_000, connectPerMin: 10_000, clientPerMin: 10_000, ...opts });
   workers.push(w);
   return w;
 }
@@ -38,6 +43,12 @@ async function worker(opts: Parameters<typeof startWorker>[0] = {}): Promise<Run
 async function sql<T extends Record<string, unknown>>(w: RunningWorker, machineId: string, query: string): Promise<T[]> {
   const storage = await w.mf.unsafeGetDurableObjectStorage(w.scriptName, "MachineRoomDO", { name: machineId });
   return storage.exec<T & Record<string, string | number | null | ArrayBuffer>>(query) as Promise<T[]>;
+}
+
+/** The room's own tables (not workerd's internal ones). */
+async function userTables(w: RunningWorker, machineId: string): Promise<string[]> {
+  const rows = await sql<{ name: string }>(w, machineId, "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name");
+  return rows.map(r => r.name).filter(name => !name.startsWith("_cf") && !name.startsWith("sqlite_") && !name.startsWith("__miniflare"));
 }
 
 /** Waits until `check` holds, re-reading on every turn of the event loop's timers (a ceiling, not the fact). */
@@ -112,6 +123,45 @@ describe("hibernation (R1)", () => {
   });
 });
 
+describe("storage is created only by registration", () => {
+  test("a flood of made-up machine ids from one client is rate limited and leaves no Durable Object storage behind", async () => {
+    const w = await worker({ clientPerMin: 6 });
+    const statuses: number[] = [];
+    const ids: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      const key = generateEd25519KeyPair();
+      const m = { machineId: deriveMachineId(key.publicKey), key };
+      ids.push(m.machineId);
+      const res = i % 2 === 0
+        ? await admin(w, m, "PUT", `/v1/machines/${m.machineId}/devices`, { devices: [] })
+        : await fetch(`${w.url}/v1/machines/${m.machineId}`, { method: "DELETE", headers: { authorization: `Bearer ${adminToken(w, m, "DELETE", `/v1/machines/${m.machineId}`)}` } });
+      statuses.push(res.status);
+      await res.arrayBuffer();
+    }
+    expect(statuses.slice(0, 6)).toEqual([404, 404, 404, 404, 404, 404]);
+    expect(statuses.slice(6)).toEqual([429, 429, 429, 429]);
+    // Miniflare lists every object a request reached; none of them holds a table or an alarm.
+    for (const id of ids) expect(await userTables(w, id)).toEqual([]);
+  });
+
+  test("unknown-machine connects and admission calls write nothing; register creates the room", async () => {
+    const w = await worker();
+    const strangers = Array.from({ length: 3 }, () => { const key = generateEd25519KeyPair(); return { machineId: deriveMachineId(key.publicKey), key }; });
+    for (const m of strangers) {
+      expect(await refusedWith(w, daemonWsToken(w, m))).toMatchObject({ status: 404, code: "machine_unknown" });
+      expect((await admin(w, m, "DELETE", `/v1/machines/${m.machineId}/devices/dev_1`)).status).toBe(404);
+      expect(await userTables(w, m.machineId)).toEqual([]);
+    }
+    const real = await register(w);
+    expect(await userTables(w, real.machineId)).toEqual(["device", "jti", "machine", "tombstone"]);
+    // A deleted room leaves nothing either, and refuses as unknown without recreating tables.
+    expect((await admin(w, real, "DELETE", `/v1/machines/${real.machineId}`)).status).toBe(200);
+    expect(await userTables(w, real.machineId)).toEqual([]);
+    expect((await admin(w, real, "PUT", `/v1/machines/${real.machineId}/devices`, { devices: [] })).status).toBe(404);
+    expect(await userTables(w, real.machineId)).toEqual([]);
+  });
+});
+
 describe("SQLite tables and housekeeping", () => {
   test("replay rows are per principal, keyed (principal, id), and expired ones are pruned by the alarm", async () => {
     const w = await worker();
@@ -172,7 +222,7 @@ describe("configuration", () => {
     expect(res.status).toBe(503);
     expect(((await res.json()) as { configured: Record<string, boolean> }).configured.challengeSecret).toBe(false);
     const chal = await fetch(`${bare.url}/v1/challenge`, { method: "POST" });
-    expect({ status: chal.status, code: chal.headers.get("toolroll-relay-error") }).toEqual({ status: 503, code: "relay_unavailable" });
+    expect({ status: chal.status, code: chal.headers.get("toolroll-relay-error") }).toEqual({ status: 429, code: "rate_limited" });
   });
 
   test("CHALLENGE_SECRET rotation: the previous secret's challenges are accepted while it is set", async () => {
@@ -210,5 +260,18 @@ describe("configuration", () => {
     expect(text).not.toContain(m.key.publicKey.toString("base64url"));
     expect(text).not.toContain(TEST_CHALLENGE_SECRET);
     expect(text).not.toContain("junk.token");
+  });
+});
+
+describe("deploy smoke test", () => {
+  test("scripts/smoke.ts passes against the worker (the same run relay:deploy does against staging and production)", async () => {
+    const w = await worker();
+    const repo = fileURLToPath(new URL("../../../", import.meta.url));
+    const run = spawn(process.execPath, ["--import", "tsx", "relay/cloudflare/scripts/smoke.ts", w.url, "test"], { cwd: repo, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    run.stdout.on("data", (chunk: Buffer) => { output += chunk.toString("utf8"); });
+    run.stderr.on("data", (chunk: Buffer) => { output += chunk.toString("utf8"); });
+    const code = await bounded(new Promise<number | null>(resolve => run.once("close", resolve)), "the smoke test", 30_000);
+    expect({ code, passed: output.includes("smoke passed") }).toEqual({ code: 0, passed: true });
   });
 });

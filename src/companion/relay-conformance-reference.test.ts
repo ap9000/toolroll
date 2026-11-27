@@ -78,7 +78,7 @@ describe("contract numbers", () => {
     expect(contract.refusals.map((r: { status: number; code: string }) => ({ status: r.status, code: r.code }))).toEqual(wire.relay.refusals);
     expect(contract.errorHeader).toBe(wire.relay.errorHeader);
     expect(contract.tombstonesPerMachine).toBe(RELAY_LIMITS.tombstonesPerMachine);
-    expect(contract.rateLimitsPerMinute).toEqual({ register: RELAY_LIMITS.registerPerMin, connect: RELAY_LIMITS.connectPerMin });
+    expect(contract.rateLimitsPerMinute).toEqual({ register: RELAY_LIMITS.registerPerMin, connect: RELAY_LIMITS.connectPerMin, client: RELAY_LIMITS.clientPerMin });
   });
 
   test("claims: each rule, in order (structure before the key, the rest after the signature)", () => {
@@ -203,32 +203,59 @@ describe("reference relay only", () => {
     await sendBinary(p.ws, Buffer.from("two"));
     await daemon.envelope();
     const health = await fetch(`${relay.url}/v1/health`);
-    expect({ status: health.status, code: health.headers.get("toolroll-relay-error") }).toEqual({ status: 503, code: "relay_unavailable" });
+    expect(health.status).toBe(503);
+    const shed = await fetch(`${relay.url}/v1/challenge`, { method: "POST" });
+    expect({ status: shed.status, code: shed.headers.get("toolroll-relay-error"), retry: Number(shed.headers.get("retry-after")) > 0 }).toEqual({ status: 429, code: "rate_limited", retry: true });
     now += 60_000;
     expect((await fetch(`${relay.url}/v1/health`)).status).toBe(200);
     daemon.ws.close();
   });
 
-  test("at the room cap the least recently active room with no sockets makes way; with none, relay_unavailable", async () => {
+  test("at the room cap only an idle room holding nothing makes way; a registration flood never evicts devices or tombstones", async () => {
     let now = Date.now();
-    const { target } = await start({ maxRooms: 2, nowMs: () => now });
-    const a = await register(target);
+    const { target } = await start({ maxRooms: 3, nowMs: () => now, registerPerMin: 1000 });
+    const tokenNow = () => ({ nowSec: Math.floor(now / 1000) });
+    const registerRaw = async () => {
+      const key = generateEd25519KeyPair();
+      const { challenge } = (await (await fetch(`${target.url}/v1/challenge`, { method: "POST" })).json()) as { challenge: string };
+      const res = await fetch(`${target.url}/v1/machines/register`, {
+        method: "POST",
+        body: JSON.stringify({ relayMachinePub: key.publicKey.toString("base64url"), challenge, signature: signRegistrationPop(key.privateKey, target.publicHost, challenge) }),
+      });
+      return { status: res.status, code: res.headers.get("toolroll-relay-error"), retry: res.headers.get("retry-after") };
+    };
+    const withDevices = await register(target);
+    const phone = newPhone();
+    await admit(target, withDevices, [phone]);
     now += 1000;
-    const b = await register(target);
-    const daemonB = await connectDaemon(target, b);
+    const withTombstone = await register(target);
+    const gone = newPhone();
+    await admit(target, withTombstone, [gone]);
+    await admit(target, withTombstone, []);
     now += 1000;
-    const c = await register(target); // evicts a (b has a daemon)
-    expect((await admin(target, a, "PUT", `/v1/machines/${a.machineId}/devices`, { devices: [] })).status).toBe(404);
-    const daemonC = await connectDaemon(target, c);
-    const key = generateEd25519KeyPair();
-    const { challenge } = (await (await fetch(`${target.url}/v1/challenge`, { method: "POST" })).json()) as { challenge: string };
-    const full = await fetch(`${target.url}/v1/machines/register`, {
-      method: "POST",
-      body: JSON.stringify({ relayMachinePub: key.publicKey.toString("base64url"), challenge, signature: signRegistrationPop(key.privateKey, target.publicHost, challenge) }),
+    const empty = await register(target);
+    now += 1000;
+    // The empty room makes way once; after that nothing qualifies and every newcomer waits.
+    expect((await registerRaw()).status).toBe(200);
+    expect((await admin(target, empty, "PUT", `/v1/machines/${empty.machineId}/devices`, { devices: [] }, undefined)).status).toBe(404);
+    // (the newcomer itself is empty and idle: the next one evicts it, so fill it first)
+    for (let i = 0; i < 10; i++) {
+      const r = await registerRaw();
+      if (r.status !== 200) {
+        expect(r).toMatchObject({ status: 429, code: "rate_limited" });
+        expect(Number(r.retry)).toBeGreaterThan(0);
+      }
+    }
+    const put = (m: typeof withDevices, devices: unknown[]) => fetch(`${target.url}/v1/machines/${m.machineId}/devices`, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${signRelayToken(m.key.privateKey, { role: "daemon", machineId: m.machineId, aud: target.publicHost, htm: "PUT", htu: `/v1/machines/${m.machineId}/devices`, ...tokenNow() })}` },
+      body: JSON.stringify({ devices }),
     });
-    expect({ status: full.status, code: full.headers.get("toolroll-relay-error") }).toEqual({ status: 503, code: "relay_unavailable" });
-    daemonB.ws.close();
-    daemonC.ws.close();
+    expect(await refusedWith(target, deviceToken(target, withTombstone, gone, tokenNow()))).toMatchObject({ status: 403, code: "device_revoked" });
+    expect((await put(withDevices, [{ deviceId: phone.deviceId, deviceRelayPub: phone.key.publicKey.toString("base64url") }])).status).toBe(200);
+    // Past the 90-day idle window even a room with devices may make way.
+    now += RELAY_LIMITS.roomIdleDeleteMs;
+    expect((await registerRaw()).status).toBe(200);
   });
 
   test("open sockets per client address are capped", async () => {

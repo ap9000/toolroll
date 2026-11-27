@@ -75,8 +75,8 @@ export function defineRelayConformance(name: string, factory: RelayTargetFactory
     let fast: RelayTarget;
 
     beforeAll(async () => {
-      main = await factory({ registerPerMin: 10_000, connectPerMin: 10_000 });
-      fast = await factory({ registerPerMin: 10_000, connectPerMin: 10_000, timing: { phoneFirstFrameMs: 400, phoneIdleMs: 1000, daemonSilenceMs: 1000 } });
+      main = await factory({ registerPerMin: 10_000, connectPerMin: 10_000, clientPerMin: 10_000 });
+      fast = await factory({ registerPerMin: 10_000, connectPerMin: 10_000, clientPerMin: 10_000, timing: { phoneFirstFrameMs: 400, phoneIdleMs: 1000, daemonSilenceMs: 1000 } });
     });
     afterAll(async () => {
       await main?.close();
@@ -111,11 +111,11 @@ export function defineRelayConformance(name: string, factory: RelayTargetFactory
       await expectRefusal(await post({ relayMachinePub: pub, challenge, signature: signRegistrationPop(key.privateKey, main.publicHost, challenge), pad: "x".repeat(5000) }), 400, "bad_request");
     });
 
-    test("unknown endpoints and methods answer 404 not_found", async () => {
-      await expectRefusal(await fetch(`${main.url}/v1/nope`), 404, "not_found");
+    test("unknown endpoints and methods answer 400 bad_request (the table has no other code for them)", async () => {
+      await expectRefusal(await fetch(`${main.url}/v1/nope`), 400, "bad_request");
       const m = await register(main);
-      await expectRefusal(await fetch(`${main.url}${devicesPath(m)}`), 404, "not_found");
-      await expectRefusal(await fetch(`${main.url}/v1/machines/${m.machineId}`, { method: "PUT" }), 404, "not_found");
+      await expectRefusal(await fetch(`${main.url}${devicesPath(m)}`), 400, "bad_request");
+      await expectRefusal(await fetch(`${main.url}/v1/machines/${m.machineId}`, { method: "PUT" }), 400, "bad_request");
     });
 
     test("admission calls: every token rule maps to its refusal", async () => {
@@ -594,8 +594,24 @@ export function defineRelayConformance(name: string, factory: RelayTargetFactory
       });
     });
 
+    test("connects are limited per client across machines: varying the machine id doesn't escape the limit", async () => {
+      const limited = await factory({ registerPerMin: 10_000, connectPerMin: 10_000, clientPerMin: 5 });
+      try {
+        const results: Array<{ status: number; code: string | null }> = [];
+        for (let i = 0; i < 8; i++) {
+          const key = generateEd25519KeyPair();
+          const r = await refusedWith(limited, daemonWsToken(limited, { machineId: deriveMachineId(key.publicKey), key }));
+          results.push({ status: r.status, code: r.code });
+        }
+        expect(results.slice(0, 5).every(one => one.status === 404 && one.code === "machine_unknown")).toBe(true);
+        expect(results.slice(5).every(one => one.status === 429 && one.code === "rate_limited")).toBe(true);
+      } finally {
+        await limited.close();
+      }
+    });
+
     test("registration is rate limited per client address (429 rate_limited + Retry-After)", async () => {
-      const limited = await factory({ registerPerMin: 3, connectPerMin: 10_000 });
+      const limited = await factory({ registerPerMin: 3, connectPerMin: 10_000, clientPerMin: 10_000 });
       try {
         const statuses: Array<{ status: number; code: string | null; retry: string | null }> = [];
         for (let i = 0; i < 5; i++) {

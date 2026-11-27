@@ -48,6 +48,7 @@ export const RELAY_LIMITS = Object.freeze({
   machineDown: { bytesPerMin: 64 * 1024 * 1024, bytesBurst: 16 * 1024 * 1024 },
   registerPerMin: 20,
   connectPerMin: 120,
+  clientPerMin: 600,
   registerBodyBytes: 4096,
   putBodyBytes: 16_384,
   postBodyBytes: 4096,
@@ -87,6 +88,9 @@ export interface ReferenceRelayOptions {
    * admission calls). */
   registerPerMin?: number;
   connectPerMin?: number;
+  /** Per client address per minute across every machine (connect + admission calls), checked first: varying the
+   * machine id can't get around the per-machine limit. */
+  clientPerMin?: number;
   /** Machines held at once (reference only). At the cap the least recently active room with no sockets is dropped. */
   maxRooms?: number;
   /** Open WebSockets per client address (reference only). */
@@ -114,8 +118,7 @@ export interface RunningReferenceRelay {
 
 type RefusalCode =
   | "bad_request" | "token_invalid" | "token_expired" | "token_not_yet_valid" | "device_revoked" | "machine_unknown"
-  | "device_unknown" | "rate_limited" | "too_many_peers" | "replay_cache_full" | "daemon_unavailable"
-  | "not_found" | "relay_unavailable";
+  | "device_unknown" | "rate_limited" | "too_many_peers" | "replay_cache_full" | "daemon_unavailable";
 
 interface Refusal { status: number; code: RefusalCode; retryAfterSec?: number }
 
@@ -312,6 +315,7 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
     .filter((one): one is string => typeof one === "string" && one.length > 0);
   const registerLimit = new KeyedBuckets(opts.registerPerMin ?? L.registerPerMin);
   const connectLimit = new KeyedBuckets(opts.connectPerMin ?? L.connectPerMin);
+  const clientLimit = new KeyedBuckets(opts.clientPerMin ?? L.clientPerMin);
   const socketsByIp = new Map<string, number>();
   const rooms = new Map<string, MachineRoom>();
   let publicHost = (opts.publicHost ?? "").toLowerCase();
@@ -504,11 +508,11 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
     const refuse = (refusal: Refusal, extra: Record<string, unknown> = {}): void => sendRefusal(res, refused(route, refusal, extra));
 
     if (req.method === "GET" && path === "/v1/health") {
-      if (breakerOpen()) { refuse({ status: 503, code: "relay_unavailable", retryAfterSec: 60 }); return; }
-      sendJson(res, 200, { ok: true, version: 1, runtime: "reference", build: opts.build ?? "dev", configured: { publicHost: publicHost.length > 0 } });
+      const shedding = breakerOpen();
+      sendJson(res, shedding ? 503 : 200, { ok: !shedding, version: 1, runtime: "reference", build: opts.build ?? "dev", configured: { publicHost: publicHost.length > 0 } });
       return;
     }
-    if (breakerOpen()) { refuse({ status: 503, code: "relay_unavailable", retryAfterSec: 60 }); return; }
+    if (breakerOpen()) { refuse({ status: 429, code: "rate_limited", retryAfterSec: 60 }); return; }
     const ip = clientKey(req);
 
     if (req.method === "POST" && (path === "/v1/challenge" || path === "/v1/machines/register")) {
@@ -538,12 +542,18 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
         existing.lastActiveMs = now;
       } else {
         if (rooms.size >= maxRooms) {
-          // Registration is free, so the oldest room with nobody connected makes way (its Mac registers again on 404).
+          // Registration is free, so at the cap the oldest idle room that holds nothing makes way (its Mac registers
+          // again on 404). A room holding admitted devices or tombstones is never evicted for a newcomer — only by the
+          // 90-day GC — so a registration flood can't erase a real machine's phones or their revocations.
+          const now = nowMs();
           let victim: MachineRoom | null = null;
           for (const room of rooms.values()) {
-            if (room.daemon === null && room.peers.size === 0 && (victim === null || room.lastActiveMs < victim.lastActiveMs)) victim = room;
+            const idle = room.daemon === null && room.peers.size === 0;
+            const empty = room.devices.size === 0 && room.tombstones.size === 0;
+            const expired = now - room.lastDaemonAtMs >= L.roomIdleDeleteMs;
+            if (idle && (empty || expired) && (victim === null || room.lastActiveMs < victim.lastActiveMs)) victim = room;
           }
-          if (victim === null) { refuse({ status: 503, code: "relay_unavailable", retryAfterSec: 60 }); return; }
+          if (victim === null) { refuse({ status: 429, code: "rate_limited", retryAfterSec: 60 }); return; }
           rooms.delete(victim.machineId);
         }
         rooms.set(checked.machineId, newRoom(checked.machineId, checked.publicKey, now));
@@ -555,7 +565,7 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
     const machineMatch = /^\/v1\/machines\/([a-z2-7]{26})(\/devices(?:\/([^/]*))?)?$/.exec(path);
     const method = req.method;
     if (machineMatch === null || (method !== "PUT" && method !== "POST" && method !== "DELETE")) {
-      refuse({ status: 404, code: "not_found" });
+      refuse({ status: 400, code: "bad_request" });
       return;
     }
     const machineId = machineMatch[1]!;
@@ -564,8 +574,8 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
     const shapeOk = !devicesPath ? method === "DELETE"
       : deviceSegment === undefined ? method === "PUT" || method === "POST"
         : method === "DELETE";
-    if (!shapeOk) { refuse({ status: 404, code: "not_found" }); return; }
-    const limited = connectLimit.take(`${machineId}|${ip}`, nowMs());
+    if (!shapeOk) { refuse({ status: 400, code: "bad_request" }); return; }
+    const limited = clientLimit.take(ip, nowMs()) ?? connectLimit.take(`${machineId}|${ip}`, nowMs());
     if (limited !== null) { refuse(limited); return; }
     const admitted = admitDaemonCall(req, machineId, method, path);
     if (admitted.refusal !== undefined) { refuse(admitted.refusal, { machine: idTag(machineId) }); return; }
@@ -675,10 +685,12 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
   const upgrade = (req: IncomingMessage, socket: Duplex, head: Buffer): void => {
     const url = new URL(req.url ?? "/", "http://relay.invalid");
     const reject = (refusal: Refusal, extra: Record<string, unknown> = {}): void => rejectUpgrade(socket, refused("/v1/connect", refusal, extra));
-    if (url.pathname !== "/v1/connect") { reject({ status: 404, code: "not_found" }); return; }
-    if (breakerOpen()) { reject({ status: 503, code: "relay_unavailable", retryAfterSec: 60 }); return; }
+    if (url.pathname !== "/v1/connect") { reject({ status: 400, code: "bad_request" }); return; }
+    if (breakerOpen()) { reject({ status: 429, code: "rate_limited", retryAfterSec: 60 }); return; }
     const ip = clientKey(req);
     if ((socketsByIp.get(ip) ?? 0) >= maxSocketsPerIp) { reject({ status: 429, code: "rate_limited", retryAfterSec: 30 }); return; }
+    const clientLimited = clientLimit.take(ip, nowMs());
+    if (clientLimited !== null) { reject(clientLimited); return; }
     const token = bearer(req);
     const parsed = token === null ? null : parseRelayToken(token);
     if (parsed === null) { reject({ status: 401, code: "token_invalid" }); return; }

@@ -77,8 +77,7 @@ export type Role = "daemon" | "pair" | "device";
 
 export type RefusalCode =
   | "bad_request" | "token_invalid" | "token_expired" | "token_not_yet_valid" | "device_revoked" | "machine_unknown"
-  | "device_unknown" | "rate_limited" | "too_many_peers" | "replay_cache_full" | "daemon_unavailable"
-  | "not_found" | "relay_unavailable";
+  | "device_unknown" | "rate_limited" | "too_many_peers" | "replay_cache_full" | "daemon_unavailable";
 
 export interface Refusal { status: number; code: RefusalCode; retryAfterSec?: number }
 

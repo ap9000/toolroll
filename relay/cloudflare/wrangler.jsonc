@@ -17,11 +17,13 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MachineRoomDO"] }],
   // Per minute (Workers Rate Limiting; period must be 10 or 60 seconds): registrations and challenges per client
-  // address, connects and admission calls per machine + client address. The namespace ids are this account's own
-  // counters; a self-hoster picks any unused integers.
+  // address; connects and admission calls per client address across all machines (checked first, before any Durable
+  // Object) and per machine + client address. The namespace ids are this account's own counters; a self-hoster picks
+  // any unused integers.
   "ratelimits": [
     { "name": "RL_REGISTER", "namespace_id": "4199001", "simple": { "limit": 20, "period": 60 } },
-    { "name": "RL_CONNECT", "namespace_id": "4199002", "simple": { "limit": 120, "period": 60 } }
+    { "name": "RL_CONNECT", "namespace_id": "4199002", "simple": { "limit": 120, "period": 60 } },
+    { "name": "RL_CLIENT", "namespace_id": "4199003", "simple": { "limit": 600, "period": 60 } }
   ],
   "vars": {
     "RELAY_PUBLIC_HOST": "relay.toolroll.dev"
@@ -40,7 +42,8 @@
       },
       "ratelimits": [
         { "name": "RL_REGISTER", "namespace_id": "4199011", "simple": { "limit": 20, "period": 60 } },
-        { "name": "RL_CONNECT", "namespace_id": "4199012", "simple": { "limit": 120, "period": 60 } }
+        { "name": "RL_CONNECT", "namespace_id": "4199012", "simple": { "limit": 120, "period": 60 } },
+        { "name": "RL_CLIENT", "namespace_id": "4199013", "simple": { "limit": 600, "period": 60 } }
       ],
       "vars": {
         "RELAY_PUBLIC_HOST": "relay-staging.toolroll.dev"
