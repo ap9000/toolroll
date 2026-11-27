@@ -1,6 +1,6 @@
 # Companion Phone App — Threat Model, Identity & Route Allowlist
 
-**Status:** Design spec (pre-build, for independent security review)  
+**Status:** Design spec (pre-build, revised after independent security review)  
 **Target client:** Native iOS SwiftUI app (sharing `mac/Sources/ToolrollCore`; Android deferred past V1)  
 **Related ADRs:** [0001](../../adr/0001-retire-all-credentials-on-restore.md), [0002](../../adr/0002-quarantined-git-objects-for-candidates.md), [0003](../../adr/0003-browser-only-step-up-for-approvals.md), [0004](../../adr/0004-truthful-custody-on-disconnect-and-heartbeat-loss.md), [0005](../../adr/0005-passkey-phone-approvals.md)
 
@@ -10,14 +10,18 @@
 
 1. **The Mac/Workspace remains the sole authority.** The relay can never read payloads, forge identities, or authorize any act.
 2. **No loopback spoofing (`src/public-access.ts:122`).** Decrypted phone RPC frames are **never** forwarded as HTTP requests to `127.0.0.1` / `localhost`. A phone connection receives a dedicated **`paired-device`** principal bound directly at the decrypted Noise session layer (`deviceId`, `accountName`, `workspaceId`, `recoveryGeneration`). `requestFromThisComputer()` is unconditionally `false` for all paired-device calls, even on the same Wi-Fi, and local-owner shortcuts (including `POST /login/once` in `src/server/link-redemption.ts:42`) are unreachable.
-3. **Explicit RPC allowlist, default-deny.** Modeled on `REMOTE_TUI_READ_ROUTES` (`src/terminal-connection.ts:25`), every operation reachable by a paired device must be explicitly named in a static allowlist table with its required Gate, role check, and idempotency contract.
+3. **Explicit RPC allowlist, default-deny.** Modeled on `REMOTE_TUI_READ_ROUTES` (`src/terminal-connection.ts:25`), every operation reachable by a paired device must be explicitly named in a static allowlist table with its Gate, role check, and idempotency contract.
 4. **Live Terminals are completely blocked in V1.** Neither `/term/*` nor any indirect PTY/shell path is exposed over the paired-device RPC surface.
-5. **Single approval gate (`src/scope.ts:1564`).** Passkey proofs enter Toolroll's existing transactional approval / acceptance / land / ship functions as an additional verified person proof (`personProof("passkey") === true`), never via a parallel ledger write path.
-6. **Honest proof wording.** A modified client could theoretically use software keys or bypass local biometric UI; records state only what the server verified (*"user verified on a registered device"* / `uv: true`, `deviceId`, `credentialId`), never *"Face ID verified"*.
-7. **Honest privacy claims.** The relay cannot read content or authorize anything, **but** it does observe IP addresses, opaque machine/device routing IDs, timing, and ciphertext sizes, and can drop or delay frames. Documentation and UI must state this accurately.
+5. **Real transactional gates per verb (ADR 0005).** Passkey proofs enter Toolroll's real transactional functions — `src/scope.ts:approve()`, `src/assignment.ts:acceptAndCompleteAsOperator()`, `src/local-landing.ts:land()`, and `src/pull-request-flow.ts:mergeAsPerson()` — never via a parallel ledger write path.
+6. **Honest passkey & device attribution.** iOS passkeys sync through iCloud Keychain with `attestation: "none"`, and `UV=1` accepts the device passcode as fallback. The server records `account_passkeys` (`credentialId`) and `paired_devices` (`deviceId`) separately and logs only what was verified (*"Passkey user verification via paired device `<deviceId>`"*), never *"Face ID"* and never claiming non-exportable hardware binding to one physical phone.
+7. **Honest privacy & trust-root claims.**
+   - **Relay visibility:** The relay cannot read RPC content or authorize anything, **but** it observes IP addresses, opaque machine/device routing IDs, timing, and ciphertext sizes, and can drop or delay frames.
+   - **Push visibility:** APNs and the push relay observe badge counts, opaque collapse/routing IDs, timing, and ciphertext sizes in the clear; only the encrypted payload inside `tr.c` is end-to-end encrypted. Task titles and summaries remain off-push by default (`src/push.ts:8-11`) unless explicitly opted in.
+   - **Official trust root & forks:** For official builds, `toolroll.dev` (AASA + default relay) and the official Apple Team ID control app distribution, passkey RP association, and APNs push delivery. Forks built under another Apple Team ID cannot use official `toolroll.dev` passkeys, APNs push, or the hosted relay and must run their own Team ID, AASA domain, RP ID, and relay.
 8. **Truthful disconnected state (ADR 0004).** Losing contact with the relay or daemon proves only unreachability, never sleep or shutdown. The app shows **`Unavailable · last seen <time>`**, marks cached views explicitly as stale, and **never queues approvals or mutations offline**.
-9. **Unconditional retirement on backup restore (ADR 0001).** Backup restore advances `recoveryGeneration` and deletes/retires all paired devices, Noise static peer records, passkey credentials, push subscriptions, and pending approval challenges.
+9. **Unconditional retirement on backup restore (ADR 0001).** Backup restore advances `recoveryGeneration` and wipes all `paired_devices` (including `devicePsk` and `phoneStaticPub`), `account_passkeys`, `device_push_tokens`, and pending challenges.
 10. **No OTA code updates.** Approval-capable builds ship only as signed App Store / TestFlight native Swift binaries (no JS/bundle hot-patching).
+11. **Chat-management policy compatibility.** Per `docs/plans/chat-management.md` (§7, line 918), if a Workspace or project enables a *"Passkey required for approvals"* policy, `chat-code` approvals are refused as well.
 
 ---
 
@@ -26,44 +30,48 @@
 | Threat | Attack Vector | Mitigation |
 |---|---|---|
 | **Loopback privilege escalation** | Relay frame injected into local HTTP server passes `requestFromThisComputer()` and acts as local owner or redeems `/login/once`. | Decrypted RPC dispatches directly into typed domain handlers with `PairedDevicePrincipal`; never touches HTTP loopback socket or local-owner middleware. |
-| **QR photo race during pairing** | Bystander photographs Mac screen QR and races the owner to complete pairing first. | Pairing starts from a signed-in Mac act, displays a short 6-character visual confirmation code on both Mac and Phone, and the device remains untrusted until the owner explicitly confirms the match on the Mac (same pattern as `src/telegram.ts:5`). |
-| **Compromised or malicious relay** | Relay inspects payloads, swaps Mac public key during migration, replays message 1, or floods frames. | Noise `IKpsk2` end-to-end encryption; Mac static public key pinned independently of relay URL; daemon never executes RPCs on Noise handshake message 1; monotonic 64-bit byte-encoded nonces; server rejects unknown/revoked `deviceId` regardless of relay forwarding. |
-| **Relay DoS / billing exhaustion** | Unauthenticated attackers open millions of WebSockets to random `machineId`s. | Relay requires pre-registered `machineId` + short-lived signed connection token before WebSocket upgrade, strict per-IP/per-machine rate limits, 5-second Noise handshake deadline, 256 KB max frame size, and a global Cloudflare spend cutoff. |
-| **Cross-action approval replay** | Signed approval for `Approve` replayed against `Ship` or a modified scope. | Fresh single-use server challenge bound to `{ actionVerb, taskId, runId?, exactDigest, deviceId, recoveryGeneration, expiresAt }`. Distinct human-readable challenge wording per verb (`Approve`, `Accept`, `Land`, `Ship`). Consumed atomically inside `store.transact()`. |
-| **Zombie device after restore** | Restoring a week-old backup resurrects a lost/revoked phone. | ADR 0001 unconditional wipe of `paired_devices`, `device_passkeys`, `device_push_tokens`, and `device_challenges` on restore, plus `recoveryGeneration` check on every Noise session open. |
-| **Stolen unlocked phone** | Attacker holds phone while unlocked. | High-trust acts require WebAuthn Passkey with `userVerification: "required"` (`UV=1`) at the OS hardware boundary; owner can revoke device in Settings → Devices or run `toolroll devices revoke <id>` from the Mac, taking effect immediately on active sessions. |
-| **Duplicate execution on flaky 5G** | Phone retries `Accept` or `Send back` after timeout while first request succeeded. | Every mutation RPC requires a client-generated `idempotencyKey` (UUIDv4), deduplicated transactionally against the device + action record. |
-| **Slow mobile client OOMing daemon** | Phone opens live log stream on slow LTE and stops reading. | Per-stream bounded credit window + backpressure drop/coalesce policy; stream cancel RPC means *"stop watching"*, never *"stop the agent run"*. |
+| **QR photo race & lookalike device name** | Bystander photographs Mac screen QR, races the owner to finish handshake first, and sends a plausible device name (e.g., *"Work iPhone"*). | Pairing starts from a signed-in Mac act and displays a 6-char transcript confirmation code (`h`). **Any second pairing handshake for the same `pairSessionId` immediately aborts the entire pairing session** and purges `pairPsk` + `pairConnToken`. Self-reported `deviceName` is untrusted display text only, never a trust signal. |
+| **Compromised or malicious relay** | Relay inspects payloads, hijacks daemon slot, swaps Mac public key during migration, replays message 1, or floods frames. | `Noise_IKpsk2_25519_ChaChaPoly_SHA256` E2EE; `role=daemon` requires Ed25519 signature by `relayMachinePriv`; `macStaticPub` pinned independently of `relayUrl`; daemon never acts on handshake message 1; monotonic 64-bit byte-encoded nonces with `2^64-1` refusal + rekey; server rejects unknown/revoked `deviceId` regardless of relay forwarding. |
+| **Relay DoS / billing exhaustion** | Unauthenticated attackers open millions of WebSockets to random `machineId`s. | Pre-upgrade Ed25519-signed connection tokens (`role=daemon`, `role=pair`, `role=device`, 5-min TTL), strict per-IP/per-machine rate & byte limits, 5-second Noise handshake deadline, 65,535-byte Noise message cap, max 4 phone sockets per machine, and global spend cutoff. |
+| **Cross-action approval replay** | Signed WebAuthn assertion for `Approve` replayed against `Ship` or a modified scope/commit. | Fresh single-use server challenge bound to `{ verb, workspaceId, recoveryGeneration, taskId, runId?, exactDigestOrKey, deviceId, credentialId?, nonce, expiresAt }`. Distinct canonical structure and human-readable wording per verb (`approve`, `accept`, `land`, `ship`). Consumed atomically inside each verb's transaction. |
+| **Passcode shoulder-surfing / synced passkey** | Attacker observes user's iOS passcode and holds phone, or uses another iCloud-synced Apple device. | `UV=1` is necessary for high-trust acts, **and** transport requires the phone's `ThisDeviceOnly` Noise static key + `devicePsk` (not synced to iCloud). Owner can immediately revoke either the paired device (`toolroll devices revoke <id>`) or the passkey credential independently. |
+| **Zombie device after restore** | Restoring a week-old backup resurrects a lost/revoked phone. | ADR 0001 unconditional wipe of `paired_devices`, `account_passkeys`, `device_push_tokens`, and `device_challenges` on restore, plus `recoveryGeneration` mixed into the Noise prologue so old sessions fail handshake cryptographically. |
+| **Duplicate execution on flaky 5G** | Phone retries `Accept` or `Send back` after timeout while first request succeeded. | Every mutation RPC requires a client-generated `idempotencyKey` (UUIDv4), deduplicated transactionally against `(deviceId, method, idempotencyKey)`. |
+| **Slow mobile client OOMing daemon** | Phone opens streams on slow LTE and stops reading, or floods concurrent stream IDs. | Max 8 concurrent streams per phone, max 1 MiB total buffered bytes per phone (4 MiB daemon-wide), per-stream credit window + 32-record cap with `{ k: "cut" }` marker, strict deadlines, and `CANCEL` stops watching only. |
 
 ---
 
 ## 3. Explicit V1 RPC Allowlist (`PAIRED_DEVICE_ROUTES`)
 
-All methods carry `workspaceId` and `recoveryGeneration` verification at session open and re-check device non-revocation + account project access (`store.accountCanAccess`) on every call.
+All methods bind `workspaceId`, `deviceId`, and `recoveryGeneration` in the Noise prologue at session open and re-check device non-revocation + account standing + project access (`store.accountCanAccess`) on every call.
 
 ### Gate 1 — Read-Only Pilot Allowlist
-| RPC Method | Domain Backing | Access Rule | Notes |
-|---|---|---|---|
-| `device.hello` | `engine/hello` + workspace identity | Paired device | Verifies `workspaceId`, `recoveryGeneration`, contract digest, and device standing. |
-| `work.rows` | `GET /work/rows` (`engine-api.ts`) | Account-admitted projects | Needs You groups (`Decide`, `Review`, `Unblock`) + task rows. |
-| `task.steps` | `GET /t/<task>/steps` | Task project admitted | Step cards, merge checklist, status, check summary. |
-| `task.diff` | `GET /t/<task>/diff` (file list + per-file hunks/context) | Task project admitted | Paginated per file; respects existing sealed-patch redaction & byte caps. |
-| `task.approval.read` | `GET /t/<task>/approval` | Task project admitted | Read-only view of exact scope/terms/digest awaiting approval. |
-| `run.watch.subscribe` | `agents/live/run/<id>` stream | Task project admitted | Sequenced stream with flow control; `run.watch.cancel` stops watching only. |
-| `push.register` | Device E2EE push key + APNs token | Same paired device | Registers P-256 public key for RFC 8291 E2EE push + opaque APNs token. |
-| `device.self.revoke` | Paired device retirement | Same paired device | Allows clean "Unpair this phone" from the iOS app. |
 
-### Gate 2 — Action & Approval Allowlist *(Unlocked ONLY after Section 5 Test Gates Pass)*
-| RPC Method | Proof Required | Idempotency | Backing Gate |
+| RPC Method | Real Domain Backing | Access Rule | Notes |
 |---|---|---|---|
-| `approval.challenge` | Paired device (`approver` role) | N/A (single-use TTL 120s) | Issues action-specific WebAuthn challenge for `approve \| accept \| land \| ship`. |
-| `task.approve` | Fresh `passkey` assertion (`approve` challenge) | Required (`idempotencyKey`) | `src/scope.ts:approve()` with `personProof("passkey")`. |
-| `task.accept` | Fresh `passkey` assertion (`accept` challenge) | Required | Existing result acceptance gate (`Accept` / `Mark complete`). |
-| `task.land` | Fresh `passkey` assertion (`land` challenge) | Required | Existing `local-landing.ts` gate. |
-| `task.ship` | Fresh `passkey` assertion (`ship` challenge) | Required | Existing PR ship/merge gate. |
-| `task.revise` | Paired device (`approver` role, no passkey) | Required | Send back with typed feedback note (never widens approved scope). |
-| `run.steer` | Paired device (`approver` role) | Required | Sends live steer note / pause / stop to running attempt. |
-| `chat.send` | Paired device (`approver` role) | Required | Sends a message to Lead / Direct Chat (cannot self-approve any proposal). |
+| `device.hello` | `engine/hello` + workspace identity | Active paired device | First transport RPC (key confirmation); returns `workspaceId`, `recoveryGeneration`, contract digest, and account role. |
+| `work.rows` | `workRowsOf(...)` (`GET /work/rows`) | Account-admitted projects | Needs You groups (`Decide`, `Review`, `Unblock`) + task rows. |
+| `task.steps` | `stepCardsOf(...)` (`GET /t/<task>/steps`) | Task project admitted | Step cards, merge checklist, status, check summary. |
+| `task.diff` | `taskDiff` domain reader (`GET /t/<task>/diff`) | Task project admitted | Paginated file list + per-file hunks/context; respects sealed-patch redaction & byte caps; chunked across ≤60 KiB frames. |
+| `task.approval.read` | Pure read helper: `taskViewData(..., { mintNonce: false })` + `approvalTermsOf(...)` | Task project admitted | **Strictly read-only** — does **not** call `GET /t/<task>/approval` (which mints browser nonces and requires a terminal-keyed cookie session, `src/server/engine-api.ts:423`). Returns `{ task, key, digest, terms, problem }`. |
+| `run.window.read` | `liveSessionWindow` (`GET /agents/live/run/<id>`) | Task project admitted | Cursor-paginated JSON window (`file`, `cursor`) — exact match to `src/server/engine-api.ts:159`. |
+| `run.watch.subscribe` | Daemon-side tail adapter over `liveSessionWindow` | Task project admitted | Optional push stream of window deltas using `CHUNK` + `CREDIT` + `END`/`ERROR`; `CANCEL` stops watching only (never stops the run). |
+| `push.register` | Device push subscription store | Same paired device | Registers `{ apnsToken, p256dh, authSecret }` (65-byte P-256 point + 16-byte RFC 8291 auth secret, matching `src/push.ts:119`). |
+| `device.self.revoke` | Paired device retirement | Same paired device | Allows clean *"Unpair this phone"* from the iOS app. |
+
+### Gate 2 — Passkey Registration, Approvals & Actions *(Unlocked ONLY after Gate 1 & Gate 2 Test Gates Pass)*
+
+| RPC Method | Proof Required | Idempotency | Backing Code Path |
+|---|---|---|---|
+| `passkey.register.begin` / `.finish` | Active paired device (`approver` role) + explicit signed-in Mac consent window | Single-use challenge (120s) | Verifies `webauthn.create` (`rpId: "toolroll.dev"`, `origin: "https://toolroll.dev"`, `UP=1`, `UV=1`, `attestation: "none"`, ES256) and writes `account_passkeys`. |
+| `approval.challenge` | Active paired device (`approver` role) | Single-use challenge (120s) | Mints verb-specific challenge (`approve \| accept \| land \| ship`) + `allowCredentials` for `(workspaceId, accountName)`. |
+| `task.approve` | Fresh `passkey` assertion (`approve` challenge) | Required (`idempotencyKey`) | `src/scope.ts:approve()` with `passkey` input (`personProof("passkey") === true`), atomic challenge consume + proof + seal. |
+| `task.accept` | Fresh `passkey` assertion (`accept` challenge) | Required | `src/assignment.ts:acceptAndCompleteAsOperator()` (+ `completeAndOpenPullRequest` if `publish: true`), atomic challenge consume + proof + acceptance + completion. |
+| `task.land` | Fresh `passkey` assertion (`land` challenge) | Required | `src/local-landing.ts:land()` with `LandAuthority = { kind: "passkey", ... }`, atomic challenge consume + proof in `LAND_INTENT` / `LAND_HANDOFF` transaction. |
+| `task.ship` | Fresh `passkey` assertion (`ship` challenge) | Required | `src/pull-request-flow.ts:mergeAsPerson()` with passkey auth, atomic challenge consume + proof before `gh pr merge`. |
+| `task.revise` | Active paired device (`approver` role, no passkey) | Required | Send back with typed feedback note (never widens approved scope). |
+| `run.steer` | Active paired device (`approver` role) | Required | Live pause / resume / steer note / stop via existing exact-run store methods (`requestPause`, `requestResume`, `requestTaskStop`). |
+| `chat.send` | Active paired device (`approver` role) | Required | Sends message to Lead / Direct Chat (never self-approves any proposal). |
 
 ### Explicitly Blocked in V1
 - `/term/*` (Live Terminals, PTY start/attach/input)
@@ -75,18 +83,23 @@ All methods carry `workspaceId` and `recoveryGeneration` verification at session
 
 ## 4. Device Lifecycle Flows
 
-- **Pair new phone:** Signed-in approver clicks *Pair iPhone* on Mac (or runs `toolroll phone pair`) → QR displayed → Phone scans QR & runs Noise `IKpsk2` pairing handshake → Both screens show 6-char confirmation code derived from handshake transcript hash (`h`) → Owner clicks *Confirm match* on Mac → Phone enrols WebAuthn Passkey → Active.
-- **Lost phone:** Owner opens Settings → Devices on Mac (or `toolroll devices revoke <id>`) → Immediate SQLite revocation + active Noise session closed + push token purged.
-- **New phone:** Same flow as pairing; old device stays independently revocable.
-- **Backup restore:** All paired devices wiped automatically; phone receives `session_retired_restore` (or handshake rejection) and prompts *"This Workspace was restored from a backup. Pair this iPhone again on your Mac."*
+- **Pair new phone:** Signed-in approver clicks *Pair iPhone* on Mac (or runs `toolroll phone pair`) → QR displayed with single-use `pairPsk` + `pairConnToken` → Phone scans QR & runs Noise `IKpsk2` pairing handshake → Any second handshake for the same `pairSessionId` immediately aborts the session → Both screens show 6-char confirmation code derived from handshake hash `h` → Owner explicitly clicks **Confirm match** on Mac → Mac derives & sends `devicePsk` entropy, registers `deviceRelayPub` on the relay, clears `pairPsk` → Active (Gate 1 read-only). In Gate 2, owner optionally completes Passkey enrollment during or after confirmation.
+- **Lost phone:** Owner opens Settings → Devices on Mac (or `toolroll devices revoke <id>`) → Immediate SQLite revocation + active Noise session closed + relay device registration deleted + push token purged. Owner can also revoke the associated passkey credential independently if desired.
+- **New phone:** Same pairing flow; old device remains independently revocable.
+- **Backup restore:** All `paired_devices`, `account_passkeys`, `device_push_tokens`, and `device_challenges` wiped automatically and `recoveryGeneration` incremented; old phone fails Noise prologue verification and prompts *"This Workspace was restored from a backup. Pair this iPhone again on your Mac."*
 
 ---
 
-## 5. Mandatory Test Gates Before Unlocking Gate 2
+## 5. Mandatory Security Test Gates
 
-No Gate 2 mutation RPC may be enabled in production until automated tests pass for all five categories:
-1. **Pairing & race tests:** QR photo stolen before Mac confirmation fails closed; wrong confirmation code aborts and purges pending pair; expired `pairSecret` rejected.
-2. **Restore wipe tests (ADR 0001):** Restoring a backup immediately invalidates previously paired Noise keys, passkey credentials, pending challenges, and push tokens.
-3. **Revocation & loopback isolation tests:** Revoked device is rejected mid-session; paired-device calls always have `requestFromThisComputer === false` and are refused on `/login/once`, `/term/*`, and non-allowlisted routes; cross-verb passkey replay (`approve` assertion submitted to `ship`) is rejected.
-4. **Slow-client & flow-control tests:** Stalled phone stream trips credit window without growing daemon memory or blocking the agent; `run.watch.cancel` never stops the underlying run.
-5. **Uncertain-outcome & idempotency tests (ADR 0004):** Disconnect mid-mutation leaves honest uncertain state; retry with identical `idempotencyKey` executes exactly once; offline phone never queues approvals.
+### Gate 1 Security Gate *(Mandatory BEFORE shipping Read-Only Relay Pilot)*
+Gate 1 exposes private task content, plans, and diffs to the phone, so transport, pairing, isolation, and resource-limit defenses MUST pass before Gate 1 ships:
+1. **Cross-language Noise & protocol tests:** Both `vitest` and `swift test` pass `test/fixtures/companion-noise/vectors.json`; handshake message 1 executes zero RPCs; prologue mismatch fails handshake; Noise 65,535-byte message cap enforced; bounded multi-chunk request/response reassembly verified; nonce `2^64-1` rejected; rekey/re-handshake threshold enforced.
+2. **Pairing & race tests:** Second pairing handshake for the same `pairSessionId` aborts the entire session and invalidates `pairPsk` + `pairConnToken`; unconfirmed device refused all RPCs; wrong confirmation code or 5-min expiry purges session; untrusted `deviceName` control/bidi chars sanitized.
+3. **Restore wipe tests (ADR 0001):** Restoring a backup deletes all `paired_devices`, `devicePsk`, `device_push_tokens`, and fails old sessions via `recoveryGeneration` prologue mismatch.
+4. **Revocation & loopback isolation tests:** Revoked device terminated mid-session and rejected at relay pre-upgrade; paired-device calls unconditionally have `requestFromThisComputer === false` and are refused on `/login/once`, `/term/*`, `/t/<task>/approval`, and non-allowlisted routes; cross-project reads return `404`.
+5. **Slow-client & resource-limit tests:** Stalled phone trips per-stream credit window and 1 MiB session / 4 MiB global memory caps without blocking agents; stream ID reuse refused; concurrent stream cap (>8) refused; `CANCEL` stops watching only and never stops the underlying run.
+
+### Gate 2 Security Gate *(Mandatory BEFORE enabling Passkey Approvals & Actions)*
+6. **WebAuthn verification & policy tests:** Rejects wrong `origin`, wrong `rpIdHash`, `UV=0`, `UP=0`, bad signature, non-monotonic non-zero `signCount`, missing `allowCredentials` match, expired/reused challenge, and cross-verb replay (`approve` assertion submitted to `accept`/`land`/`ship`); verifies `0 → 0` synced passkey acceptance; verifies `chat-code` refusal under passkey-required policy; verifies backup restore wipes `account_passkeys`.
+7. **Transactional verb & uncertain-outcome tests (ADR 0004):** Each of `approve`, `accept`, `land`, and `ship` writes proof + action atomically in its real domain transaction and refuses stale digests/keys; disconnect mid-mutation surfaces honest uncertain state; duplicate `idempotencyKey` executes at most once; offline phone never queues approvals.
