@@ -45,7 +45,7 @@ public protocol CompanionSocket: AnyObject, Sendable {
 
 public typealias CompanionSocketFactory = @Sendable (URLRequest) -> any CompanionSocket
 
-/// `URLSessionWebSocketTask` as a `CompanionSocket`. A 403 on upgrade (the relay's
+/// `URLSessionWebSocketTask` as a `CompanionSocket`. A 401/403 on upgrade (the relay's
 /// "unknown or revoked device") surfaces as `handshakeFailed`; network failures as `unreachable`.
 public final class URLSessionCompanionSocket: CompanionSocket, @unchecked Sendable {
     private let task: URLSessionWebSocketTask
@@ -83,7 +83,7 @@ public final class URLSessionCompanionSocket: CompanionSocket, @unchecked Sendab
     }
 
     private func mapped(_ error: Error) -> Error {
-        if let http = task.response as? HTTPURLResponse, http.statusCode == 403 {
+        if let http = task.response as? HTTPURLResponse, http.statusCode == 401 || http.statusCode == 403 {
             return CompanionConnectionError.handshakeFailed("refused")
         }
         if let urlError = error as? URLError {
@@ -120,15 +120,19 @@ public actor CompanionRelayClient {
         public var ping: Duration
         /// Each direct path's `/v1/health` probe.
         public var probe: Duration
+        /// The whole direct attempt (handshake and `device.hello`; for pairing, msg1 → msg2), so a LAN device that
+        /// answers the probe and then stalls can't hold up the hosted fallback. Hosted keeps `connect`.
+        public var directHandshake: Duration
 
         public init(
             connect: Duration = .seconds(15), call: Duration = .seconds(30), ping: Duration = .seconds(25),
-            probe: Duration = .milliseconds(1200)
+            probe: Duration = .milliseconds(1200), directHandshake: Duration = .seconds(4)
         ) {
             self.connect = connect
             self.call = call
             self.ping = ping
             self.probe = probe
+            self.directHandshake = directHandshake
         }
     }
 
@@ -167,6 +171,10 @@ public actor CompanionRelayClient {
     /// Bumped by every `connect()` and `disconnect()`. A dial that sees it change (while probing, or before falling
     /// back to hosted) stops: a newer connect or a disconnect owns the client now.
     private var dialEpoch: UInt64 = 0
+    /// Bumped by every pairing start and `cancelPairing()`: a cancelled pairing never falls back to hosted.
+    private var pairingEpoch: UInt64 = 0
+    /// The generation whose direct `device.hello` is still inside its deadline, if any.
+    private var directHelloPending: UInt64?
 
     public init(
         timing: Timing = Timing(),
@@ -212,46 +220,61 @@ public actor CompanionRelayClient {
             workspaceId: qr.workspaceId,
             pairSessionId: qr.pairSessionId
         )
-        let initiator = try NoiseIKpsk2Initiator(
-            localStatic: phoneNoise,
-            remoteStaticPublicKey: macStaticPub,
-            psk: pairPsk,
-            prologue: prologue
-        )
-
-        // One path, one attempt: a healthy direct address, else the hosted relay. If this attempt's outcome is
-        // uncertain the person scans a fresh code; there is no fallback mid-pairing.
-        let req: URLRequest
-        if let direct = await firstHealthyDirect(qr.paths, machineId: qr.machineId),
-           let url = CompanionPathRules.directSocketURL(direct.url, role: "pair", id: qr.pairSessionId) {
-            req = URLRequest(url: url)
-        } else if let hosted = qr.hostedPath, let token = qr.pairConnToken, let url = URL(string: hosted.url) {
-            var hostedReq = URLRequest(url: url)
-            hostedReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            req = hostedReq
-        } else {
-            throw CompanionConnectionError.unreachable(Self.noReachablePathMessage)
-        }
-        try Task.checkCancellation()
-        let ws = socketFactory(req)
-        pairingSocket?.close()
-        pairingSocket = ws
-        defer {
-            ws.close()
-            if pairingSocket === ws { pairingSocket = nil }
-        }
-
         let msg1Payload = try JSONSerialization.data(withJSONObject: [
             "protocolVersion": 1,
             "mode": "pair",
             "deviceName": deviceName,
             "deviceRelayPub": CompanionRelayAuth.base64UrlEncode(deviceRelay.publicKey.rawRepresentation),
         ])
-        let msg1 = try initiator.writeMessage1(payload: msg1Payload)
-        try await ws.send(msg1)
+        let makeInitiator = {
+            try NoiseIKpsk2Initiator(
+                localStatic: phoneNoise,
+                remoteStaticPublicKey: macStaticPub,
+                psk: pairPsk,
+                prologue: prologue
+            )
+        }
 
-        let msg2Raw = try await ws.receive()
-        let (_, pairSession) = try initiator.readMessage2(msg2Raw)
+        pairingEpoch &+= 1
+        let epoch = pairingEpoch
+        var directReq: URLRequest?
+        if let direct = await firstHealthyDirect(qr.paths, machineId: qr.machineId),
+           let url = CompanionPathRules.directSocketURL(direct.url, role: "pair", id: qr.pairSessionId) {
+            directReq = URLRequest(url: url)
+        }
+        var hostedReq: URLRequest?
+        if let hosted = qr.hostedPath, let token = qr.pairConnToken, let url = URL(string: hosted.url) {
+            var req = URLRequest(url: url)
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            hostedReq = req
+        }
+        try Task.checkCancellation()
+        guard epoch == pairingEpoch else { throw CompanionConnectionError.closed }
+
+        // A healthy direct address first, else the hosted relay. Nothing on the direct path is authenticated until
+        // msg2 decrypts, so a direct handshake that breaks (any LAN device can answer /v1/health) gets one try on
+        // hosted. Once the code is shown there is no fallback: an uncertain outcome means scanning a fresh code.
+        let ws: any CompanionSocket
+        let pairSession: NoiseTransportSession
+        if let directReq {
+            do {
+                (ws, pairSession) = try await openPairing(directReq, direct: true, msg1Payload: msg1Payload, initiator: makeInitiator())
+            } catch CompanionConnectionError.unreachable(let reason) {
+                guard let hostedReq else { throw CompanionConnectionError.unreachable(reason) }
+                try Task.checkCancellation()
+                guard epoch == pairingEpoch else { throw CompanionConnectionError.closed }
+                (ws, pairSession) = try await openPairing(hostedReq, direct: false, msg1Payload: msg1Payload, initiator: makeInitiator())
+            }
+        } else if let hostedReq {
+            (ws, pairSession) = try await openPairing(hostedReq, direct: false, msg1Payload: msg1Payload, initiator: makeInitiator())
+        } else {
+            throw CompanionConnectionError.unreachable(Self.noReachablePathMessage)
+        }
+        defer {
+            ws.close()
+            if pairingSocket === ws { pairingSocket = nil }
+        }
+
         let code = try CompanionDerivations.confirmationCode(handshakeHash: pairSession.handshakeHash)
         await onCodeReady(code)
 
@@ -289,8 +312,37 @@ public actor CompanionRelayClient {
         return (record, devicePsk, phoneNoise.privateKey, deviceRelay.rawRepresentation)
     }
 
+    /// Opens one pairing socket and runs msg1 → msg2. On a direct path every failure here is a network failure
+    /// (`unreachable`): nothing there is authenticated until msg2 decrypts.
+    private func openPairing(
+        _ req: URLRequest,
+        direct: Bool,
+        msg1Payload: Data,
+        initiator: NoiseIKpsk2Initiator
+    ) async throws -> (any CompanionSocket, NoiseTransportSession) {
+        let ws = socketFactory(req)
+        pairingSocket?.close()
+        pairingSocket = ws
+        do {
+            let msg1 = try initiator.writeMessage1(payload: msg1Payload)
+            let limit = direct ? timing.directHandshake : timing.connect
+            let msg2 = try await Self.withDeadline(limit, onTimeout: { ws.close() }) {
+                try await ws.send(msg1)
+                return try await ws.receive()
+            }
+            let (_, session) = try initiator.readMessage2(msg2)
+            return (ws, session)
+        } catch {
+            ws.close()
+            if pairingSocket === ws { pairingSocket = nil }
+            if direct { throw CompanionConnectionError.unreachable("direct pairing handshake failed") }
+            throw error
+        }
+    }
+
     /// Closes an in-flight pairing socket (Cancel pairing, entering the demo).
     public func cancelPairing() {
+        pairingEpoch &+= 1
         pairingSocket?.close()
         pairingSocket = nil
     }
@@ -302,7 +354,9 @@ public actor CompanionRelayClient {
     ///
     /// One handshake at a time, never two in parallel: probe every direct path's `/v1/health` at once; handshake on
     /// the first that answers with this Mac's `machineId`, else on the hosted relay. A direct attempt that fails for a
-    /// network reason falls back to hosted exactly once; a refusal ("not recognized") from any path stands.
+    /// network reason falls back to hosted exactly once. On a direct path everything before Noise succeeds counts as
+    /// a network failure (it is unauthenticated). "Not recognized" comes only from an authenticated source: an
+    /// encrypted refusal of `device.hello`, or the hosted relay refusing with 401/403. That verdict stands.
     @discardableResult
     public func connect(
         record: PairedWorkspaceRecord,
@@ -381,6 +435,8 @@ public actor CompanionRelayClient {
         keys: SessionKeys
     ) async throws -> CompanionConnectResult {
         let gen = generation
+        let started = ContinuousClock.now
+        let budget = path.kind == .direct ? timing.directHandshake : timing.connect
         let initiator: NoiseIKpsk2Initiator
         var req: URLRequest
         do {
@@ -421,14 +477,21 @@ public actor CompanionRelayClient {
 
         let msg2: Data
         do {
-            msg2 = try await Self.withDeadline(timing.connect, onTimeout: { ws.close() }) {
+            msg2 = try await Self.withDeadline(budget, onTimeout: { ws.close() }) {
                 try await ws.send(msg1)
                 return try await ws.receive()
             }
         } catch let error as CompanionConnectionError {
             ws.close()
-            if case .closed = error { throw CompanionConnectionError.unreachable("closed before handshake") }
-            throw error
+            switch error {
+            case .closed:
+                throw CompanionConnectionError.unreachable("closed before handshake")
+            case .handshakeFailed(let reason) where path.kind == .direct:
+                // Unauthenticated on a direct path (any LAN device can refuse an upgrade): a network failure.
+                throw CompanionConnectionError.unreachable("direct refused before handshake: \(reason)")
+            default:
+                throw error
+            }
         } catch {
             ws.close()
             throw CompanionConnectionError.unreachable(String(describing: error))
@@ -444,6 +507,9 @@ public actor CompanionRelayClient {
             (_, transport) = try initiator.readMessage2(msg2)
         } catch {
             ws.close()
+            // On a direct path a msg2 that doesn't decrypt proves nothing about the Mac (whoever holds that address
+            // can send garbage): a network failure, so hosted still gets its try. Through the relay it's a refusal.
+            if path.kind == .direct { throw CompanionConnectionError.unreachable("direct handshake did not authenticate") }
             throw CompanionConnectionError.handshakeFailed("noise")
         }
 
@@ -451,9 +517,26 @@ public actor CompanionRelayClient {
 
         // Everything from here tears down only this attempt's own session: a newer connect that started while hello
         // was in flight (actor reentrancy) keeps its socket.
+        // A direct hello must also land inside the attempt's budget; past it, this session is torn down and the
+        // failure counts as a network one (hosted gets its try).
+        var helloDeadline: Task<Void, Never>?
+        if path.kind == .direct {
+            let remaining = budget - (ContinuousClock.now - started)
+            directHelloPending = gen
+            helloDeadline = Task { [weak self] in
+                try? await Task.sleep(for: max(remaining, .zero))
+                guard !Task.isCancelled else { return }
+                await self?.expireDirectHello(generation: gen)
+            }
+        }
+        defer {
+            helloDeadline?.cancel()
+            if directHelloPending == gen { directHelloPending = nil }
+        }
         let hello: DeviceHello
         do {
             hello = try await call("device.hello", params: EmptyParams(), as: DeviceHello.self)
+            if directHelloPending == gen { directHelloPending = nil }
         } catch let error as CompanionRPCError {
             teardown(CompanionConnectionError.closed, ifGeneration: gen)
             throw CompanionConnectionError.handshakeFailed(error.code)
@@ -469,6 +552,13 @@ public actor CompanionRelayClient {
         // Only a hello that passed the identity checks may change where we dial next time.
         let refreshed = hello.validPaths.map { record.with(paths: $0) } ?? record
         return CompanionConnectResult(hello: hello, path: path, record: refreshed)
+    }
+
+    /// A direct hello still unanswered at the deadline: end that session (its pending hello fails with `.closed`).
+    private func expireDirectHello(generation gen: UInt64) {
+        guard directHelloPending == gen, gen == generation else { return }
+        directHelloPending = nil
+        teardown(CompanionConnectionError.closed, ifGeneration: gen)
     }
 
     /// Probes every direct path's `/v1/health` in parallel (each bounded by `timing.probe`) and returns the first to

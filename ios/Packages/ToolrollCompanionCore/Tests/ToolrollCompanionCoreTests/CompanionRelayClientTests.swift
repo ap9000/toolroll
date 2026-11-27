@@ -42,6 +42,14 @@ private enum SocketMode: Sendable {
     case dropBeforeReply
     /// The handshake completes, then the socket dies as `device.hello` goes out.
     case dropOnHello
+    /// Something (not the Mac) answers msg1 with bytes that aren't a valid msg2.
+    case garbageReply
+    /// The socket closes after msg1, before any msg2.
+    case closeBeforeReply
+    /// msg1 goes nowhere and nothing ever answers.
+    case stallBeforeReply
+    /// The handshake completes, then `device.hello` is never answered.
+    case stallHello
 }
 
 private final class PipeSocket: CompanionSocket, @unchecked Sendable {
@@ -74,6 +82,16 @@ private final class PipeSocket: CompanionSocket, @unchecked Sendable {
                 close()
                 throw CompanionConnectionError.closed
             }
+        case .garbageReply:
+            await toPhone.put(Data((0..<96).map { _ in UInt8.random(in: 0...255) }))
+            return
+        case .closeBeforeReply:
+            await toPhone.close()
+            return
+        case .stallBeforeReply:
+            return
+        case .stallHello:
+            if index >= 1 { return }
         }
         try await mac.receive(data, socket: self)
     }
@@ -509,26 +527,61 @@ func dialFallbackOnlyOnce() async throws {
     #expect(h.box.requests.count == 2)
 }
 
-@Test("A refusal on the direct path stands: no fallback to hosted", arguments: [RefusalArg.socket, .hello])
-fileprivate func dialRefusalDoesNotFallBack(_ refusal: RefusalArg) async throws {
+@Test("An encrypted hello refusal on the direct path stands: no fallback to hosted")
+func dialHelloRefusalDoesNotFallBack() async throws {
     let h = try Harness()
     h.box.answer("192.168.1.20", machineId: "m-1")
-    switch refusal {
-    case .socket: h.box.setMode(.direct, .refused)
-    case .hello: await h.mac.setHelloError(code: "device_revoked", message: "This iPhone was removed")
-    }
+    await h.mac.setHelloError(code: "device_revoked", message: "This iPhone was removed")
+    await #expect(throws: CompanionConnectionError.handshakeFailed("device_revoked")) { _ = try await h.connectResult() }
+    #expect(h.box.requests.count == 1)
+    #expect(h.box.requests.first?.url?.path == "/v1/direct")
+    #expect(await h.client.isConnected == false)
+}
+
+@Test("The hosted relay refusing the device stands (no retry)")
+func dialHostedRefusalStands() async throws {
+    let h = try Harness()
+    h.box.setMode(.hosted, .refused)
+    await #expect(throws: CompanionConnectionError.handshakeFailed("refused")) { _ = try await h.connectResult() }
+    #expect(h.box.requests.count == 1)
+}
+
+@Test("Anything unauthenticated going wrong on direct falls back to hosted and succeeds", arguments: [
+    SocketModeArg.garbageReply, .closeBeforeReply, .refused, .stallBeforeReply, .stallHello,
+])
+fileprivate func dialUnauthenticatedDirectFailureFallsBack(_ mode: SocketModeArg) async throws {
+    let h = try Harness(timing: .init(directHandshake: .milliseconds(150)))
+    h.box.answer("192.168.1.20", machineId: "m-1")
+    h.box.setMode(.direct, mode.mode)
+    let started = ContinuousClock.now
+    let result = try await h.connectResult()
+    #expect(result.path == hostedRelay)
+    #expect(await h.client.isConnected)
+    #expect(ContinuousClock.now - started < .seconds(3))
+    let requests = h.box.requests
+    #expect(requests.count == 2)
+    #expect(requests.first?.url?.path == "/v1/direct")
+    #expect(requests.last?.value(forHTTPHeaderField: "Authorization")?.hasPrefix("Bearer ") == true)
+    // The stalled direct session must not come back to life and tear down the hosted one.
+    try await Task.sleep(for: .milliseconds(250))
+    #expect(await h.client.isConnected)
+}
+
+@Test("Without a hosted path, a broken direct handshake is unreachable, not \"not recognized\"")
+func dialGarbageDirectNoHosted() async throws {
+    let h = try Harness()
+    h.box.answer("192.168.1.20", machineId: "m-1")
+    h.box.setMode(.direct, .garbageReply)
     do {
-        _ = try await h.connectResult()
-        Issue.record("expected a refusal")
+        _ = try await h.connectResult(paths: [directLAN])
+        Issue.record("expected a failure")
     } catch let error as CompanionConnectionError {
-        guard case .handshakeFailed = error else {
-            Issue.record("expected handshakeFailed, got \(error)")
+        guard case .unreachable = error else {
+            Issue.record("expected unreachable, got \(error)")
             return
         }
     }
     #expect(h.box.requests.count == 1)
-    #expect(h.box.requests.first?.url?.path == "/v1/direct")
-    #expect(await h.client.isConnected == false)
 }
 
 @Test("No direct path answers and there is no hosted path: the exact unreachable message, no socket")
@@ -568,19 +621,36 @@ func helloInvalidPathsKeepStored(_ json: String?) async throws {
     #expect(await h.client.isConnected)
 }
 
-@Test("Pairing dials a healthy direct path with role=pair and no Authorization header")
-func pairingUsesDirectWithoutToken() async throws {
-    let h = try Harness()
+@Test("Pairing dials a healthy direct path with role=pair and no token; a broken direct handshake tries hosted once", arguments: [
+    SocketModeArg.garbageReply, .closeBeforeReply, .dropBeforeReply, .stallBeforeReply,
+])
+fileprivate func pairingDirectFallsBackOnce(_ mode: SocketModeArg) async throws {
+    let h = try Harness(timing: .init(directHandshake: .milliseconds(150)))
     h.box.answer("192.168.1.20", machineId: "m-1")
-    h.box.setMode(.direct, .dropBeforeReply)
+    h.box.setMode(.direct, mode.mode)
+    h.box.setMode(.hosted, .dropBeforeReply)
     let qr = try PairingQRPayload.parse(PairingFixtures.json())
     await #expect(throws: CompanionConnectionError.self) {
         _ = try await h.client.beginPairing(qr: qr, deviceName: "Test iPhone") { _ in }
     }
     let requests = h.box.requests
-    #expect(requests.count == 1) // pairing never falls back
+    #expect(requests.count == 2) // direct, then hosted once; both failing means a fresh QR
     #expect(requests.first?.url?.absoluteString == "ws://192.168.1.20:4199/v1/direct?role=pair&id=ps-1")
     #expect(requests.first?.value(forHTTPHeaderField: "Authorization") == nil)
+    #expect(requests.last?.url?.absoluteString == "wss://relay.toolroll.invalid/v1/connect")
+    #expect(requests.last?.value(forHTTPHeaderField: "Authorization") == "Bearer pct-1")
+}
+
+@Test("Pairing over direct with no hosted path makes a single attempt")
+func pairingDirectOnlySingleAttempt() async throws {
+    let h = try Harness()
+    h.box.answer("10.1.2.3", machineId: "m-1")
+    h.box.setMode(.direct, .garbageReply)
+    let qr = try PairingQRPayload.parse(PairingFixtures.json(paths: [PairingFixtures.direct("ws://10.1.2.3:4199/v1/direct")], token: nil))
+    await #expect(throws: CompanionConnectionError.self) {
+        _ = try await h.client.beginPairing(qr: qr, deviceName: "Test iPhone") { _ in }
+    }
+    #expect(h.box.requests.count == 1)
 }
 
 @Test("Pairing with no healthy direct path uses hosted with the pair token")
@@ -620,12 +690,17 @@ func slowProbeTimesOut() async throws {
 }
 
 fileprivate enum SocketModeArg: String, CaseIterable, Sendable, CustomTestStringConvertible {
-    case dropBeforeReply, dropOnHello
-    var mode: SocketMode { self == .dropBeforeReply ? .dropBeforeReply : .dropOnHello }
-    var testDescription: String { rawValue }
-}
-
-fileprivate enum RefusalArg: String, CaseIterable, Sendable, CustomTestStringConvertible {
-    case socket, hello
+    case dropBeforeReply, dropOnHello, garbageReply, closeBeforeReply, refused, stallBeforeReply, stallHello
+    var mode: SocketMode {
+        switch self {
+        case .dropBeforeReply: return .dropBeforeReply
+        case .dropOnHello: return .dropOnHello
+        case .garbageReply: return .garbageReply
+        case .closeBeforeReply: return .closeBeforeReply
+        case .refused: return .refused
+        case .stallBeforeReply: return .stallBeforeReply
+        case .stallHello: return .stallHello
+        }
+    }
     var testDescription: String { rawValue }
 }
