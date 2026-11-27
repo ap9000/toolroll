@@ -1,0 +1,15 @@
+{
+  "name": "toolroll-companion-relay-cloudflare",
+  "private": true,
+  "description": "The hosted Toolroll companion relay (Cloudflare Worker + Durable Object). Wire contract: ../PROTOCOL.md.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261104.1",
+    "miniflare": "5.20261104.0-beta",
+    "typescript": "7.0.2",
+    "wrangler": "4.158.0"
+  }
+}
