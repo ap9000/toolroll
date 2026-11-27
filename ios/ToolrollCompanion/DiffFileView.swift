@@ -1,6 +1,35 @@
 import SwiftUI
 import ToolrollCompanionCore
 
+/// Builds a file's flat row list once and keeps it while the same file is shown.
+final class DiffLayoutCache {
+    /// One row of the flat list: a hunk's header or one of its lines.
+    enum Row {
+        case hunk(index: Int, header: String)
+        case line(DiffLine)
+    }
+
+    private var file: ResultDiffFile?
+    private var cached: (rows: [Row], widest: Int) = ([], 0)
+
+    func layout(for file: ResultDiffFile) -> (rows: [Row], widest: Int) {
+        if file == self.file { return cached }
+        var rows: [Row] = []
+        var widest = 0
+        for (index, hunk) in file.file.hunks.enumerated() {
+            rows.append(.hunk(index: index, header: hunk.header))
+            widest = max(widest, hunk.header.count)
+            for line in hunk.lines {
+                rows.append(.line(line))
+                widest = max(widest, line.text.count)
+            }
+        }
+        self.file = file
+        cached = (rows, widest)
+        return cached
+    }
+}
+
 /// One file's changes, read lazily with `task.diff { task, run, file }`.
 /// Dynamic Type monospaced text, line wrapping on by default, scalable line numbers. Up to thousands of lines, so the
 /// lines are one flat lazy list; without wrapping the whole list scrolls sideways together. Previous/next move
@@ -13,6 +42,8 @@ struct DiffFileView: View {
     /// About one monospaced footnote character's advance, for sizing unwrapped lines.
     @ScaledMetric(relativeTo: .footnote) private var charWidth: CGFloat = 8
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// The flat rows of the file on screen, built once per loaded file instead of on every redraw (G5).
+    @State private var layoutCache = DiffLayoutCache()
 
     init(appState: CompanionAppState, route: DiffRoute) {
         self.appState = appState
@@ -30,24 +61,8 @@ struct DiffFileView: View {
         return routes.contains(route) ? routes : [route]
     }
 
-    /// One row of the flat list: a hunk's header or one of its lines.
-    private enum Row {
-        case hunk(index: Int, header: String)
-        case line(DiffLine)
-    }
-
-    private func rows(_ file: ResultDiffFile) -> (rows: [Row], widest: Int) {
-        var rows: [Row] = []
-        var widest = 0
-        for (index, hunk) in file.file.hunks.enumerated() {
-            rows.append(.hunk(index: index, header: hunk.header))
-            widest = max(widest, hunk.header.count)
-            for line in hunk.lines {
-                rows.append(.line(line))
-                widest = max(widest, line.text.count)
-            }
-        }
-        return (rows, widest)
+    private func rows(_ file: ResultDiffFile) -> (rows: [DiffLayoutCache.Row], widest: Int) {
+        layoutCache.layout(for: file)
     }
 
     var body: some View {
@@ -112,7 +127,7 @@ struct DiffFileView: View {
                 ForEach(Array(layout.rows.enumerated()), id: \.offset) { _, row in
                     switch row {
                     case .hunk(let index, let header):
-                        hunkHeader(header, first: index == 0)
+                        hunkHeader(header, first: index == 0, index: index)
                             .frame(width: wrapLines ? viewport : lineWidth, alignment: .leading)
                     case .line(let line):
                         lineView(line)
@@ -201,7 +216,18 @@ struct DiffFileView: View {
         .background(ToolrollTheme.paper)
     }
 
-    private func hunkHeader(_ header: String, first: Bool) -> some View {
+    /// "Change 2: lines 10 to 25" from "@@ -8,9 +10,16 @@ …", so the rotor jumps hunk to hunk (U20).
+    static func hunkLabel(_ header: String, index: Int) -> String {
+        let pattern = /@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/
+        if let match = header.firstMatch(of: pattern), let start = Int(match.1) {
+            let count = match.2.flatMap { Int($0) } ?? 1
+            let end = max(start, start + count - 1)
+            return "Change \(index + 1): lines \(start) to \(end)"
+        }
+        return "Change \(index + 1)"
+    }
+
+    private func hunkHeader(_ header: String, first: Bool, index: Int) -> some View {
         Text(header)
             .font(.caption.monospaced())
             .typesettingLanguage(Locale.Language(identifier: "zxx"))
@@ -212,7 +238,8 @@ struct DiffFileView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Rectangle().fill(ToolrollTheme.subtleFill))
             .padding(.top, first ? 0 : 12)
-            .accessibilityLabel("Lines \(header)")
+            .accessibilityLabel(Self.hunkLabel(header, index: index))
+            .accessibilityAddTraits(.isHeader)
     }
 
     private func lineView(_ line: DiffLine) -> some View {

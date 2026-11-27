@@ -36,6 +36,7 @@ struct WorkInboxView: View {
     @State private var showScanner = false
     @State private var path: [Route] = []
     @State private var refreshed = 0
+    @State private var confirmRemove = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var page: Loadable<InboxPage> { appState.inbox(filter.view) }
@@ -46,23 +47,25 @@ struct WorkInboxView: View {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     statusLine
                         .padding(.bottom, 2)
-                    if appState.connection.isUnreachable, appState.localNetworkDenied {
-                        LocalNetworkCard()
-                    } else if appState.connection.isUnreachable, let problem = appState.connectionProblem {
-                        Text(problem)
-                            .font(.footnote)
-                            .foregroundStyle(ToolrollTheme.muted)
-                            .fixedSize(horizontal: false, vertical: true)
+                    if case .unreachable(let hint) = appState.connection {
+                        if appState.localNetworkDenied {
+                            LocalNetworkCard()
+                        } else {
+                            hintLine(hint)
+                        }
                     }
-                    if appState.connection == .notRecognized {
-                        notRecognizedCard
+                    if appState.isTerminal {
+                        // The Mac removed this iPhone, or its pairing data is damaged: nothing else on this screen
+                        // applies (U10).
+                        terminalCard
+                    } else {
+                        if appState.isOffline, page.value != nil {
+                            StaleDataBanner(lastUpdated: appState.lastUpdated)
+                        }
+                        filterControl
+                            .padding(.bottom, 4)
+                        content
                     }
-                    if appState.isOffline, page.value != nil {
-                        StaleDataBanner(lastUpdated: appState.lastUpdated)
-                    }
-                    filterControl
-                        .padding(.bottom, 4)
-                    content
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 24)
@@ -70,6 +73,7 @@ struct WorkInboxView: View {
             .background(ToolrollTheme.paper.ignoresSafeArea())
             .environment(\.showsStaleData, appState.isOffline)
             .refreshable {
+                guard !appState.isTerminal else { return }
                 await appState.loadInbox(filter.view)
                 if page.phase == .loaded { refreshed += 1 }
             }
@@ -109,10 +113,16 @@ struct WorkInboxView: View {
                 SettingsView(appState: appState)
             }
             .sheet(isPresented: $showScanner) {
-                PairingScannerSheet { payload in
+                PairingScannerSheet(deviceName: $appState.deviceName) { payload in
                     showScanner = false
                     appState.startPairing(payload: payload)
                 }
+            }
+            .onChange(of: showScanner) { _, shown in appState.presentingSystemUI = shown }
+            .confirmationDialog("Remove from this iPhone?", isPresented: $confirmRemove, titleVisibility: .visible) {
+                Button("Remove", role: .destructive) { Task { await appState.unpairThisPhone() } }
+            } message: {
+                Text("This iPhone forgets the pairing and its keys. Your Mac already removed it.")
             }
             .alert(
                 appState.pairingErrorTitle,
@@ -132,35 +142,39 @@ struct WorkInboxView: View {
 
     // MARK: Status
 
-    /// Connection or demo status as one line under the title.
+    /// Connection or demo status as one line under the title. The status words and Retry are separate VoiceOver
+    /// elements (U20).
     @ViewBuilder
     private var statusLine: some View {
         HStack(spacing: 8) {
-            if !dynamicTypeSize.isAccessibilitySize {
-                Circle()
-                    .fill(statusDot)
-                    .frame(width: 7, height: 7)
-                    .accessibilityHidden(true)
+            HStack(spacing: 8) {
+                if !dynamicTypeSize.isAccessibilitySize {
+                    Circle()
+                        .fill(statusDot)
+                        .frame(width: 7, height: 7)
+                        .accessibilityHidden(true)
+                }
+                if appState.isReconnecting {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .accessibilityHidden(true)
+                }
+                Text(statusText)
+                    .font(.subheadline)
+                    .foregroundStyle(ToolrollTheme.muted)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
             }
-            if appState.isReconnecting {
-                ProgressView()
-                    .controlSize(.mini)
-                    .accessibilityHidden(true)
-            }
-            Text(statusText)
-                .font(.subheadline)
-                .foregroundStyle(ToolrollTheme.muted)
-                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
+            .accessibilityElement(children: .combine)
             if appState.connection.isUnreachable && !appState.isReconnecting {
                 Spacer(minLength: 8)
                 Button("Retry") { Task { await appState.retry() } }
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(ToolrollTheme.ink)
                     .frame(minHeight: 44)
+                    .accessibilityHint("Tries to reach your Mac again.")
             }
         }
         .frame(minHeight: 24)
-        .accessibilityElement(children: .combine)
     }
 
     private var macName: String {
@@ -177,10 +191,11 @@ struct WorkInboxView: View {
         case .connected:
             return "Connected to \(macName)"
         case .unreachable:
-            // How old the shown data is goes in the banner below.
+            // How old the shown data is goes in the banner below; what to do, in the hint line.
             return "Can't reach your Mac"
-        case .notRecognized:
-            return "Your Mac didn't accept this iPhone"
+        case .refused, .damaged:
+            // The card below says why; the status line only says where things stand.
+            return "Not connected"
         case .unpaired:
             return "Not paired"
         }
@@ -189,32 +204,54 @@ struct WorkInboxView: View {
     private var statusDot: Color {
         switch appState.connection {
         case .connected: return ToolrollTheme.success
-        case .unreachable, .notRecognized: return ToolrollTheme.danger
+        case .unreachable, .refused, .damaged: return ToolrollTheme.danger
         default: return ToolrollTheme.muted
         }
     }
 
-    private var notRecognizedCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("If this iPhone was removed on your Mac, pair it again. Otherwise, try again.")
+    /// What the person can do while the Mac can't be reached (U9). "Reset or restored" also offers Pair again.
+    private func hintLine(_ hint: CompanionUnreachableHint) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(CompanionConnectionPolicy.hintMessage(hint))
+                .font(.footnote)
+                .foregroundStyle(ToolrollTheme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            if hint == .differentMachine {
+                Button("Pair again") { showScanner = true }
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(ToolrollTheme.ink)
+                    .frame(minHeight: 44)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Refused or damaged: why, Pair again, and a quiet way to clean up this iPhone (U10).
+    private var terminalCard: some View {
+        let copy: (title: String, body: String)
+        if case .refused(let reason) = appState.connection {
+            copy = CompanionConnectionPolicy.refusedMessage(reason: reason)
+        } else {
+            copy = CompanionConnectionPolicy.damagedMessage
+        }
+        return VStack(alignment: .leading, spacing: 12) {
+            Text(copy.title)
+                .font(.headline)
+                .foregroundStyle(ToolrollTheme.ink)
+                .accessibilityAddTraits(.isHeader)
+            Text(copy.body)
                 .font(.callout)
                 .foregroundStyle(ToolrollTheme.ink)
                 .fixedSize(horizontal: false, vertical: true)
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) { notRecognizedButtons }
-                VStack(spacing: 10) { notRecognizedButtons }
-            }
+            Button("Pair again") { showScanner = true }
+                .buttonStyle(InkButtonStyle())
+            Button("Remove from this iPhone") { confirmRemove = true }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(ToolrollTheme.danger)
+                .frame(maxWidth: .infinity, minHeight: 44)
         }
         .padding(16)
         .card()
-    }
-
-    @ViewBuilder
-    private var notRecognizedButtons: some View {
-        Button("Try again") { Task { await appState.retry() } }
-            .buttonStyle(OutlineButtonStyle())
-        Button("Pair again") { showScanner = true }
-            .buttonStyle(InkButtonStyle())
     }
 
     // MARK: Filters
@@ -349,6 +386,13 @@ struct WorkInboxView: View {
                 .font(.subheadline)
                 .foregroundStyle(ToolrollTheme.muted)
                 .multilineTextAlignment(.center)
+            if filter == .needsYou {
+                // A first launch lands here: a way to the work that does exist (U22).
+                Button("Show all work") { withAnimation(.snappy(duration: 0.2)) { filter = .all } }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(ToolrollTheme.ink)
+                    .frame(minHeight: 44)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 48)
@@ -367,7 +411,7 @@ struct WorkInboxView: View {
         switch filter {
         case .needsYou: return "When an agent needs a decision or a review, it shows up here."
         case .all: return "Tasks you start on your Mac show up here."
-        case .running: return "Builds in progress show up here."
+        case .running: return "Tasks agents are working on show up here."
         case .done: return "Finished work shows up here."
         }
     }

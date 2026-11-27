@@ -19,6 +19,9 @@ struct LiveWatchView: View {
     /// The end of the list is on screen: new records scroll into view. Scrolled up, they wait behind a pill.
     @State private var atBottom = true
     @State private var hasUnseen = false
+    /// The scene really went to the background (not just Notification Center or a system alert): only then was the
+    /// socket closed and the watch needs restarting (C4).
+    @State private var wasBackgrounded = false
 
     struct Entry: Identifiable {
         let id: Int
@@ -46,8 +49,10 @@ struct LiveWatchView: View {
                         statusLine
                             .padding(.bottom, 4)
                         ForEach(records) { entry in
-                            LiveRecordRow(record: entry.record)
-                                .id(entry.id)
+                            if entry.record.kind != .other {
+                                LiveRecordRow(record: entry.record)
+                                    .id(entry.id)
+                            }
                         }
                         Text("Closing only stops watching — the agent keeps running.")
                             .font(.footnote)
@@ -98,8 +103,17 @@ struct LiveWatchView: View {
             }
             .task(id: watchGeneration) { await watch() }
             .onChange(of: scenePhase) { _, newPhase in
-                // Back in front: the socket was closed in the background, so watch again.
-                if newPhase == .active, phase != .finished { watchGeneration += 1 }
+                switch newPhase {
+                case .background:
+                    wasBackgrounded = true
+                case .active:
+                    // Back from the background: the socket was closed there, so watch again. A trip through
+                    // .inactive alone leaves a healthy watch alone.
+                    if wasBackgrounded, phase != .finished { watchGeneration += 1 }
+                    wasBackgrounded = false
+                default:
+                    break
+                }
             }
             .onChange(of: appState.refreshTick) { _, _ in
                 if phase != .watching, phase != .finished { watchGeneration += 1 }
@@ -147,8 +161,12 @@ struct LiveWatchView: View {
             for try await record in opened.stream {
                 records.append(makeEntry(record))
                 if records.count > Self.keep { records.removeFirst(records.count - Self.keep) }
+                announce(record)
             }
-            if !Task.isCancelled { phase = .finished }
+            if !Task.isCancelled {
+                phase = .finished
+                AccessibilityNotification.Announcement("This run finished").post()
+            }
         } catch is CancellationError {
             // The sheet closed or the watch restarted: watching stopped, the run goes on.
         } catch {
@@ -160,6 +178,18 @@ struct LiveWatchView: View {
                 phase = .failed(loadFailureMessage(error))
             }
         }
+    }
+
+    /// VoiceOver hears the moments that matter, not every line (U20).
+    private func announce(_ record: LiveRecord) {
+        let words: String?
+        switch record.kind {
+        case .done where record.ok == false: words = "A step failed"
+        case .over: words = "The run finished"
+        case .child: words = "A helper agent started"
+        default: words = nil
+        }
+        if let words { AccessibilityNotification.Announcement(words).post() }
     }
 
     private func makeEntry(_ record: LiveRecord) -> Entry {
@@ -209,7 +239,7 @@ private struct LiveRecordRow: View {
         case .child: return record.desc ?? "A helper agent started"
         case .end: return "A helper agent finished"
         case .over: return "The run finished"
-        case .other: return "…"
+        case .other: return ""
         }
     }
 
