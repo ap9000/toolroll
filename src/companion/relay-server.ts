@@ -99,6 +99,9 @@ interface MachineRoom {
   machineByteBucket: TokenBucket;
 }
 
+/** Machines one reference relay holds at once (it is for self-hosting a household or team, not the public). */
+const MAX_ROOMS = 1_000;
+
 export interface RunningReferenceRelay {
   url: string;
   wsUrl: string;
@@ -278,6 +281,13 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
         return;
       }
       if (!rooms.has(checked.machineId)) {
+        // Registering is free (a key and a signature), so rooms are bounded: an empty one (no daemon, phones or admitted
+        // devices) is evicted to make space; with none empty, a new machine waits.
+        if (rooms.size >= MAX_ROOMS) {
+          const empty = [...rooms.values()].find(room => room.daemon === null && room.peers.size === 0 && room.devices.size === 0);
+          if (empty === undefined) { sendJson(res, 503, { error: "relay_full" }); return; }
+          rooms.delete(empty.machineId);
+        }
         const t = nowMs();
         rooms.set(checked.machineId, {
           machineId: checked.machineId,
@@ -509,11 +519,8 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
             ws.close(1013, "relay_budget_exceeded");
             return;
           }
-          const t = nowMs();
-          if (!room.machineFrameBucket.tryConsume(1, t) || !room.machineByteBucket.tryConsume(env.payload.length, t)) {
-            ws.close(1008, "machine_rate_limited");
-            return;
-          }
+          // The daemon's replies aren't charged to the machine's buckets: phones spend those, and a phone that drained
+          // them must not get the daemon (and with it every other phone) closed. The Mac paces replies by phone credit.
           const peer = room.peers.get(env.connId);
           if (peer !== undefined && peer.ws.readyState === WebSocket.OPEN) {
             totalForwardedFrames += 1;
@@ -580,6 +587,8 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
     }
 
     ws.on("message", (raw, isBinary) => {
+      // A peer the relay already dropped can keep sending while its close handshake runs: none of it is forwarded.
+      if (room.peers.get(connId) !== peer) return;
       clearTimeout(peer.idleTimer);
       peer.idleTimer = makeIdleTimer();
       if (!peer.receivedFirstFrame) {
