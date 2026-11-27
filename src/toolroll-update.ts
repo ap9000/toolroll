@@ -359,7 +359,7 @@ export function durableRename(temp: string, target: string): void {
  * `where` picks grew by exactly that many. */
 const LEGACY_DESTINATION = "legacy:single-destination";
 type Moved = { into: string; where: string; rows?: string };
-type HistoryRule = { appendOnly?: true; dropped?: string[]; carried?: { into: string; destination: string }; receives?: string; compacted?: { into: string; sum: string }; summarizes?: string;
+type HistoryRule = { appendOnly?: true; dropped?: string[]; discarded?: string[]; carried?: { into: string; destination: string }; receives?: string; compacted?: { into: string; sum: string }; summarizes?: string;
   retired?: true; fromRoutines?: "flow" | "trigger"; moved?: Moved; renamed?: Record<string, string>; added?: Record<string, string> };
 /** v116: every old per-app chat table into the shared chat tables, keyed by provider (chat-migration.ts). Several old
  * tables fan into one shared table; each picks out only its own rows there, so every count is checked on its own. */
@@ -473,6 +473,11 @@ const HISTORY_RULES: Record<string, HistoryRule> = {
   // v180 adds a table only (pending_agent_change, a task's pending model change): no rule is needed.
   // v185 adds a table only (flexible_turn_said, what was said in a Flexible thread): no rule is needed.
   // v186 adds tables only (skill_library_change, skill_project_opt_out, skill_bundle, skill_local_sync): no rule is needed.
+  // v187 adopts the unreleased phone companion's ad hoc tables (companion/schema.ts): every row carried, rowids kept;
+  // the push and idempotency tables nothing read retire whole, and columns no code ever read (a relay URL written once,
+  // PSK rotation never built) are discarded whatever they held.
+  companion_push_token: { retired: true }, companion_idempotency: { retired: true },
+  companion_host_keys: { discarded: ["relay_url"] }, companion_paired_device: { discarded: ["next_device_psk", "psk_version"] },
   ...Object.fromEntries(Object.entries(addedColumns(V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS, V128_ADDED_COLUMNS, V129_ADDED_COLUMNS, V134_ADDED_COLUMNS, V135_ADDED_COLUMNS, V138_ADDED_COLUMNS, V143_ADDED_COLUMNS, V147_ADDED_COLUMNS, V148_ADDED_COLUMNS, V150_ADDED_COLUMNS, V151_ADDED_COLUMNS, V152_ADDED_COLUMNS, V153_ADDED_COLUMNS, V158_ADDED_COLUMNS, V159_ADDED_COLUMNS, V169_ADDED_COLUMNS, V170_ADDED_COLUMNS, V172_ADDED_COLUMNS, V173_ADDED_COLUMNS))
     .map(([table, rule]) => [table, { ...EARLIER_RULES[table], ...rule }])),
 };
@@ -613,7 +618,7 @@ export function changedHistory(db: DatabaseSync, before: TableDigest[]): string[
       return move === undefined || t.moved === undefined || arrived(db, move) - t.moved.found !== t.moved.rows;
     }
     const rule = HISTORY_RULES[t.name], present = new Set(tableColumns(db, t.name));
-    const kept = (c: string) => present.has(c) || (rule?.renamed?.[c] !== undefined && present.has(rule.renamed[c]!));
+    const kept = (c: string) => present.has(c) || (rule?.renamed?.[c] !== undefined && present.has(rule.renamed[c]!)) || rule?.discarded?.includes(c) === true;
     if (t.columns.some(c => !kept(c) && (!rule?.dropped?.includes(c) || (t.nonNull?.[c] !== 0 && !accounted(rule, t))))) return true;
     const columns = t.columns.filter(c => present.has(c));
     // A declared new column: every row saved before it reads its declared value.
