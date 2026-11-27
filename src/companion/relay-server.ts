@@ -85,6 +85,8 @@ interface PeerConn {
   idleTimer: ReturnType<typeof setTimeout>;
   frameBucket: TokenBucket;
   byteBucket: TokenBucket;
+  /** What the daemon sends this phone: its own budget, so going over it closes only this phone. */
+  downBucket: TokenBucket;
 }
 
 interface MachineRoom {
@@ -97,8 +99,6 @@ interface MachineRoom {
   nextConnId: number;
   machineFrameBucket: TokenBucket;
   machineByteBucket: TokenBucket;
-  /** Daemon → phones: its own budget (phones can't spend it); over it, the phone being sent to is closed, never the daemon. */
-  daemonByteBucket: TokenBucket;
 }
 
 /** Machines one reference relay holds at once (it is for self-hosting a household or team, not the public). */
@@ -301,7 +301,6 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
           nextConnId: 1,
           machineFrameBucket: new TokenBucket(machineFramesPerMin, Math.max(phoneFrameBurst * 2, 240), t),
           machineByteBucket: new TokenBucket(machineBytesPerMin, Math.max(phoneByteBurst * 2, 4 * 1024 * 1024), t),
-          daemonByteBucket: new TokenBucket(machineBytesPerMin, Math.max(phoneByteBurst * 2, 4 * 1024 * 1024), t),
         });
       }
       sendJson(res, 200, { machineId: checked.machineId });
@@ -522,10 +521,10 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
             ws.close(1013, "relay_budget_exceeded");
             return;
           }
-          // The daemon's replies have their own bucket (phones can't drain it to get the daemon closed); over it, only
-          // the phone being sent to is closed.
+          // What the daemon sends each phone is charged to that phone's own bucket (phones can't drain the daemon's, and
+          // one phone can't get another closed); over it, only that phone is closed.
           const peer = room.peers.get(env.connId);
-          if (peer !== undefined && !room.daemonByteBucket.tryConsume(env.payload.length, nowMs())) {
+          if (peer !== undefined && !peer.downBucket.tryConsume(env.payload.length, nowMs())) {
             cleanupPeer(room, env.connId, "rate_limited", true);
             return;
           }
@@ -581,6 +580,7 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
       idleTimer: makeIdleTimer(),
       frameBucket: new TokenBucket(phoneFramesPerMin, phoneFrameBurst, t0),
       byteBucket: new TokenBucket(phoneBytesPerMin, phoneByteBurst, t0),
+      downBucket: new TokenBucket(phoneBytesPerMin * 4, phoneByteBurst * 4, t0),
     };
     room.peers.set(connId, peer);
 

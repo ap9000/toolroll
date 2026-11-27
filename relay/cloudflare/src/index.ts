@@ -18,9 +18,10 @@ const MAX_ID_LENGTH = 128;
 /** Per phone socket, per minute (PROTOCOL.md data-plane limits). */
 const PHONE_FRAMES_PER_MIN = 600;
 const PHONE_BYTES_PER_MIN = 4 * 1024 * 1024;
-/** Per machine, per minute, in each direction: phones → daemon over it closes the sending phone; daemon → phones over it
- * closes the phone being sent to. Never the daemon, so one phone can't cut the others off. */
-const MACHINE_BYTES_PER_MIN = 32 * 1024 * 1024; // each direction
+/** Per machine, per minute, phones → daemon together: over it, the sending phone is closed (never the daemon). */
+const MACHINE_BYTES_PER_MIN = 32 * 1024 * 1024;
+/** Per phone, per minute: what the daemon may send that phone (diffs and live output are bigger than what phones send). */
+const PHONE_DOWN_BYTES_PER_MIN = 16 * 1024 * 1024;
 /** A phone socket that has sent nothing for this long is closed (the app pings well within it). */
 const PHONE_IDLE_MS = 90_000;
 /** A phone socket must send its first message (Noise message 1) within this. */
@@ -306,11 +307,10 @@ function sendQuietly(ws: WebSocket, data: Uint8Array): void {
 export class MachineRoomDO {
   private readonly state: DurableObjectState;
   /** Per phone socket: its frame and byte buckets and when it last sent anything (in memory, reset on hibernation). */
-  private readonly phones = new Map<WebSocket, { frames: MinuteBucket; bytes: MinuteBucket; lastAt: number }>();
+  private readonly phones = new Map<WebSocket, { frames: MinuteBucket; bytes: MinuteBucket; down: MinuteBucket; lastAt: number }>();
   /** Phones → daemon, all phones of this machine together. */
   private readonly machineBytes = new MinuteBucket(MACHINE_BYTES_PER_MIN);
-  /** Daemon → phones: its own budget, so phones can't spend it and a flooding daemon only loses the phone it floods. */
-  private readonly daemonBytes = new MinuteBucket(MACHINE_BYTES_PER_MIN);
+
 
   constructor(state: DurableObjectState) {
     this.state = state;
@@ -319,7 +319,7 @@ export class MachineRoomDO {
   private phoneOf(ws: WebSocket) {
     let entry = this.phones.get(ws);
     if (entry === undefined) {
-      entry = { frames: new MinuteBucket(PHONE_FRAMES_PER_MIN), bytes: new MinuteBucket(PHONE_BYTES_PER_MIN), lastAt: Date.now() };
+      entry = { frames: new MinuteBucket(PHONE_FRAMES_PER_MIN), bytes: new MinuteBucket(PHONE_BYTES_PER_MIN), down: new MinuteBucket(PHONE_DOWN_BYTES_PER_MIN), lastAt: Date.now() };
       this.phones.set(ws, entry);
     }
     return entry;
@@ -513,8 +513,9 @@ export class MachineRoomDO {
       if (op === OP_PEER_CLOSE) {
         target?.close(1000, "closed_by_daemon");
       } else if (op === OP_PEER_DATA && target) {
-        // Over the daemon's own budget: that phone is closed (the frame isn't sent); the daemon and other phones stay.
-        if (!this.daemonBytes.take(bytes.length)) { target.close(1008, "rate_limited"); return; }
+        // Each phone has its own budget for what the daemon sends it: over it, that phone alone is closed (the frame isn't
+        // sent); the daemon and the other phones are untouched. At most 4 phones, so the total stays bounded.
+        if (!this.phoneOf(target).down.take(bytes.length)) { target.close(1008, "rate_limited"); return; }
         sendQuietly(target, bytes.subarray(RELAY_ENVELOPE_HEADER_BYTES));
       }
       return;
