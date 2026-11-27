@@ -36,6 +36,8 @@ export const SCRIPT_INVENTORY: readonly ScriptRow[] = Object.freeze([
   { id: "tools", does: "Saves a tool's settings as they change, and switches project", symbol: "TOOLS_PROJECT_SCRIPT", module: "tools-ui.ts", today: "settings.tools", section: "tools", slice: "P4", fetches: false,
     keep: "kit and connect links lead to the tools change document, which owns the script (round 2, change 4)" },
   { id: "push", does: "Enrolls this device for alerts (a service worker and a push subscription)", symbol: "pushScriptOf", module: "settings-groups-ui.ts", today: "settings.group-alerts", section: "this-device", slice: "C1", fetches: true },
+  { id: "phone-pairing", does: "Follows a phone pairing in progress: swaps the QR for the code to compare, counts down, and reloads on the outcome", symbol: "PHONE_PAIRING_SCRIPT", module: "server/settings-phone.ts", today: "settings.phone", section: "phone-pair", slice: "companion-perfect", fetches: true,
+    keep: "the pair POST's sensitive answer carries it too; without JavaScript the page works by reload" },
   { id: "hub-anchors", does: "Forwards the overview's old #anchors to their group pages", symbol: "HUB_ANCHOR_SCRIPT", module: "settings-groups-ui.ts", today: "settings.page", section: "home", slice: "D", fetches: false,
     keep: "replaced by the retired-address resolvers once every anchor's page is an area" },
 ] satisfies ScriptRow[]);

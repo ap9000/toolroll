@@ -368,7 +368,7 @@ function telegramTokenSection(facts: SettingsFacts): Html {
     ]) });
 }
 function phoneSection(phone: BrowserPhoneCard): Html {
-  return settingsSection({ id: "phone", title: "Phone access", lead: html`Open Toolroll itself on your phone, over your own private network. Or use the <a class="k-link" href="/settings/phone">Toolroll iPhone app</a>.`,
+  return settingsSection({ id: "phone", title: "Toolroll in your phone's browser", lead: html`Open Toolroll itself in your phone's browser, over your own private network. Or use the <a class="k-link" href="/settings/phone">Toolroll iPhone app</a>.`,
     body: html`<p class="k-note" data-phone-tailnet>${phone.tailnet === null ? html`Install <a class="k-link" href="https://tailscale.com/download">Tailscale</a> on this computer and your phone, then reload this page for the address.`
       : phone.tailnet.restart === null ? html`On your phone, open <code class="k-mono">${phone.tailnet.address}</code> and sign in.`
       : html`Start Toolroll with <code class="k-mono">${phone.tailnet.restart}</code>, then on your phone open <code class="k-mono">${phone.tailnet.address}</code> and sign in.`}</p>` });
@@ -475,7 +475,7 @@ export function accessGroup(facts: SettingsFacts, flags: Record<string, boolean>
     settingsLink({ href: "/people", title: "People", status: people === null ? "Your own access" : [accessWords({ ...facts, passwordless: null }), people.invites === 0 ? "no open invites" : plural(people.invites, "open invite", "open invites")].join(" · ") }),
     settingsLink({ href: "/settings/sessions", title: "Sessions and tokens", status: `${plural(facts.access.sessions, "session", "sessions")} signed in · ${plural(facts.access.tokens, "API token", "API tokens")}` }),
     // The Toolroll iPhone app (settings-phone.ts): each approver pairs their own phone.
-    ...(facts.approver ? [settingsLink({ href: "/settings/phone", title: "Phone", status: "The Toolroll iPhone app: pair and remove phones" })] : []),
+    ...(facts.approver ? [settingsLink({ href: "/settings/phone", title: "Phone", status: "The Toolroll iPhone app: pair, rename and remove phones" })] : []),
     // Settings → Advanced off: each stays while it is set up or on (its state and its off switch), and goes otherwise.
     ...(facts.operator && (advancedOn(facts) || facts.sso !== null) ? [
       settingsLink({ href: "/settings/sign-in", title: "Sign-in with a provider", status: facts.sso === null ? "Not set up: everyone uses a password" : `People sign in with ${facts.sso}` })] : []),

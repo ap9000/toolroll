@@ -821,3 +821,33 @@ html.k-js .k-sform[data-k-gate]:not([data-dirty]) .k-ssave:has(.k-ssave-said:emp
 .k-srec-a .k-ssave { min-height: 0; padding: 0; background: none; }
 .k-srec-a .k-ssave-said:empty { display: none; }
 pre.k-scode { white-space: pre-wrap; }
+/* Settings → Phone (settings-phone.ts): addresses, the pairing panel, the code to compare, phones. */
+.k-phone-addrs { display: grid; gap: 4px; margin: 8px 0 4px; padding: 0; list-style: none; }
+.k-phone-addrs li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.k-phone-addr-k { min-width: 120px; font-size: 12.5px; color: var(--so-muted); }
+.k-phone-addrs .k-mono { font-size: 12.5px; color: var(--so-ink); }
+.k-phone-line { display: block; margin-top: 6px; }
+.k-phone-hosted { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 12px; font-size: 12.5px; line-height: 1.45; color: var(--so-muted); }
+.k-phone-hosted input { margin-top: 2px; flex: none; }
+.k-phone-pairing { display: grid; gap: 0; }
+.k-phone-pairing [hidden] { display: none !important; }
+.k-phone-steps { margin: 0 0 12px; padding-left: 1.2em; font-size: 12.5px; line-height: 1.55; color: var(--so-muted); }
+.k-phone-steps strong { color: var(--so-ink); font-weight: 600; }
+.k-phone-qr { margin: 0 0 12px; max-width: 280px; }
+.k-phone-qr svg { display: block; width: 100%; height: auto; background: #fff; border-radius: 8px; }
+.k-phone-paste { margin: 0 0 8px; }
+.k-phone-paste summary { cursor: pointer; }
+.k-phone-paste textarea { box-sizing: border-box; width: 100%; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--so-field-line); border-radius: 7px; background: var(--so-raised); color: var(--so-ink); font: 12px/1.45 var(--so-font-mono); resize: vertical; }
+.k-phone-code { margin: 8px 0 12px; font: 600 32px/1.2 var(--so-font-mono); letter-spacing: .08em; color: var(--so-ink); font-variant-numeric: tabular-nums; }
+.k-phone-wait { margin: 0 0 6px; font-size: 13.5px; color: var(--so-ink); }
+.k-phone-pairing .k-acts { margin-top: 12px; }
+.k-phone-pairing .k-acts form { display: inline; }
+.k-phone-sub { margin: 18px 0 0; font-size: 12px; font-weight: 500; color: var(--so-muted); }
+details.k-phone-rename { margin: 2px 0 6px; padding: 0; border: 0; border-radius: 0; background: none; }
+details.k-phone-rename > summary { display: inline-block; min-height: 0; padding: 2px 0; font-size: 12.5px; font-weight: 400; cursor: pointer; }
+.k-phone-rename form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.k-phone-rename-f { flex: 1 1 200px; max-width: 320px; }
+@media (max-width: 760px) {
+  .k-phone-code { font-size: 28px; }
+  .k-phone-rename .k-input { height: 44px; font-size: 16px; }
+}

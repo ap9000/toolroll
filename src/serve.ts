@@ -1865,13 +1865,17 @@ function buildDecisionServer(options: ServeOptions, leaveRehearsal: (() => void)
         functional + MOBILE_VIEWPORT_SCRIPT + keyFill + (sensitive ? '' : chromeScript()), sensitive ? html`` : KBD_HELP), nonce, true);
     }
     // A one-time secret on screen (a token, an invite link, a pairing code): the
-    // page carries no script of any kind, so it leaves the workspace for a
+    // page carries no chrome script, so it leaves the workspace for a
     // focused page in the same look: the brand, the one card, and the way back.
-    // Easy-start C2: but for the key fill when it has a form that posts (the fill reads nothing on the page).
+    // Only its own page script rides it (the phone pairing's poller, which reads
+    // the pairing's state and never the secret), and, easy-start C2, the key
+    // fill when it has a form that posts (the fill reads nothing on the page).
     if (s.forceSensitive === true) {
-      if (keyFill === "" || !/<form\b[^>]*method="post"/i.test(htmlString(s.body))) return page(response, status, focusDocument(s.title, s.body));
+      const fill = keyFill !== "" && /<form\b[^>]*method="post"/i.test(htmlString(s.body)) ? keyFill : "";
+      const script = (s.functional?.script ?? "") + fill;
+      if (script === "") return page(response, status, focusDocument(s.title, s.body));
       const nonce = randomBytes(16).toString("base64");
-      return page(response, status, focusDocument(s.title, s.body, { nonce, script: keyFill }), nonce);
+      return page(response, status, focusDocument(s.title, s.body, { nonce, script }), nonce, s.functional?.fetches === true);
     }
     const chromeLayer = !sensitive && s.chrome !== undefined;
     const functional = s.functional?.script ?? "";
