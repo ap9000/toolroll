@@ -265,7 +265,8 @@ describe("Noise_IKpsk2_25519_ChaChaPoly_SHA256 (Revision 34 snow vectors)", () =
     expect(() => rs.decrypt(Buffer.alloc(MAX_NOISE_MESSAGE_BYTES + 1), 1_000)).toThrow();
 
     // 2^20 message rekey cap enforced
-    is.sendCipher.setNonceForTest(MAX_SESSION_MESSAGES);
+    // The counter is private and production code never sets it: the test reaches in (L8).
+    (is.sendCipher as unknown as { n: bigint }).n = MAX_SESSION_MESSAGES;
     expect(is.isExpired(1_000)).toBe(true);
     expect(() => is.encrypt(Buffer.from("too-many"), 1_000)).toThrow(/re-handshake/i);
 

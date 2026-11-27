@@ -18,8 +18,11 @@ export const MAX_CONCURRENT_STREAMS = 8;
 export const MAX_CONCURRENT_WATCH_STREAMS = 2;
 export const MAX_LIVE_WATCH_RECORDS = 32;
 export const MAX_LIVE_WATCH_BYTES = 256 * 1024; // 256 KiB
+/** Everything held for one phone: request assembly, unary responses until they have gone out, and live-watch buffers. */
 export const MAX_SESSION_BUFFERED_BYTES = 1024 * 1024; // 1 MiB per phone
-export const MAX_DAEMON_BUFFERED_BYTES = 4 * 1024 * 1024; // 4 MiB daemon-wide
+/** The same, across every connected phone (a backstop: phones are also capped by link limits — 8 per relay link, 32
+ * direct sockets — so 64 MiB is reached only if those caps were lifted). */
+export const MAX_DAEMON_BUFFERED_BYTES = 64 * 1024 * 1024; // 64 MiB daemon-wide
 export const REQUEST_ASSEMBLY_DEADLINE_MS = 5_000;
 export const UNARY_RESPONSE_DEADLINE_MS = 30_000;
 export const WATCH_IDLE_DEADLINE_MS = 60_000;
@@ -171,7 +174,7 @@ export function encodeErrorPayload(code: string, message: string): Buffer {
   return Buffer.from(JSON.stringify({ code, message }), "utf8");
 }
 
-/** Tracks daemon-wide buffered bytes across all connected phone sessions (4 MiB hard cap). */
+/** Tracks daemon-wide buffered bytes across all connected phone sessions (64 MiB hard cap). */
 export class GlobalBufferBudget {
   private usedBytes = 0;
   readonly limitBytes: number;
@@ -308,13 +311,20 @@ export class CompanionStreamGuard {
     return { ok: true };
   }
 
-  /** Charge a unary response's bytes to this phone's own budget until the stream closes. Not the daemon-wide one: a
-   * few phones holding responses must not starve every other phone (each is reaped at its 30 s deadline anyway). */
+  /** Charge a unary response's bytes to this phone's budget and the daemon-wide one until the stream closes. */
   reserveResponse(streamId: number, bytes: number): boolean {
-    if (this.sessionBufferedBytes + bytes > MAX_SESSION_BUFFERED_BYTES) return false;
-    this.sessionBufferedBytes += bytes;
+    if (!this.reserveBytes(bytes)) return false;
     this.responseBytes.set(streamId, (this.responseBytes.get(streamId) ?? 0) + bytes);
     return true;
+  }
+
+  /** Live-watch buffer bytes, charged like everything else held for this phone (LiveWatchBuffer calls these). */
+  reserveWatch(bytes: number): boolean {
+    return this.reserveBytes(bytes);
+  }
+
+  releaseWatch(bytes: number): void {
+    this.releaseBytes(bytes);
   }
 
   /** Streams whose request has been half-sent for longer than the assembly deadline (they're closed here). */
@@ -335,7 +345,7 @@ export class CompanionStreamGuard {
     }
     const held = this.responseBytes.get(streamId);
     if (held !== undefined) {
-      this.sessionBufferedBytes = Math.max(0, this.sessionBufferedBytes - held);
+      this.releaseBytes(held);
       this.responseBytes.delete(streamId);
     }
     this.openUnaryStreams.delete(streamId);
@@ -347,7 +357,7 @@ export class CompanionStreamGuard {
       this.releaseBytes(asm.totalBytes);
     }
     this.assemblies.clear();
-    for (const held of this.responseBytes.values()) this.sessionBufferedBytes = Math.max(0, this.sessionBufferedBytes - held);
+    for (const held of this.responseBytes.values()) this.releaseBytes(held);
     this.responseBytes.clear();
     this.openUnaryStreams.clear();
     this.openWatchStreams.clear();
@@ -420,9 +430,18 @@ export class CompanionStreamGuard {
   }
 }
 
+/** Where a watch buffer charges what it holds (the phone's session budget, CompanionStreamGuard.reserveWatch). */
+export interface WatchBudget {
+  reserve(bytes: number): boolean;
+  release(bytes: number): void;
+}
+
+const UNCHARGED: WatchBudget = { reserve: () => true, release: () => {} };
+
 /**
  * Bounded live-watch record buffer: coalesces/truncates older records with `{ k: "cut" }`
- * when credit hits 0 and enforces 32-record / 256 KiB per-stream plus session/global caps.
+ * when credit hits 0 and enforces 32-record / 256 KiB per stream. What it holds is charged to the phone's session
+ * budget (and through it the daemon-wide one): a record the budget can't take is dropped and reported as a cut.
  *
  * NOTE: Used ONLY for live watch subscriptions (`run.watch.subscribe`). Unary multi-part
  * responses NEVER drop chunks — they pause and wait for `CREDIT` via `UnaryResponsePacer`.
@@ -433,6 +452,15 @@ export class LiveWatchBuffer {
   private droppedCount = 0;
   credit: number = INITIAL_STREAM_CREDIT;
 
+  constructor(private readonly budget: WatchBudget = UNCHARGED) {}
+
+  private dropOldest(): void {
+    const oldest = this.records.shift()!;
+    this.usedBytes -= oldest.length;
+    this.budget.release(oldest.length);
+    this.droppedCount += 1;
+  }
+
   push(record: Buffer): { accepted: boolean; cutCount: number } {
     if (record.length > MAX_FRAME_PAYLOAD_BYTES) {
       // Too big for one frame: dropped, and the phone is told there's a gap like any other cut.
@@ -442,14 +470,14 @@ export class LiveWatchBuffer {
     while (
       this.records.length > 0
       && (this.records.length >= MAX_LIVE_WATCH_RECORDS || this.usedBytes + record.length > MAX_LIVE_WATCH_BYTES)
-    ) {
-      const oldest = this.records.shift()!;
-      this.usedBytes -= oldest.length;
-      this.droppedCount += 1;
-    }
-    if (this.usedBytes + record.length > MAX_LIVE_WATCH_BYTES) {
-      this.droppedCount += 1;
-      return { accepted: false, cutCount: this.droppedCount };
+    ) this.dropOldest();
+    // The phone's budget is full (other streams hold it): older records of this watch give way first, then this one.
+    while (!this.budget.reserve(record.length)) {
+      if (this.records.length === 0) {
+        this.droppedCount += 1;
+        return { accepted: false, cutCount: this.droppedCount };
+      }
+      this.dropOldest();
     }
     this.records.push(record);
     this.usedBytes += record.length;
@@ -460,20 +488,34 @@ export class LiveWatchBuffer {
     this.credit = Math.min(1024, this.credit + n);
   }
 
-  drainAvailable(): Buffer[] {
+  /** Records the phone's credit allows, in order; `allow(bytes)` (pacing) may stop the drain early — what it refuses
+   * stays buffered for the next drain. */
+  drainAvailable(allow: (bytes: number) => boolean = () => true): Buffer[] {
     const out: Buffer[] = [];
     if (this.droppedCount > 0 && this.credit > 0) {
-      out.push(Buffer.from(JSON.stringify({ k: "cut", dropped: this.droppedCount }), "utf8"));
+      const cut = Buffer.from(JSON.stringify({ k: "cut", dropped: this.droppedCount }), "utf8");
+      if (!allow(cut.length)) return out;
+      out.push(cut);
       this.droppedCount = 0;
       this.credit -= 1;
     }
     while (this.credit > 0 && this.records.length > 0) {
+      if (!allow(this.records[0]!.length)) break;
       const next = this.records.shift()!;
       this.usedBytes -= next.length;
+      this.budget.release(next.length);
       this.credit -= 1;
       out.push(next);
     }
     return out;
+  }
+
+  /** Everything still buffered is let go (the watch ended or the phone left): its budget is released. */
+  clear(): void {
+    this.budget.release(this.usedBytes);
+    this.records.length = 0;
+    this.usedBytes = 0;
+    this.droppedCount = 0;
   }
 
   get bufferedBytes(): number {
@@ -517,21 +559,64 @@ export class UnaryResponsePacer {
     this.credit = Math.min(1024, this.credit + n);
   }
 
-  /** Pull next frames allowed by credit (`RES` and `END` do not consume chunk credit). */
-  pullAvailable(nowMs = Date.now()): { ok: true; frames: CompanionFrame[] } | { ok: false; code: "deadline_exceeded" } {
+  /** Pull next frames allowed by credit (`RES` and `END` do not consume chunk credit); `allow(bytes)` (pacing) may
+   * stop the pull early — the rest waits for the next pull, in order. */
+  pullAvailable(nowMs = Date.now(), allow: (bytes: number) => boolean = () => true): { ok: true; frames: CompanionFrame[] } | { ok: false; code: "deadline_exceeded" } {
     if (this.isTimedOut(nowMs)) {
       return { ok: false, code: "deadline_exceeded" };
     }
     const out: CompanionFrame[] = [];
     while (this.cursor < this.frames.length) {
       const next = this.frames[this.cursor]!;
-      if (next.type === FrameType.CHUNK) {
-        if (this.credit <= 0) break;
-        this.credit -= 1;
-      }
+      if (next.type === FrameType.CHUNK && this.credit <= 0) break;
+      if (!allow(FRAME_HEADER_BYTES + next.payload.length)) break;
+      if (next.type === FrameType.CHUNK) this.credit -= 1;
       out.push(next);
       this.cursor += 1;
     }
     return { ok: true, frames: out };
   }
 }
+
+/**
+ * A token bucket over bytes: `ratePerMin` sustained, up to `burst` at once. Downstream pacing (protocol §3.7) runs one
+ * per phone connection and one per hosted relay link, on plaintext frames before they are encrypted, so the relay's own
+ * limits are never what drops a phone.
+ */
+export class TokenBucket {
+  private tokens: number;
+  private at: number;
+
+  constructor(readonly ratePerMin: number, readonly burst: number, nowMs: number) {
+    this.tokens = burst;
+    this.at = nowMs;
+  }
+
+  private refill(nowMs: number): void {
+    if (nowMs > this.at) this.tokens = Math.min(this.burst, this.tokens + ((nowMs - this.at) * this.ratePerMin) / 60_000);
+    this.at = Math.max(this.at, nowMs);
+  }
+
+  available(nowMs: number): number {
+    this.refill(nowMs);
+    return this.tokens;
+  }
+
+  take(bytes: number, nowMs: number): boolean {
+    this.refill(nowMs);
+    if (this.tokens < bytes) return false;
+    this.tokens -= bytes;
+    return true;
+  }
+
+  /** Milliseconds until `bytes` could be taken (0 now). */
+  waitFor(bytes: number, nowMs: number): number {
+    this.refill(nowMs);
+    if (this.tokens >= bytes) return 0;
+    return Math.ceil(((Math.min(bytes, this.burst) - this.tokens) * 60_000) / this.ratePerMin);
+  }
+}
+
+/** Downstream pacing budgets (test/fixtures/companion-wire.json relay.macPacing). */
+export const PACING_PER_CONNECTION = { ratePerMin: 12 * 1024 * 1024, burst: 3 * 1024 * 1024 } as const;
+export const PACING_PER_HOSTED_LINK = { ratePerMin: 48 * 1024 * 1024, burst: 12 * 1024 * 1024 } as const;
