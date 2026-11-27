@@ -2489,11 +2489,16 @@ function buildDecisionServer(options: ServeOptions, leaveRehearsal: (() => void)
   const pagesHandlers = createPagesHandlers(handlerRuntime, { listFor: tasksHandlers.workListFor, showOrder: tasksHandlers.showOrder });
   // Phone access (the Toolroll iPhone app): off until an approver turns it on in Settings → Phone. Its reads are the
   // Engine API's own, for the paired device's account, in this process (companion/reads.ts).
+  const companionReads = createCompanionReads({ runtime: handlerRuntime, readWorkRows: pagesHandlers.readWorkRows, subscribeBus: listener => liveBus.subscribe(() => listener()),
+    workspaceLabel: workspaceLabelOf, toolrollVersion: PACKAGE_VERSION });
+  phoneReadsByServer.set(server, companionReads);
   const phoneAccess = createPhoneAccess({
     store,
-    reads: createCompanionReads({ runtime: handlerRuntime, readWorkRows: pagesHandlers.readWorkRows, subscribeBus: listener => liveBus.subscribe(() => listener()),
-      workspaceLabel: workspaceLabelOf, toolrollVersion: PACKAGE_VERSION }),
+    reads: companionReads,
     log: line => console.error(line),
+    // Where a phone's Handoff opens this console on the Mac: its public address when it has one, else its own loopback.
+    consoleUrl: () => publicOrigin !== null ? publicOrigin.origin : servedPort() === null ? null : `http://127.0.0.1:${servedPort()}`,
+    bonjour: options.rehearsal !== true,
   });
   phoneAccessRef = phoneAccess;
   // A failure to resume phone access is reported, never a crash of the console.
@@ -2633,6 +2638,14 @@ function buildDecisionServer(options: ServeOptions, leaveRehearsal: (() => void)
 
 export { PAGE_CSS,pinnedTheme,SENSITIVE_INPUT } from "./server/chrome.js";
 export { redactedPath,SHUTDOWN_WAIT_MS,type ServeOptions } from "./server/http.js";
+
+/** Each console's phone reads (companion/reads.ts), as its phone access runs them: the paired phone's authorization
+ * boundary, read in-process by its tests (companion/reads.test.ts) against a real console. Holds nothing a caller in
+ * this process couldn't build itself. */
+const phoneReadsByServer = new WeakMap<object, import('./companion/daemon.js').CompanionReadHandlers>();
+export function phoneReadsOf(server: object): import('./companion/daemon.js').CompanionReadHandlers | undefined {
+  return phoneReadsByServer.get(server);
+}
 export { TASK_COMPOSER_MODES,type TaskComposerMode } from "./server/render-chat.js";
 export { queueScript } from "./server/render-pages.js";
 export { ssoStepUps,wrongHostPage } from "./server/render-people.js";

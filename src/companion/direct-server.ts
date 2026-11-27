@@ -148,7 +148,7 @@ export function startDirectServer(opts: DirectServerOptions): Promise<RunningDir
     const link: PeerLink = {
       id: `direct#${linkSeq}`,
       send: (_connId, payload) => { if (ws.readyState === WebSocket.OPEN) ws.send(payload, { binary: true }); },
-      close: (_connId, reason) => { if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close(4000, reason.slice(0, 100)); },
+      close: (_connId, reason, code) => { if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close(code ?? 4000, reason.slice(0, 100)); },
       backlog: () => ws.bufferedAmount,
       backlogLimit: DIRECT_BACKLOG_LIMIT,
     };

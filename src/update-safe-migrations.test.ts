@@ -93,7 +93,8 @@ describe("update-safe migrations", () => {
     // v181-v184 only add Direct Chat tables (threads, turns, artifacts, ships) and nullable columns (effort, usage_json): no saved row changes.
     // v185 only adds what was said in a Flexible thread, turn by turn (a table): no saved row changes.
     // v186 only adds global skill library tables (skill_library_change, skill_project_opt_out, skill_bundle, skill_local_sync): no saved row changes.
-    expect([...UPDATE_SAFE_MIGRATIONS]).toEqual([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186]);
+    // v187 adopts the unreleased companion's ad hoc tables under named rules (rows and rowids carried; never-read columns and tables go).
+    expect([...UPDATE_SAFE_MIGRATIONS]).toEqual([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187]);
     expect(UPDATE_SAFE_MIGRATIONS.every(version => version > 1 && version <= SCHEMA_VERSION)).toBe(true);
   });
 

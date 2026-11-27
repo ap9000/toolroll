@@ -6,7 +6,8 @@
  * themselves are wiped on restore: restore-retirement.ts).
  *
  * Two paths (service.ts): direct — a listener on this Mac's network for a phone on the same Wi-Fi or tailnet (port
- * 4199 unless `TOOLROLL_PHONE_PORT` says otherwise) — and hosted, an end-to-end encrypted relay for a phone
+ * 4199 unless `TOOLROLL_PHONE_PORT` says otherwise, then 4200–4209 if that is taken; the port it got is kept and tried
+ * first next time) — and hosted, an end-to-end encrypted relay for a phone
  * anywhere else (wss://relay.toolroll.dev unless `TOOLROLL_RELAY_URL` names another; `TOOLROLL_RELAY_URL=off` removes
  * it). The hosted path is its own choice, saved beside the switch as the exact relay address that was approved:
  * turning phone access on shows it as its own checkbox (ticked by default, naming the relay), and if the configured relay later changes, the new one isn't used
@@ -17,10 +18,13 @@ import { hostname } from "node:os";
 import type { Store } from "../store.js";
 import type { CompanionReadHandlers } from "./daemon.js";
 import { CompanionService, relayAddressesOf } from "./service.js";
+import { readCompanionHostKeys, type CompanionHostKeys } from "./store.js";
 
-/** The direct listener's port unless the environment says otherwise (`TOOLROLL_PHONE_RELAY_PORT`). Not 4190: that is
- * on the Fetch standard's bad-port list, which web clients refuse outright. */
+/** The direct listener's port unless the environment says otherwise (`TOOLROLL_PHONE_PORT`). Not 4190: that is on the
+ * Fetch standard's bad-port list, which web clients refuse outright. */
 export const DEFAULT_DIRECT_PORT = 4199;
+/** Tried in order when the configured port is taken (none is on the Fetch bad-port list). */
+export const FALLBACK_DIRECT_PORTS: readonly number[] = Object.freeze([4200, 4201, 4202, 4203, 4204, 4205, 4206, 4207, 4208, 4209]);
 
 /** The hosted relay phones use when away from this Mac's network, unless `TOOLROLL_RELAY_URL` names another. */
 export const DEFAULT_HOSTED_RELAY = "wss://relay.toolroll.dev";
@@ -30,23 +34,22 @@ type Db = Store["handle"];
 /** The Fetch standard's bad ports at or above 1024 (https://fetch.spec.whatwg.org/#bad-port): fetch and browsers refuse them. */
 const FETCH_BAD_PORTS = new Set([1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080]);
 
-function ensureAccessTable(db: Db): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS companion_access (
-    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
-    changed_by TEXT NOT NULL,
-    changed_at TEXT NOT NULL
-  )`);
-  const columns = db.prepare("PRAGMA table_info(companion_access)").all().map(row => String(row["name"]));
-  if (!columns.includes("hosted_relay")) db.exec("ALTER TABLE companion_access ADD COLUMN hosted_relay TEXT");
+/** The saved switch, the hosted relay address it approved (its connect URL), and the direct port last bound (a read:
+ * the table is the v187 migration's, never made here). */
+function savedAccess(db: Db): { enabled: boolean; hostedRelay: string | null; directPort: number | null } {
+  const row = db.prepare("SELECT enabled, hosted_relay, direct_port FROM companion_access WHERE singleton = 1").get();
+  const relay = row?.["hosted_relay"];
+  const port = row?.["direct_port"];
+  return {
+    enabled: row !== undefined && Number(row["enabled"]) === 1,
+    hostedRelay: typeof relay === "string" && relay.length > 0 ? relay : null,
+    directPort: typeof port === "number" && Number.isInteger(port) ? port : typeof port === "bigint" ? Number(port) : null,
+  };
 }
 
-/** The saved switch and the hosted relay address it approved (its connect URL), if any. */
-function savedAccess(db: Db): { enabled: boolean; hostedRelay: string | null } {
-  ensureAccessTable(db);
-  const row = db.prepare("SELECT enabled, hosted_relay FROM companion_access WHERE singleton = 1").get();
-  const relay = row?.["hosted_relay"];
-  return { enabled: row !== undefined && Number(row["enabled"]) === 1, hostedRelay: typeof relay === "string" && relay.length > 0 ? relay : null };
+/** The port the direct listener got, kept so the next start tries it first (phones have it saved). */
+function saveDirectPort(db: Db, port: number): void {
+  db.prepare("UPDATE companion_access SET direct_port = ? WHERE singleton = 1").run(port);
 }
 
 /** A relay's identity for approval: its WebSocket connect URL (scheme, host and port). */
@@ -57,7 +60,6 @@ export function phoneAccessEnabled(db: Db): boolean {
 }
 
 function savePhoneAccess(db: Db, enabled: boolean, hostedRelay: string | null, by: string, now: Date): void {
-  ensureAccessTable(db);
   db.prepare(`INSERT INTO companion_access (singleton, enabled, hosted_relay, changed_by, changed_at) VALUES (1, ?, ?, ?, ?)
     ON CONFLICT(singleton) DO UPDATE SET enabled = excluded.enabled, hosted_relay = excluded.hosted_relay, changed_by = excluded.changed_by, changed_at = excluded.changed_at`)
     .run(enabled ? 1 : 0, hostedRelay, by, now.toISOString());
@@ -113,7 +115,13 @@ export interface PhoneAccess {
   stop(): Promise<void>;
 }
 
-export function createPhoneAccess(opts: { store: Store; reads: CompanionReadHandlers; env?: NodeJS.ProcessEnv; log?: (line: string) => void }): PhoneAccess {
+export function createPhoneAccess(opts: {
+  store: Store; reads: CompanionReadHandlers; env?: NodeJS.ProcessEnv; log?: (line: string) => void;
+  /** This console's own address for the phone's Handoff links (device.hello's consoleUrl). */
+  consoleUrl?: () => string | null;
+  /** Advertise the direct listener over Bonjour (the console does; tests don't). */
+  bonjour?: boolean;
+}): PhoneAccess {
   const env = opts.env ?? process.env;
   let running: CompanionService | null = null;
   let changing: Promise<void> = Promise.resolve();
@@ -125,13 +133,16 @@ export function createPhoneAccess(opts: { store: Store; reads: CompanionReadHand
   const start = async (): Promise<void> => {
     if (running !== null) return;
     const port = directPortOf(env), hosted = hostedRelayOf(env);
-    const approved = savedAccess(opts.store.handle).hostedRelay;
+    const saved = savedAccess(opts.store.handle);
+    const approved = saved.hostedRelay;
     const wantHosted = hosted.ok && approved !== null && approved === relayIdentityOf(hosted.url);
     const service = new CompanionService({
       store: opts.store, reads: opts.reads,
-      direct: port.ok ? { port: port.port } : null,
+      direct: port.ok ? { port: port.port, fallbackPorts: FALLBACK_DIRECT_PORTS, preferredPort: saved.directPort, onBound: bound => saveDirectPort(opts.store.handle, bound) } : null,
       hosted: wantHosted ? hosted.url : null,
       ...(opts.log === undefined ? {} : { log: opts.log }),
+      ...(opts.consoleUrl === undefined ? {} : { consoleUrl: opts.consoleUrl }),
+      ...(opts.bonjour === true ? { bonjour: true } : {}),
     });
     await service.start();
     running = service;
@@ -174,6 +185,10 @@ export function createPhoneAccess(opts: { store: Store; reads: CompanionReadHand
           enabled = true; approved = change.act === "hosted-on" ? current : null;
         }
         savePhoneAccess(opts.store.handle, enabled, approved, by, now);
+        // Hosted turned off (alone, or with phone access): the relay is asked to forget this machine (best effort,
+        // bounded) before the service that holds its keys stops. Paired phones keep their records here.
+        const service = running;
+        if (service !== null && service.status().hosted.state !== "off" && (!enabled || approved === null)) await service.forgetHostedMachine();
         // A change of paths restarts the service: sessions reconnect on their own.
         await stop();
         if (enabled) {
@@ -187,6 +202,18 @@ export function createPhoneAccess(opts: { store: Store; reads: CompanionReadHand
     resume: () => serially(async () => { if (phoneAccessEnabled(opts.store.handle)) await start(); }),
     stop: () => serially(stop),
   };
+}
+
+/** The hosted relay this workspace's phone access approved and the keys its room is under, when both exist (a read):
+ * what a restore asks the relay to forget before the restored copy gets keys of its own. */
+export function hostedRelayRoomOf(store: Store): { relayUrl: string; keys: CompanionHostKeys } | null {
+  try {
+    const approved = savedAccess(store.handle).hostedRelay;
+    const keys = readCompanionHostKeys(store.handle);
+    return approved === null || keys === null ? null : { relayUrl: approved, keys };
+  } catch {
+    return null; // an older database without the companion tables has no room to forget
+  }
 }
 
 /** This Mac's name for the phone's header: a "Studio-Mac.local" hostname reads as "Studio Mac". */

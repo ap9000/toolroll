@@ -57,15 +57,23 @@ export function tailnetIpv4Of(statusJson: string): string | null {
 }
 
 export async function readTailnetIpv4(runner: Runner = run, platform: NodeJS.Platform = process.platform): Promise<string | null> {
+  return (await readTailnetStatus(runner, platform)).ipv4;
+}
+
+/** Whether Tailscale is installed here (its command line answered at all, running or not) and, when it is up, this
+ * computer's Tailscale IPv4 address. Phone access says "Tailscale not found" when it isn't installed. */
+export async function readTailnetStatus(runner: Runner = run, platform: NodeJS.Platform = process.platform): Promise<{ found: boolean; ipv4: string | null }> {
   const candidates = ["tailscale", ...(platform === "darwin" && existsSync(MAC_APP_CLI) ? [MAC_APP_CLI] : [])];
+  let found = false;
   for (const file of candidates) {
     try {
       const answer = await runner(file, ["status", "--json"], { timeoutMs: 3_000 });
       if (answer.notFound === true) continue;
-      if (answer.code === 0) return tailnetIpv4Of(answer.stdout);
+      found = true;
+      if (answer.code === 0) return { found, ipv4: tailnetIpv4Of(answer.stdout) };
     } catch {
       // No Tailscale here.
     }
   }
-  return null;
+  return { found, ipv4: null };
 }

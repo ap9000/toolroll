@@ -74,7 +74,7 @@ export function createCompanionReads(deps: CompanionReadDeps): CompanionReadHand
   function stands(principal: PairedDevicePrincipal): boolean {
     const device = getPairedDevice(store.handle, principal.deviceId);
     const identity = store.workspaceIdentity();
-    if (device === null || device.revokedAt !== null || device.recoveryGeneration !== identity.recoveryGeneration
+    if (device === null || device.revokedAt !== null || device.activatedAt === null || device.recoveryGeneration !== identity.recoveryGeneration
       || device.accountName !== principal.accountName || identity.recoveryGeneration !== principal.recoveryGeneration) return false;
     return deviceAccountStands(device, store.accountOf(principal.accountName));
   }

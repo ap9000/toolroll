@@ -27,6 +27,8 @@ import { DEFAULT_LIVENESS_MS } from "./runner.js";
 import { openStore, readSchemaVersion, SCHEMA_VERSION, type BackupSettings, type Database, type Store } from "./store.js";
 import { resetFlexibleSignInsForRestore } from "./flexible-sign-in.js";
 import { retireRestoredAuthority, type RestoreRetirementSummary } from "./restore-retirement.js";
+import { hostedRelayRoomOf } from "./companion/access.js";
+import { forgetMachineOnRelay } from "./companion/service.js";
 
 /** A scheduled backup's name: the database it came from (see `databaseTag`), then when it was made. Backups made
  * before the tag was added have none, and ones made before 0.9.105 start `standing-orders-` (still listed and pruned).
@@ -319,13 +321,18 @@ export async function restoreDatabase(options: { databaseFile: string; file: str
     const store = openStore(databaseFile);
     let carried: { person: string; generation: string; accountGeneration: number }[];
     let replacedRecoveryGeneration: string | null = null;
+    let relayRoom: ReturnType<typeof hostedRelayRoomOf> = null;
     try {
       const running = runningNow(store, new Date());
       if (running.length > 0) return refuse("running", `Toolroll started (${running.join(" and ")}). Stop it first, then restore. The database is unchanged.`);
       carried = store.handle.prepare("SELECT person, generation, account_generation FROM flexible_sign_in").all()
         .map(row => ({ person: String(row["person"]), generation: String(row["generation"]), accountGeneration: Number(row["account_generation"]) }));
       try { replacedRecoveryGeneration = store.workspaceIdentity().recoveryGeneration; } catch { /* older live db */ }
+      relayRoom = hostedRelayRoomOf(store);
     } finally { store.close(); }
+    // The restored copy gets its own companion keys (ADR 0001): the hosted relay is asked to forget the room this Mac's
+    // current keys hold, best effort and bounded — a relay that can't be reached deletes it after 90 idle days.
+    if (relayRoom !== null) await forgetMachineOnRelay(relayRoom.relayUrl, relayRoom.keys);
     // The restored database is brought up to this build, every Claude sign-in retired, and all restored remote/browser
     // credentials/sessions/grants retired with a fresh recovery_generation BEFORE it is put in service: an interruption
     // at any point after the swap finds no revived API token, session, OAuth grant, or stale recovery generation.
