@@ -7,9 +7,10 @@ public enum CompanionConnectionState: Equatable, Sendable {
     /// Paired; the first connection of this launch is being made.
     case connecting
     case connected(workspaceLabel: String, since: Date)
-    /// A reconnect actually failed. Cached data stays on screen, dimmed.
+    /// A reconnect actually failed. Cached data stays on screen under a "Last updated" banner.
     case unreachable(lastUpdated: Date?)
-    /// The Mac refused this iPhone's keys (or hello failed). The pairing is kept; Retry or Pair again.
+    /// The Mac refused this iPhone (the relay refused its keys, or `device.hello` named it removed). The pairing is
+    /// kept; Retry or Pair again.
     case notRecognized
 }
 
@@ -56,10 +57,16 @@ public struct CompanionPairingGate: Equatable, Sendable {
         return true
     }
 
-    /// The person cancelled (or left for the demo): no running attempt owns the UI any more.
+    /// The person cancelled (or left for the demo): no running attempt owns the UI any more. The cancelled attempt
+    /// stays the newest, so if its Mac had already confirmed it may still finish (`mayComplete`).
     public mutating func cancel() {
-        current &+= 1
         phase = .idle
+    }
+
+    /// True when `attempt` finished pairing (the Mac sent `pair.confirmed`) and no newer scan began since. Its keys
+    /// must be kept even after Cancel: the Mac already keeps this device.
+    public func mayComplete(_ attempt: UInt64) -> Bool {
+        attempt == current
     }
 }
 

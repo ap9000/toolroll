@@ -7,7 +7,8 @@ import Foundation
 public enum CompanionConnectionError: Error, Equatable, Sendable {
     /// The relay or the Mac couldn't be reached (network, relay down, Mac offline, timeout).
     case unreachable(String)
-    /// The Mac (or the relay on its behalf) refused this iPhone's keys, or `device.hello` failed.
+    /// The Mac (or the relay on its behalf) refused this iPhone: the relay's 401/403, or `device.hello` refused with
+    /// one of `CompanionRelayClient.helloRefusalCodes`. A Mac that fails to answer the hello is `unreachable`.
     case handshakeFailed(String)
     /// The session ended (socket closed, missed pings, or this client disconnected).
     case closed
@@ -139,16 +140,19 @@ public actor CompanionRelayClient {
         /// The whole direct attempt (handshake and `device.hello`; for pairing, msg1 → msg2), so a LAN device that
         /// answers the probe and then stalls can't hold up the hosted fallback. Hosted keeps `connect`.
         public var directHandshake: Duration
+        /// `device.hello`'s own deadline (a direct hello also has to land inside `directHandshake`).
+        public var hello: Duration
 
         public init(
             connect: Duration = .seconds(15), call: Duration = .seconds(30), ping: Duration = .seconds(25),
-            probe: Duration = .milliseconds(1200), directHandshake: Duration = .seconds(4)
+            probe: Duration = .milliseconds(1200), directHandshake: Duration = .seconds(4), hello: Duration = .seconds(10)
         ) {
             self.connect = connect
             self.call = call
             self.ping = ping
             self.probe = probe
             self.directHandshake = directHandshake
+            self.hello = hello
         }
     }
 
@@ -191,6 +195,8 @@ public actor CompanionRelayClient {
     private var pairingEpoch: UInt64 = 0
     /// The generation whose direct `device.hello` is still inside its deadline, if any.
     private var directHelloPending: UInt64?
+    /// The last generation whose direct hello ran out of time (its failure counts as a network one).
+    private var directHelloExpired: UInt64?
 
     public init(
         timing: Timing = Timing(),
@@ -212,7 +218,15 @@ public actor CompanionRelayClient {
         onConnectionLost = handler
     }
 
-    public var isConnected: Bool { session != nil }
+    /// A live session whose Noise keys are still usable (not past their age or message limit).
+    public var isConnected: Bool {
+        guard let session else { return false }
+        return !session.isExpired()
+    }
+
+    /// `device.hello` error codes that mean the Mac refused this iPhone (it was removed, or its account no longer
+    /// stands). Any other hello failure (a timeout, the Mac's own error) means the Mac couldn't answer: unreachable.
+    public static let helloRefusalCodes: Set<String> = ["standing_revoked", "not_found", "device_revoked", "account_revoked"]
 
     // MARK: Pairing (ceremony unchanged)
 
@@ -293,9 +307,9 @@ public actor CompanionRelayClient {
         let code = try CompanionDerivations.confirmationCode(handshakeHash: pairSession.handshakeHash)
         await onCodeReady(code)
 
-        // Wait for the Mac owner to confirm the match -> Mac sends encrypted `pair.confirmed`.
+        // Wait for the Mac owner to confirm the match -> Mac sends encrypted `pair.confirmed`. Once it has arrived the
+        // Mac keeps this device, so a cancel from here on is ignored: the pairing completes.
         let finCt = try await ws.receive()
-        try Task.checkCancellation()
         let finPlain = try pairSession.decrypt(finCt)
         guard let fin = try JSONSerialization.jsonObject(with: finPlain) as? [String: Any],
               fin["type"] as? String == "pair.confirmed",
@@ -329,8 +343,9 @@ public actor CompanionRelayClient {
 
     /// Opens one pairing socket and runs msg1 → msg2.
     ///
-    /// On a direct path, a failure before message 1 was sent (connect error, upgrade refused, timeout before open)
-    /// is `unreachable`, so hosted may be tried. Once message 1 may have reached the Mac, any failure is
+    /// A failure before message 1 was sent (connect error, DNS, timeout before open) is `unreachable`: on a direct path
+    /// hosted may be tried, and the person is told to check this iPhone's connection. A hosted upgrade refusal (an
+    /// expired pairing token) keeps its `handshakeFailed`. Once message 1 may have reached the Mac, any failure is
     /// `CompanionPairingError.interrupted`: a second socket naming the same pairing id would make the Mac abort the
     /// pairing (its competing-scan safeguard), so the person scans a fresh code instead.
     private func openPairing(
@@ -356,9 +371,9 @@ public actor CompanionRelayClient {
         } catch {
             ws.close()
             if pairingSocket === ws { pairingSocket = nil }
-            guard direct else { throw error }
+            if !direct, case CompanionConnectionError.handshakeFailed = error { throw error }
             if msg1Sent.value { throw CompanionPairingError.interrupted }
-            throw CompanionConnectionError.unreachable("direct pairing socket never opened")
+            throw CompanionConnectionError.unreachable(direct ? "direct pairing socket never opened" : "pairing socket never opened")
         }
     }
 
@@ -419,15 +434,15 @@ public actor CompanionRelayClient {
 
         if let direct {
             do {
-                return try await attempt(direct, record: record, keys: keys)
+                return try await attempt(direct, record: record, keys: keys, epoch: epoch)
             } catch CompanionConnectionError.unreachable(let reason) {
                 guard let hosted else { throw CompanionConnectionError.unreachable(reason) }
                 guard epoch == dialEpoch else { throw CompanionConnectionError.closed }
-                return try await attempt(hosted, record: record, keys: keys)
+                return try await attempt(hosted, record: record, keys: keys, epoch: epoch)
             }
         }
         if let hosted {
-            return try await attempt(hosted, record: record, keys: keys)
+            return try await attempt(hosted, record: record, keys: keys, epoch: epoch)
         }
         throw CompanionConnectionError.unreachable(Self.noReachablePathMessage)
     }
@@ -454,7 +469,8 @@ public actor CompanionRelayClient {
     private func attempt(
         _ path: CompanionPath,
         record: PairedWorkspaceRecord,
-        keys: SessionKeys
+        keys: SessionKeys,
+        epoch: UInt64
     ) async throws -> CompanionConnectResult {
         let gen = generation
         let started = ContinuousClock.now
@@ -557,14 +573,19 @@ public actor CompanionRelayClient {
         }
         let hello: DeviceHello
         do {
-            hello = try await call("device.hello", params: EmptyParams(), as: DeviceHello.self)
+            hello = try await call("device.hello", params: EmptyParams(), as: DeviceHello.self, timeout: timing.hello)
             if directHelloPending == gen { directHelloPending = nil }
-        } catch let error as CompanionRPCError {
-            teardown(CompanionConnectionError.closed, ifGeneration: gen)
-            throw CompanionConnectionError.handshakeFailed(error.code)
         } catch {
             teardown(CompanionConnectionError.closed, ifGeneration: gen)
-            throw CompanionConnectionError.unreachable("closed during hello")
+            // A newer connect (or a disconnect) took over while the hello was in flight: it owns the client now.
+            guard epoch == dialEpoch else { throw CompanionConnectionError.closed }
+            // Only an encrypted refusal naming this device's standing means "not recognized". A timeout, the Mac's
+            // own failure or an unreadable answer means the Mac couldn't answer: a network-class failure.
+            if let rpc = error as? CompanionRPCError {
+                if Self.helloRefusalCodes.contains(rpc.code) { throw CompanionConnectionError.handshakeFailed(rpc.code) }
+                throw CompanionConnectionError.unreachable("hello failed: \(rpc.code)")
+            }
+            throw CompanionConnectionError.unreachable(directHelloExpired == gen ? "direct hello timed out" : "closed during hello")
         }
         guard gen == generation else { throw CompanionConnectionError.closed }
         guard hello.workspaceId == record.workspaceId, hello.deviceId == record.deviceId else {
@@ -580,6 +601,7 @@ public actor CompanionRelayClient {
     private func expireDirectHello(generation gen: UInt64) {
         guard directHelloPending == gen, gen == generation else { return }
         directHelloPending = nil
+        directHelloExpired = gen
         teardown(CompanionConnectionError.closed, ifGeneration: gen)
     }
 
@@ -629,9 +651,10 @@ public actor CompanionRelayClient {
     public func call<R: Decodable & Sendable>(
         _ method: String,
         params: some Encodable & Sendable,
-        as type: R.Type = R.self
+        as type: R.Type = R.self,
+        timeout: Duration? = nil
     ) async throws -> R {
-        let raw = try await callRaw(method, params: params)
+        let raw = try await callRaw(method, params: params, timeout: timeout)
         do {
             let envelope = try JSONDecoder().decode(CompanionRPCEnvelope<R>.self, from: raw)
             guard envelope.ok else {
@@ -645,21 +668,22 @@ public actor CompanionRelayClient {
         }
     }
 
-    /// One unary RPC; returns the reassembled response payload (the raw `{ ok, result }` JSON).
-    public func callRaw(_ method: String, params: some Encodable & Sendable) async throws -> Data {
+    /// One unary RPC; returns the reassembled response payload (the raw `{ ok, result }` JSON). `timeout` defaults to
+    /// `timing.call`.
+    public func callRaw(_ method: String, params: some Encodable & Sendable, timeout: Duration? = nil) async throws -> Data {
         guard session != nil else { throw CompanionConnectionError.closed }
         let gen = generation
         let streamId = allocateStreamId()
         let payload = try JSONEncoder().encode(RPCRequest(method: method, params: params))
         let frames = try CompanionFrame.splitRequest(streamId: streamId, payload: payload)
-        let callTimeout = timing.call
+        let callTimeout = timeout ?? timing.call
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
                 let deadline = Task { [weak self] in
                     try? await Task.sleep(for: callTimeout)
                     guard !Task.isCancelled else { return }
-                    await self?.expireCall(streamId, generation: gen)
+                    await self?.expireCall(streamId, generation: gen, after: callTimeout)
                 }
                 pending[streamId] = PendingCall(continuation: continuation, deadline: deadline)
                 do {
@@ -675,6 +699,9 @@ public actor CompanionRelayClient {
 
     /// A streaming RPC. Each CHUNK payload is yielded as one element; END finishes the stream; ERROR throws.
     /// Terminating the stream early (the consumer stops iterating) sends CANCEL, which stops watching only.
+    ///
+    /// The returned stream is pulled, not pushed: a chunk's CREDIT goes to the Mac only when the consumer takes it, so
+    /// the Mac's pacing holds and what waits here is bounded by the credit the Mac was given.
     public func watch(method: String, params: some Encodable & Sendable) throws -> AsyncThrowingStream<Data, Error> {
         guard session != nil else { throw CompanionConnectionError.closed }
         let gen = generation
@@ -682,7 +709,7 @@ public actor CompanionRelayClient {
         let payload = try JSONEncoder().encode(RPCRequest(method: method, params: params))
         let frames = try CompanionFrame.splitRequest(streamId: streamId, payload: payload)
 
-        let (stream, continuation) = AsyncThrowingStream<Data, Error>.makeStream(bufferingPolicy: .unbounded)
+        let (arrived, continuation) = AsyncThrowingStream<Data, Error>.makeStream(bufferingPolicy: .unbounded)
         watches[streamId] = continuation
         continuation.onTermination = { [weak self] _ in
             Task { await self?.endWatch(streamId, generation: gen) }
@@ -693,7 +720,16 @@ public actor CompanionRelayClient {
             watches.removeValue(forKey: streamId)
             continuation.finish(throwing: error)
         }
-        return stream
+        let pull = WatchPull(arrived) { [weak self] in
+            await self?.watchChunkTaken(streamId, generation: gen)
+        }
+        return AsyncThrowingStream { try await pull.next() }
+    }
+
+    /// The consumer took one chunk: give the Mac one more.
+    private func watchChunkTaken(_ sid: UInt32, generation gen: UInt64) {
+        guard gen == generation, watches[sid] != nil else { return }
+        sendCredit(sid)
     }
 
     // MARK: Internals
@@ -746,9 +782,17 @@ public actor CompanionRelayClient {
     }
 
     /// Encrypts and queues one frame. Runs on the actor without suspending, so queue order is nonce order.
+    /// A Noise session that can't encrypt any more (expired, closed, at its message limit) is a lost connection.
     private func enqueue(_ frame: CompanionFrame) throws {
         guard let session, let outbox else { throw CompanionConnectionError.closed }
-        let ciphertext = try session.encrypt(try frame.encode())
+        let plaintext = try frame.encode()
+        let ciphertext: Data
+        do {
+            ciphertext = try session.encrypt(plaintext)
+        } catch {
+            connectionLost(generation: generation, error: CompanionConnectionError.closed)
+            throw CompanionConnectionError.closed
+        }
         outbox.yield(ciphertext)
     }
 
@@ -771,9 +815,19 @@ public actor CompanionRelayClient {
 
     private func ingest(_ ciphertext: Data, generation gen: UInt64) {
         guard gen == generation, let session else { return }
+        let plaintext: Data
+        do {
+            plaintext = try session.decrypt(ciphertext)
+        } catch {
+            connectionLost(generation: gen, error: CompanionConnectionError.closed)
+            return
+        }
         let frame: CompanionFrame
         do {
-            frame = try CompanionFrame.decode(try session.decrypt(ciphertext))
+            frame = try CompanionFrame.decode(plaintext)
+        } catch CompanionFramingError.unknownFrameType {
+            // Authenticated, just from a newer Mac: skip the frame, keep the session.
+            return
         } catch {
             connectionLost(generation: gen, error: CompanionConnectionError.closed)
             return
@@ -809,8 +863,8 @@ public actor CompanionRelayClient {
                 pending[sid] = call
                 sendCredit(sid)
             } else if let watch = watches[sid] {
+                // Credit goes back when the consumer takes this chunk (watchChunkTaken), not on arrival.
                 watch.yield(frame.payload)
-                sendCredit(sid)
             }
         case .end:
             if let call = pending[sid] {
@@ -846,9 +900,12 @@ public actor CompanionRelayClient {
         call.continuation.resume(with: result)
     }
 
-    private func expireCall(_ sid: UInt32, generation gen: UInt64) {
+    private func expireCall(_ sid: UInt32, generation gen: UInt64, after limit: Duration) {
         guard gen == generation, pending[sid] != nil else { return }
-        finishCall(sid, with: .failure(CompanionRPCError(code: CompanionRPCError.deadlineExceeded, message: "No answer within 30 seconds")))
+        let seconds = max(1, Int(limit.components.seconds))
+        finishCall(sid, with: .failure(CompanionRPCError(
+            code: CompanionRPCError.deadlineExceeded, message: "No answer within \(seconds) second\(seconds == 1 ? "" : "s")"
+        )))
         sendCancel(sid)
     }
 
@@ -929,5 +986,23 @@ public actor CompanionRelayClient {
             guard let first = try await group.next() else { throw CompanionConnectionError.closed }
             return first
         }
+    }
+}
+
+/// Pulls one watch's arrived chunks for its consumer, reporting each one taken (which grants the Mac its credit).
+/// Only ever iterated by one consumer at a time (the returned stream's), so the iterator is never shared.
+private final class WatchPull: @unchecked Sendable {
+    private var iterator: AsyncThrowingStream<Data, Error>.Iterator
+    private let taken: @Sendable () async -> Void
+
+    init(_ arrived: AsyncThrowingStream<Data, Error>, taken: @escaping @Sendable () async -> Void) {
+        iterator = arrived.makeAsyncIterator()
+        self.taken = taken
+    }
+
+    func next() async throws -> Data? {
+        guard let chunk = try await iterator.next() else { return nil }
+        await taken()
+        return chunk
     }
 }

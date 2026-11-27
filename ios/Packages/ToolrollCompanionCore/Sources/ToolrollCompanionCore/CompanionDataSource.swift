@@ -74,24 +74,28 @@ public struct LiveCompanionSource: CompanionDataSource {
     }
 
     /// Maps a stream of CHUNK payloads to live records. A record this build can't read is skipped, never fatal.
-    /// Ending the returned stream cancels the inner one (which sends CANCEL).
+    /// Pulled on demand (nothing reads ahead of the consumer), so the watch's credit tracks what's actually been
+    /// taken. Dropping the returned stream drops the inner one, which sends CANCEL.
     static func decodeRecords(_ raw: AsyncThrowingStream<Data, Error>) -> AsyncThrowingStream<LiveRecord, Error> {
-        let (stream, continuation) = AsyncThrowingStream<LiveRecord, Error>.makeStream()
-        let task = Task {
-            let decoder = JSONDecoder()
-            do {
-                for try await payload in raw {
-                    if let record = try? decoder.decode(LiveRecord.self, from: payload) {
-                        continuation.yield(record)
-                    }
-                }
-                continuation.finish()
-            } catch {
-                continuation.finish(throwing: error)
-            }
+        let pull = RecordPull(raw)
+        return AsyncThrowingStream { try await pull.next() }
+    }
+}
+
+/// One consumer's pull through a watch's payloads, decoding as it goes.
+private final class RecordPull: @unchecked Sendable {
+    private var iterator: AsyncThrowingStream<Data, Error>.Iterator
+    private let decoder = JSONDecoder()
+
+    init(_ raw: AsyncThrowingStream<Data, Error>) {
+        iterator = raw.makeAsyncIterator()
+    }
+
+    func next() async throws -> LiveRecord? {
+        while let payload = try await iterator.next() {
+            if let record = try? decoder.decode(LiveRecord.self, from: payload) { return record }
         }
-        continuation.onTermination = { _ in task.cancel() }
-        return stream
+        return nil
     }
 }
 
