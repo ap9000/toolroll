@@ -65,6 +65,7 @@ describe("Gate 1 Companion Security Test Suite", () => {
     const outbound: Array<{ op: number; connId: number; payload: Buffer }> = [];
     const daemon = new CompanionDaemonEngine({
       store,
+      paths: () => [{ kind: "hosted", url: "wss://relay.example.test/v1/connect" }],
       sendToRelay: raw => outbound.push(decodeRelayEnvelope(raw)),
       handlers: {
         deviceHello: p => ({ ok: true, deviceId: p.deviceId }),
@@ -137,6 +138,7 @@ describe("Gate 1 Companion Security Test Suite", () => {
     const seenPrincipals: PairedDevicePrincipal[] = [];
     const daemon = new CompanionDaemonEngine({
       store,
+      paths: () => [{ kind: "hosted", url: "wss://relay.example.test/v1/connect" }],
       sendToRelay: raw => outbound.push(decodeRelayEnvelope(raw)),
       handlers: {
         deviceHello: p => {
@@ -314,6 +316,7 @@ describe("Gate 1 Companion Security Test Suite", () => {
 
     const daemon = new CompanionDaemonEngine({
       store,
+      paths: () => [{ kind: "hosted", url: "wss://relay.example.test/v1/connect" }],
       sendToRelay: raw => outbound.push(decodeRelayEnvelope(raw)),
       handlers: {
         deviceHello: () => ({ ok: true }),

@@ -42,8 +42,8 @@ No specific Noise library is pre-selected or claimed Revision-34-compatible here
 1. **Mac (signed-in approver):** Clicks *Pair iPhone* (or `toolroll phone pair`).
    - Generates ephemeral one-time `pairPsk = CSPRNG(32)` (TTL 5 min, single-use) and `pairSessionId = UUIDv4`.
    - Signs a short-lived **`pairConnToken`** (`role=pair`, `machineId`, `pairSessionId`, `TTL 5 min`) with the Mac's Ed25519 `relayMachinePriv` (Section 4).
-   - Renders QR code: `{ v: 1, relayUrl, machineId, workspaceId, macStaticPub, pairSessionId, pairPsk, pairConnToken }`. `pairPsk` is never transmitted over the relay.
-2. **iPhone:** Scans QR, generates its own X25519 static keypair (`phoneStaticPriv` stored in iOS Keychain `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`) and Ed25519 relay identity keypair (`deviceRelayPriv`, also `ThisDeviceOnly`). Connects to `relayUrl` using `pairConnToken` and runs `Noise_IKpsk2` with `psk = pairPsk` and the pairing prologue.
+   - Renders QR code: `{ v: 2, paths, machineId, workspaceId, macStaticPub, pairSessionId, pairPsk, pairConnToken? }` (§4a: `paths` lists direct addresses first and the hosted relay last; `pairConnToken` only when a hosted path exists). `pairPsk` is never transmitted over the network.
+2. **iPhone:** Scans QR, generates its own X25519 static keypair (`phoneStaticPriv` stored in iOS Keychain `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`) and Ed25519 relay identity keypair (`deviceRelayPriv`, also `ThisDeviceOnly`). Connects over one path (§4a) — directly with no token, or to the hosted relay using `pairConnToken` — and runs `Noise_IKpsk2` with `psk = pairPsk` and the pairing prologue.
 3. **Second-handshake race abort (mandatory):**
    - If a **second** pairing handshake arrives for the same `pairSessionId` before the owner confirms (e.g., a bystander photographed the QR and raced the owner), the Mac daemon **immediately aborts the entire pairing session**, deletes `pairPsk`, drops all pending pairing sockets for `pairSessionId`, and displays: *"Multiple devices tried to use this QR code — pairing cancelled. Generate a new QR code."*
 4. **Transcript confirmation code:**
@@ -136,6 +136,16 @@ Phone sockets send and receive raw Noise messages (≤ 65,535 B); the relay hold
 - **Honest migration story:** Moving relays is **not** a pure DNS flip because `machineId → relayMachinePub` and `deviceId → deviceRelayPub` registrations live in the relay's storage. Because `machineId` is deterministically derived from `relayMachinePub`, migrating `relay.toolroll.dev` off Cloudflare works cleanly via either (a) exporting/importing that small public-key registration table before DNS cutover, or (b) automatic daemon recovery on `401 unknown_machine` — the daemon re-registers `relayMachinePub` (reclaiming the **exact same `machineId`**) and re-syncs active `paired_devices`' `deviceRelayPub` entries from local SQLite, with zero phone re-pairing required because `machineId`, `macStaticPub`, and `devicePsk` do not change.
 
 ---
+
+## 4a. Direct Path (added 2026-11-27)
+
+The phone reaches the Mac **directly** when it can (same Wi-Fi, or the Mac's tailnet) and through the **hosted relay** otherwise. Both carry the identical Noise `IKpsk2` byte stream; only the transport differs.
+
+- **Direct endpoint** (on the Mac, port 4199 unless `TOOLROLL_PHONE_RELAY_PORT`): `GET /v1/health` → `{ ok, machineId }` (credential-free reachability probe); WebSocket `GET /v1/direct?role=pair|device&id=…` with **no** Authorization header — binary messages are exactly what the relay carries as `PEER_DATA` payloads. The listener drops any peer outside loopback, RFC 1918, link-local and Tailscale ranges before HTTP is parsed, caps sockets globally and per address, and rate-limits upgrades.
+- **`paths`** (QR and every `device.hello` result): 1–5 entries; ≤4 `direct` (`ws://<private IPv4 literal>:<port>/v1/direct`, never a hostname), ≤1 `hosted` (`wss://…/v1/connect`), hosted last, no duplicates. The phone replaces its stored list only after a hello that passed its identity checks.
+- **Dialing:** probe every direct path's health in parallel (1.2 s); exactly one handshake on the first healthy one (4 s handshake+hello budget); any failure before Noise authenticates the Mac falls back once to hosted. "Not recognized" comes only from an authenticated refusal (an encrypted error after Noise, or the hosted relay's 401/403).
+- **Engine:** every phone connection belongs to a link (the hosted relay socket, or one direct socket) and is keyed by link + connection id; one authenticated session per device (a newer one supersedes); a relay drop ends only that link's sessions.
+- **Hosted relay** is the operator's choice when turning phone access on (`TOOLROLL_RELAY_URL` names another; `off` removes it). Admission changes are serialized and a failed change is retried while connected.
 
 ## 5. End-to-End Encrypted Push Notifications
 

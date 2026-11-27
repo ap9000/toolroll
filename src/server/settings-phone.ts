@@ -73,29 +73,49 @@ export function createPhoneSettingsHandlers(runtime: Pick<ServerRuntime, "store"
     const status = service?.status() ?? null;
     const problem = options.problem === undefined ? "" : notice(options.problem);
 
-    // 1. Access: off, on and connected, or on with a problem.
-    const reach = access.relayKind() === "built-in"
-      ? note("The built-in relay runs on this Mac only, so the iOS Simulator here can connect. To use your iPhone anywhere, run Toolroll with TOOLROLL_RELAY_URL set to a wss:// relay.")
-      : access.relayKind() === "external" && status !== null && status.state !== "stopped"
-        ? note(html`Phones connect through ${codeLine(status.relay)}. Everything is end-to-end encrypted: the relay can't read your work or act for you.`)
-        : "";
-    const state = !on ? " · Off" : access.problem() !== null ? " · Not running" : status?.state === "connected" ? " · On" : status?.state === "unreachable" ? " · Can't reach the relay" : " · Starting";
+    // 1. Access: off or on, and how a phone reaches this Mac — directly on its network, through the hosted relay elsewhere.
+    const operator = store.isInstanceOperator(who.name);
+    const hostedChoice = access.hostedChoice();
+    const hostedHost = hostedChoice.ok ? new URL(hostedChoice.url).host : null;
+    const direct = status?.direct ?? { state: "off" as const };
+    const hosted = status?.hosted ?? { state: "off" as const };
+    const addresses = service?.directAddresses() ?? [];
+    const directLine = direct.state === "listening"
+      ? settingsRecord({ title: "On this Mac's network", sub: addresses.length > 0
+        ? html`Direct, no relay: ${joinHtml(addresses.map(a => codeLine(a)), " ")}. Works on the same Wi-Fi, or anywhere over Tailscale if both have it.`
+        : "Direct, no relay — but this Mac isn't on a network a phone can reach right now. Join Wi-Fi." })
+      : direct.state === "failed" ? settingsRecord({ title: "On this Mac's network", sub: html`Not available: ${direct.error}` }) : "";
+    const hostedLine = hosted.state === "off"
+      ? settingsRecord({ title: "Anywhere else", sub: hostedChoice.ok ? "Off. Your phone connects only on this Mac's network." : "Off (TOOLROLL_RELAY_URL=off). Your phone connects only on this Mac's network." })
+      : settingsRecord({ title: "Anywhere else", sub: html`Through ${codeLine(new URL(hosted.relay).host)}, end-to-end encrypted: the relay sees that your phone and Mac are connected, never your work. ${
+        hosted.state === "connected" ? "Connected." : hosted.state === "unreachable" ? html`Can't reach it right now (${hosted.error}); Toolroll keeps trying.` : "Connecting…"}` });
+    const hostedBox = (checked: boolean): Html => hostedHost === null ? html`` : html`<label class="k-note" style="display:flex;gap:8px;align-items:flex-start;margin:0 0 12px"><input type="checkbox" name="hosted" value="1"${checked ? html` checked` : ""}> <span>Also connect from anywhere through ${codeLine(hostedHost)}. End-to-end encrypted: the relay can't read your work or act for you.</span></label>`;
     const accessSection = settingsSection({
-      id: "phone-access", title: "Phone access", state,
+      id: "phone-access", title: "Phone access", state: on ? " · On" : " · Off",
       lead: on ? "Your paired iPhone can see what needs you, read plans, steps and changes, and watch agents work. Approving still happens here."
-        : access.relayKind() === "external" || process.env["TOOLROLL_RELAY_URL"] ? "Let the Toolroll iPhone app see your work. Nothing is shared until you pair a phone."
-          : "Let the Toolroll iPhone app see your work. Nothing is shared until you pair a phone. Without a relay set (TOOLROLL_RELAY_URL), only the iOS Simulator on this Mac can connect.",
+        : "Let the Toolroll iPhone app see your work. Nothing is shared until you pair a phone.",
       body: joinHtml([
-        access.problem() === null ? "" : notice(access.problem()!),
-        status?.state === "unreachable" ? notice(html`The relay didn't answer: ${status.error}. Toolroll keeps trying.`) : "",
-        on ? reach : "",
-        !store.isInstanceOperator(who.name) ? note(on ? "Whoever runs this Toolroll turned phone access on." : "Ask whoever runs this Toolroll to turn on phone access.") : kitSectionForm({ proof: "phone-access", action: "/settings/phone/access", id: "phone-access-form", native: true,
-          hidden: { act: on ? "off" : "on" },
-          save: on ? { label: "Turn off phone access", variant: "danger" } : { label: "Turn on phone access" },
-          confirm: on ? "Turn off phone access" : "Turn on phone access",
-          body: on ? note("Paired phones stay paired but can't connect until you turn it back on.") : "" }),
+        ...access.problems().map(text => notice(text)),
+        on ? joinHtml([directLine, hostedLine]) : "",
+        !operator ? note(on ? "Whoever runs this Toolroll turned phone access on." : "Ask whoever runs this Toolroll to turn on phone access.")
+          : on ? joinHtml([
+            hostedHost === null ? "" : kitSectionForm({ proof: "phone-access", action: "/settings/phone/access", id: "phone-hosted-form", native: true,
+              hidden: { act: access.hostedEnabled() ? "hosted-off" : "hosted-on" },
+              save: access.hostedEnabled() ? { label: "Stop connecting from anywhere", variant: "outline" } : { label: `Connect from anywhere through ${hostedHost}` },
+              confirm: access.hostedEnabled() ? "Stop connecting from anywhere" : "Connect from anywhere", body: "" }),
+            kitSectionForm({ proof: "phone-access", action: "/settings/phone/access", id: "phone-access-form", native: true,
+              hidden: { act: "off" }, save: { label: "Turn off phone access", variant: "danger" }, confirm: "Turn off phone access",
+              body: note("Paired phones stay paired but can't connect until you turn it back on.") }),
+          ])
+          : kitSectionForm({ proof: "phone-access", action: "/settings/phone/access", id: "phone-access-form", native: true,
+            hidden: { act: "on" }, save: { label: "Turn on phone access" }, confirm: "Turn on phone access",
+            body: joinHtml([
+              note("Your phone connects straight to this Mac on the same Wi-Fi (or over Tailscale)."),
+              hostedHost === null ? note("Connecting from anywhere is off on this computer (TOOLROLL_RELAY_URL=off).") : hostedBox(true),
+            ]) }),
       ]),
     });
+    const reachable = on && (direct.state === "listening" || hosted.state === "connected");
 
     // 2. Pair: the QR (only on the pair POST's answer), the code to compare, or the button.
     let pairBody: Html;
@@ -129,10 +149,10 @@ export function createPhoneSettingsHandlers(runtime: Pick<ServerRuntime, "store"
         : open.status === "aborted_race" ? notice("Two phones tried the same code, so pairing stopped. Pair again and keep the code to yourself.") : open.status === "failed" || open.status.startsWith("aborted") ? notice("Pairing stopped. Pair again.") : "";
       pairBody = joinHtml([
         last,
-        on && status?.state === "connected"
+        reachable
           ? kitSectionForm({ proof: "phone-pair", action: "/settings/phone/pair", id: "phone-pair-form", native: true, save: { label: "Pair an iPhone" },
             confirm: "Pair an iPhone with Toolroll", body: note("You'll get a code to scan with the Toolroll app.") })
-          : note(on ? "Phone access is starting. Pairing opens once it's connected." : "Turn on phone access first."),
+          : note(on ? "A phone has no way to reach this Mac yet: join Wi-Fi, or connect from anywhere." : "Turn on phone access first."),
       ]);
     }
     const pairSection = settingsSection({ id: "phone-pair", title: "Pair an iPhone", body: pairBody });
@@ -163,11 +183,16 @@ export function createPhoneSettingsHandlers(runtime: Pick<ServerRuntime, "store"
     const body = readForm(ctx.posted, CONSOLE_FORMS.phoneAccess);
     if (body.getAll("password").length > 1 || body.getAll("act").length !== 1) return show(ctx.response, 400, page(who, { problem: "Submit one value for each field." }).body);
     const act = body.get("act");
-    if (act !== "on" && act !== "off") return show(ctx.response, 400, page(who, { problem: "Choose on or off." }).body);
+    if (act !== "on" && act !== "off" && act !== "hosted-on" && act !== "hosted-off") return show(ctx.response, 400, page(who, { problem: "Choose on or off." }).body);
+    if (body.getAll("hosted").length > 1) return show(ctx.response, 400, page(who, { problem: "Submit one value for each field." }).body);
     // An installation-wide switch: an instance operator's, proved again here (the route's role gate drew the form).
     if (!store.isInstanceOperator(who.name)) return show(ctx.response, 403, page(who, { problem: "An instance operator turns phone access on or off." }).body);
     if (!passwordHolds(who, body.get("password") ?? "")) return show(ctx.response, 403, page(who, { problem: passwordProblem(who) }).body);
-    await deps.access.turn(act === "on", who.name, runtime.clock(), () => store.isInstanceOperator(who.name));
+    if ((act === "hosted-on" || act === "hosted-off") && !deps.access.enabled()) return show(ctx.response, 409, page(who, { problem: "Turn on phone access first." }).body);
+    // "on" carries the hosted choice from its checkbox; hosted-on/off change only that, keeping access on.
+    const on = act !== "off";
+    const hosted = act === "on" ? body.get("hosted") === "1" : act === "hosted-on";
+    await deps.access.turn(on, hosted, who.name, runtime.clock(), () => store.isInstanceOperator(who.name));
     return redirect(ctx.response, "/settings/phone");
   }
 

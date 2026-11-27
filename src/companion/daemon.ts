@@ -6,6 +6,7 @@
 
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { Store } from "../store.js";
+import { pathsAllowed, type CompanionPath } from "./paths.js";
 import {
   buildPairingPrologue,
   buildSessionPrologue,
@@ -100,14 +101,16 @@ export interface CompanionReadHandlers {
 }
 
 export interface PairingQrPayload {
-  v: 1;
-  relayUrl: string;
+  v: 2;
+  /** How the phone can reach this Mac, direct first (paths.ts). */
+  paths: CompanionPath[];
   machineId: string;
   workspaceId: string;
   macStaticPub: string; // base64url(32B X25519)
   pairSessionId: string;
   pairPsk: string; // base64url(32B)
-  pairConnToken: string; // 5-min Ed25519 role=pair token
+  /** 5-min Ed25519 role=pair token for the hosted relay — present only when there is a hosted path. */
+  pairConnToken?: string;
 }
 
 export interface PendingPairingState {
@@ -121,7 +124,8 @@ export interface PendingPairingState {
   binding: string;
   /** The account's credential generation that authorized the pairing: it must still hold when the phone is saved. */
   accountGeneration: number | null;
-  connId: number | null;
+  /** The attached phone's peer key (link + connId), once a phone opened this pairing. */
+  peerKey: string | null;
   confirmCode: string | null;
   deviceName: string | null;
   phoneStaticPub: Buffer | null;
@@ -129,7 +133,31 @@ export interface PendingPairingState {
   session: NoiseTransportSession | null;
 }
 
+/** A way phones reach the engine: the hosted relay's socket (many phones, one connId each) or one direct socket
+ * (connId 1). A peer is identified by its link AND its connId — two links can both carry a connId 1. */
+export interface PeerLink {
+  readonly id: string;
+  send(connId: number, payload: Buffer): void;
+  close(connId: number, reason: string): void;
+}
+
+/** A relay socket as a link: frames ride PEER_DATA envelopes, a drop is a PEER_CLOSE. */
+export function relayEnvelopeLink(id: string, sendEnvelope: (envelope: Buffer) => void): PeerLink {
+  return {
+    id,
+    send: (connId, payload) => sendEnvelope(encodeRelayEnvelope({ op: RelayOp.PEER_DATA, connId, payload })),
+    close: (connId, reason) => sendEnvelope(encodeRelayEnvelope({ op: RelayOp.PEER_CLOSE, connId, payload: Buffer.from(JSON.stringify({ reason }), "utf8") })),
+  };
+}
+
+const peerKeyOf = (link: PeerLink, connId: number): string => `${link.id}:${connId}`;
+
+/** In-handshake sockets one device (or one pairing) may hold at once, across every link. */
+const MAX_PENDING_PER_PEER_ID = 2;
+
 interface ActivePeerConn {
+  key: string;
+  link: PeerLink;
   connId: number;
   role: "pair" | "device";
   peerId: string;
@@ -150,44 +178,49 @@ export interface CompanionDaemonOptions {
   store: Store;
   handlers: CompanionReadHandlers;
   relayUrl?: string;
-  sendToRelay: (envelope: Buffer) => void;
-  onDeviceRegistered?: (deviceId: string, deviceRelayPubB64: string) => Promise<void> | void;
+  /** The single relay link of a one-relay setup (tests, the reference relay). Links are otherwise passed per call. */
+  sendToRelay?: (envelope: Buffer) => void;
+  /** The phone's pairing link: called when a pairing is confirmed through a relay link, so that relay admits the
+   * device before the phone is told. Not called for a pairing confirmed over a direct link. */
+  onDeviceRegistered?: (deviceId: string, deviceRelayPubB64: string, via: PeerLink) => Promise<void> | void;
   onDeviceRevoked?: (deviceId: string) => Promise<void> | void;
   handshakeDeadlineMs?: number;
   nowMs?: () => number;
+  /** The ways a phone can reach this Mac (setPathsProvider replaces it). */
+  paths?: () => CompanionPath[];
 }
 
 export class CompanionDaemonEngine {
   readonly hostKeys: CompanionHostKeys;
   private readonly store: Store;
   private readonly handlers: CompanionReadHandlers;
-  private readonly sendToRelay: (envelope: Buffer) => void;
-  private readonly onDeviceRegistered: ((deviceId: string, deviceRelayPubB64: string) => Promise<void> | void) | undefined;
+  private readonly defaultLink: PeerLink | null;
+  private readonly onDeviceRegistered: ((deviceId: string, deviceRelayPubB64: string, via: PeerLink) => Promise<void> | void) | undefined;
   private readonly onDeviceRevoked: ((deviceId: string) => Promise<void> | void) | undefined;
   private readonly handshakeDeadlineMs: number;
   private readonly nowMs: () => number;
   private readonly globalBudget = new GlobalBufferBudget();
   private readonly pairings = new Map<string, PendingPairingState>();
-  private readonly peers = new Map<number, ActivePeerConn>();
+  private readonly peers = new Map<string, ActivePeerConn>();
+  /** The ways a phone can reach this Mac right now (the QR's and every hello's `paths`), set by the service. */
+  private pathsOf: () => CompanionPath[] = () => [];
 
   constructor(opts: CompanionDaemonOptions) {
     this.store = opts.store;
     this.handlers = opts.handlers;
-    this.sendToRelay = opts.sendToRelay;
+    this.defaultLink = opts.sendToRelay === undefined ? null : relayEnvelopeLink("relay", opts.sendToRelay);
     this.onDeviceRegistered = opts.onDeviceRegistered;
     this.onDeviceRevoked = opts.onDeviceRevoked;
     this.handshakeDeadlineMs = opts.handshakeDeadlineMs ?? DAEMON_HANDSHAKE_DEADLINE_MS;
     this.nowMs = opts.nowMs ?? (() => Date.now());
+    if (opts.paths !== undefined) this.pathsOf = opts.paths;
     this.hostKeys = loadOrCreateCompanionHostKeys(this.store.handle, opts.relayUrl, new Date(this.nowMs()));
     sweepCompanionIdempotencyOnStartup(this.store.handle, new Date(this.nowMs()));
   }
 
-  /** The relay address phones are told to use (the QR's `relayUrl`). The host-key row keeps the address it was made
-   * with; the console sets the one it actually serves, so a changed relay setting is what the next QR carries. */
-  private advertisedRelayUrl: string | null = null;
 
-  setAdvertisedRelayUrl(url: string | null): void {
-    this.advertisedRelayUrl = url;
+  setPathsProvider(provider: () => CompanionPath[]): void {
+    this.pathsOf = provider;
   }
 
   /** Step 1 of pairing: initiated ONLY by a signed-in approver account on the Mac. `binding` names the person and
@@ -207,12 +240,15 @@ export class CompanionDaemonEngine {
         this.pairings.delete(id);
       }
     }
+    const paths = this.pathsOf();
+    if (!pathsAllowed(paths)) return { ok: false, error: "A phone has no way to reach this Mac yet: join a Wi-Fi network or turn on Connect from anywhere." };
+    const hosted = paths.some(path => path.kind === "hosted");
     const identity = this.store.workspaceIdentity();
     const pairSessionId = `pair_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
     const pairPsk = randomPsk32();
     const now = this.nowMs();
     const expiresAtMs = now + PAIRING_TTL_MS;
-    const pairConnToken = signRelayToken(this.hostKeys.relayPriv, {
+    const pairConnToken = !hosted ? undefined : signRelayToken(this.hostKeys.relayPriv, {
       role: "pair",
       machineId: this.hostKeys.machineId,
       pairSessionId,
@@ -228,7 +264,7 @@ export class CompanionDaemonEngine {
       status: "awaiting_scan",
       binding,
       accountGeneration,
-      connId: null,
+      peerKey: null,
       confirmCode: null,
       deviceName: null,
       phoneStaticPub: null,
@@ -240,20 +276,20 @@ export class CompanionDaemonEngine {
       ok: true,
       expiresAtMs,
       qr: {
-        v: 1,
-        relayUrl: this.advertisedRelayUrl ?? this.hostKeys.relayUrl,
+        v: 2,
+        paths,
         machineId: this.hostKeys.machineId,
         workspaceId: identity.id,
         macStaticPub: this.hostKeys.noiseStaticPub.toString("base64url"),
         pairSessionId,
         pairPsk: pairPsk.toString("base64url"),
-        pairConnToken,
+        ...(pairConnToken === undefined ? {} : { pairConnToken }),
       },
     };
   }
 
   /** A pairing's state, for the binding that started it only (anyone else: null, as if it didn't exist). */
-  getPairingStatus(pairSessionId: string, binding?: string): Omit<PendingPairingState, "pairPsk" | "session" | "phoneStaticPub" | "deviceRelayPub" | "binding" | "accountGeneration"> | null {
+  getPairingStatus(pairSessionId: string, binding?: string): (Omit<PendingPairingState, "pairPsk" | "session" | "phoneStaticPub" | "deviceRelayPub" | "binding" | "accountGeneration" | "peerKey"> & { attached: boolean }) | null {
     const p = this.pairings.get(pairSessionId);
     if (p === undefined || (binding !== undefined && p.binding !== binding)) return null;
     if ((p.status === "awaiting_scan" || p.status === "awaiting_confirm") && this.nowMs() > p.expiresAtMs) {
@@ -265,7 +301,7 @@ export class CompanionDaemonEngine {
       accountName: p.accountName,
       expiresAtMs: p.expiresAtMs,
       status: p.status,
-      connId: p.connId,
+      attached: p.peerKey !== null,
       confirmCode: p.confirmCode,
       deviceName: p.deviceName,
     };
@@ -276,18 +312,18 @@ export class CompanionDaemonEngine {
   async confirmPairing(pairSessionId: string, binding?: string): Promise<{ ok: true; deviceId: string } | { ok: false; error: string }> {
     const p = this.pairings.get(pairSessionId);
     if (p === undefined || (binding !== undefined && p.binding !== binding)) return { ok: false, error: "Unknown pairing session." };
-    if (p.status !== "awaiting_confirm" || p.session === null || p.connId === null || p.phoneStaticPub === null || p.deviceRelayPub === null) {
+    if (p.status !== "awaiting_confirm" || p.session === null || p.peerKey === null || p.phoneStaticPub === null || p.deviceRelayPub === null) {
       return { ok: false, error: `Pairing cannot be confirmed in state: ${p.status}` };
     }
     // The phone that showed the code must still be the one attached.
-    const attached = this.peers.get(p.connId);
+    const attached = this.peers.get(p.peerKey);
     if (attached === undefined || attached.role !== "pair" || attached.peerId !== pairSessionId || attached.state !== "pair_pending_confirm") {
       this.abortPairing(pairSessionId, "aborted_rejected");
       return { ok: false, error: "The phone disconnected. Start pairing again." };
     }
     if (this.nowMs() > p.expiresAtMs) {
       p.status = "expired";
-      this.dropPeer(p.connId, "pairing_expired");
+      this.dropPeer(attached, "pairing_expired");
       this.pairings.delete(pairSessionId);
       return { ok: false, error: "Pairing session expired." };
     }
@@ -301,7 +337,7 @@ export class CompanionDaemonEngine {
     const deviceId = `dev_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
     const pskEntropy = randomPsk32();
     const devicePsk = deriveDevicePsk(pskEntropy, p.session.handshakeHash, identity.id, deviceId);
-    const session = p.session, connId = p.connId, deviceRelayPub = p.deviceRelayPub;
+    const session = p.session, deviceRelayPub = p.deviceRelayPub;
     p.status = "confirming";
 
     savePairedDevice(this.store.handle, {
@@ -318,7 +354,7 @@ export class CompanionDaemonEngine {
     });
 
     try {
-      await this.onDeviceRegistered?.(deviceId, deviceRelayPub.toString("base64url"));
+      await this.onDeviceRegistered?.(deviceId, deviceRelayPub.toString("base64url"), attached.link);
     } catch {
       // The relay may or may not have admitted the phone: undo the record here and ask the relay to forget it too
       // (revokeDevice's removal; a reconcile on the next connect settles it if that can't land either).
@@ -329,9 +365,9 @@ export class CompanionDaemonEngine {
     }
     // Standing, the phone's socket and the pairing itself may have changed while the relay answered.
     const after = this.store.accountOf(p.accountName);
-    const still = this.peers.get(connId);
+    const still = this.peers.get(attached.key);
     if (p.status !== "confirming" || after === null || after.revokedAt !== null || after.role !== "approver" || after.generation !== account.generation
-      || still === undefined || still.peerId !== pairSessionId || still.state !== "pair_pending_confirm") {
+      || still !== attached || still.peerId !== pairSessionId || still.state !== "pair_pending_confirm") {
       await this.revokeDevice(deviceId);
       this.abortPairing(pairSessionId, "aborted_rejected");
       p.status = "failed";
@@ -347,7 +383,7 @@ export class CompanionDaemonEngine {
       pskVersion: 1,
     }), "utf8");
     const ct = session.encrypt(finalizePayload, this.nowMs());
-    this.sendPeerData(connId, ct);
+    attached.link.send(attached.connId, ct);
 
     p.status = "confirmed";
     p.pairPsk.fill(0);
@@ -371,16 +407,23 @@ export class CompanionDaemonEngine {
       .map(d => ({ deviceId: d.deviceId, deviceRelayPub: d.deviceRelayPub.toString("base64url") }));
   }
 
-  /** The relay socket went away: every phone session and pending pairing riding it is gone too. Nothing is kept that
-   * a reconnect could resurrect (a phone reconnects with a fresh handshake; a pairing starts over). */
-  handleRelayDisconnected(): void {
-    for (const connId of [...this.peers.keys()]) this.cleanupPeerLocal(connId);
+  /** A link went away (the relay socket, a direct socket) — or, with no link, all of them (stopping): every phone
+   * session and attached pairing riding it is gone too. Nothing is kept that a reconnect could resurrect (a phone
+   * reconnects with a fresh handshake; a pairing starts over). A pairing nobody has scanned yet survives a link. */
+  handleRelayDisconnected(link?: PeerLink): void {
+    const gone = new Set<string>();
+    for (const peer of [...this.peers.values()]) {
+      if (link !== undefined && peer.link !== link) continue;
+      gone.add(peer.key);
+      this.cleanupPeerLocal(peer);
+    }
     for (const p of this.pairings.values()) {
-      if (p.status === "awaiting_scan" || p.status === "awaiting_confirm") {
+      const attachedHere = p.peerKey !== null && gone.has(p.peerKey);
+      if ((link === undefined && (p.status === "awaiting_scan" || p.status === "awaiting_confirm")) || (attachedHere && p.status === "awaiting_confirm")) {
         p.pairPsk.fill(0);
         p.session?.close();
         p.session = null;
-        p.connId = null;
+        p.peerKey = null;
         p.status = "aborted_rejected";
       }
     }
@@ -391,15 +434,10 @@ export class CompanionDaemonEngine {
     if (p === undefined) return;
     p.status = reason;
     p.pairPsk.fill(0);
-    if (p.connId !== null) {
-      this.dropPeer(p.connId, reason);
-      p.connId = null;
-    }
-    // Also drop any other sockets referencing this pairSessionId
-    for (const [cid, peer] of [...this.peers]) {
-      if (peer.role === "pair" && peer.peerId === pairSessionId) {
-        this.dropPeer(cid, reason);
-      }
+    p.peerKey = null;
+    // Every socket referencing this pairSessionId, on any link.
+    for (const peer of [...this.peers.values()]) {
+      if (peer.role === "pair" && peer.peerId === pairSessionId) this.dropPeer(peer, reason);
     }
     p.session?.close();
     p.session = null;
@@ -408,57 +446,75 @@ export class CompanionDaemonEngine {
   /** Immediately revokes a paired device in SQLite, terminates any active session, and notifies the relay. */
   async revokeDevice(deviceId: string): Promise<boolean> {
     const revoked = revokePairedDeviceRecord(this.store.handle, deviceId, new Date(this.nowMs()));
-    for (const [cid, peer] of [...this.peers]) {
+    for (const peer of [...this.peers.values()]) {
       if (peer.principal?.deviceId === deviceId || (peer.role === "device" && peer.peerId === deviceId)) {
-        this.dropPeer(cid, "device_revoked");
+        this.dropPeer(peer, "device_revoked");
       }
     }
     await this.onDeviceRevoked?.(deviceId);
     return revoked;
   }
 
-  /** Handle an inbound binary envelope from the relay. */
-  async handleRelayEnvelope(raw: Buffer): Promise<void> {
+  /** Handle an inbound binary envelope from a relay link (the default one-relay link when none is given). */
+  async handleRelayEnvelope(raw: Buffer, link: PeerLink | null = this.defaultLink): Promise<void> {
+    if (link === null) throw new Error("no relay link");
     const env = decodeRelayEnvelope(raw);
     if (env.op === RelayOp.PEER_OPEN) {
       const meta = JSON.parse(env.payload.toString("utf8")) as { role: "pair" | "device"; id: string };
-      this.handlePeerOpen(env.connId, meta.role, meta.id);
+      this.openPeer(link, env.connId, meta.role, meta.id);
       return;
     }
     if (env.op === RelayOp.PEER_CLOSE) {
-      this.cleanupPeerLocal(env.connId);
+      this.closePeer(link, env.connId);
       return;
     }
     if (env.op === RelayOp.PEER_DATA) {
-      await this.handlePeerData(env.connId, env.payload);
+      await this.peerData(link, env.connId, env.payload);
     }
   }
 
-  private handlePeerOpen(connId: number, role: "pair" | "device", peerId: string): void {
+  /** A phone opened a connection on a link, as `role` for `peerId` (a pairing session id or a device id). */
+  openPeer(link: PeerLink, connId: number, role: "pair" | "device", peerId: string): void {
+    const key = peerKeyOf(link, connId);
+    const existing = this.peers.get(key);
+    if (existing !== undefined) this.dropPeer(existing, "replaced");
+    const reject = (reason: string) => link.close(connId, reason);
     if (role === "pair") {
       const pairing = this.pairings.get(peerId);
       if (pairing === undefined || this.nowMs() > pairing.expiresAtMs || pairing.status === "aborted_race" || pairing.status === "aborted_rejected") {
-        this.dropPeer(connId, "invalid_pairing");
+        reject("invalid_pairing");
         return;
       }
-      // SECOND-HANDSHAKE RACE ABORT: if a peer is already attached to this pairSessionId, abort the ENTIRE pairing!
-      if (pairing.connId !== null) {
+      // SECOND-HANDSHAKE RACE ABORT: if a peer is already attached to this pairSessionId (on any link), abort the
+      // ENTIRE pairing — a second scanner is never told which one won.
+      if (pairing.peerKey !== null) {
         this.abortPairing(peerId, "aborted_race");
-        this.dropPeer(connId, "aborted_race");
+        reject("aborted_race");
         return;
       }
-      pairing.connId = connId;
+      pairing.peerKey = key;
+    } else {
+      let pending = 0;
+      for (const peer of this.peers.values()) {
+        if (peer.role === "device" && peer.peerId === peerId && peer.state !== "authenticated") pending += 1;
+      }
+      if (pending >= MAX_PENDING_PER_PEER_ID) {
+        reject("too_many_handshakes");
+        return;
+      }
     }
 
     const handshakeTimer = setTimeout(() => {
-      const peer = this.peers.get(connId);
+      const peer = this.peers.get(key);
       if (peer !== undefined && (peer.state === "awaiting_msg1" || peer.state === "awaiting_hello")) {
-        this.dropPeer(connId, "handshake_timeout");
+        this.dropPeer(peer, "handshake_timeout");
       }
     }, this.handshakeDeadlineMs);
     handshakeTimer.unref?.();
 
-    this.peers.set(connId, {
+    this.peers.set(key, {
+      key,
+      link,
       connId,
       role,
       peerId,
@@ -473,8 +529,15 @@ export class CompanionDaemonEngine {
     });
   }
 
-  private async handlePeerData(connId: number, data: Buffer): Promise<void> {
-    const peer = this.peers.get(connId);
+  /** The phone's side of a link closed that connection. */
+  closePeer(link: PeerLink, connId: number): void {
+    const peer = this.peers.get(peerKeyOf(link, connId));
+    if (peer !== undefined) this.cleanupPeerLocal(peer);
+  }
+
+  /** One binary message from a phone on a link. */
+  async peerData(link: PeerLink, connId: number, data: Buffer): Promise<void> {
+    const peer = this.peers.get(peerKeyOf(link, connId));
     if (peer === undefined) return;
 
     if (peer.state === "awaiting_msg1") {
@@ -488,12 +551,12 @@ export class CompanionDaemonEngine {
 
     if (peer.state === "pair_pending_confirm") {
       // Zero RPCs allowed before the owner explicitly clicks Confirm on the Mac!
-      this.dropPeer(connId, "unconfirmed_device");
+      this.dropPeer(peer, "unconfirmed_device");
       return;
     }
 
     if (peer.session === null) {
-      this.dropPeer(connId, "no_session");
+      this.dropPeer(peer, "no_session");
       return;
     }
 
@@ -501,7 +564,7 @@ export class CompanionDaemonEngine {
     try {
       plaintext = peer.session.decrypt(data, this.nowMs());
     } catch {
-      this.dropPeer(connId, "decrypt_failed");
+      this.dropPeer(peer, "decrypt_failed");
       return;
     }
 
@@ -509,7 +572,7 @@ export class CompanionDaemonEngine {
     try {
       frame = decodeFrame(plaintext);
     } catch {
-      this.dropPeer(connId, "invalid_frame");
+      this.dropPeer(peer, "invalid_frame");
       return;
     }
 
@@ -519,7 +582,7 @@ export class CompanionDaemonEngine {
   private handlePairingMsg1(peer: ActivePeerConn, msg1: Buffer): void {
     const pairing = this.pairings.get(peer.peerId);
     if (pairing === undefined || pairing.status !== "awaiting_scan" || this.nowMs() > pairing.expiresAtMs) {
-      this.dropPeer(peer.connId, "pairing_invalid");
+      this.dropPeer(peer, "pairing_invalid");
       return;
     }
     const identity = this.store.workspaceIdentity();
@@ -534,7 +597,7 @@ export class CompanionDaemonEngine {
     try {
       ({ payload, remoteStaticPublicKey } = responder.readMessage1(msg1));
     } catch {
-      this.dropPeer(peer.connId, "handshake_failed");
+      this.dropPeer(peer, "handshake_failed");
       return;
     }
     // Message 1 NEVER executes RPCs or mutates durable state.
@@ -542,16 +605,16 @@ export class CompanionDaemonEngine {
     try {
       meta = JSON.parse(payload.toString("utf8")) as typeof meta;
     } catch {
-      this.dropPeer(peer.connId, "invalid_msg1_payload");
+      this.dropPeer(peer, "invalid_msg1_payload");
       return;
     }
     if (meta.protocolVersion !== 1 || meta.mode !== "pair" || typeof meta.deviceRelayPub !== "string") {
-      this.dropPeer(peer.connId, "invalid_msg1_payload");
+      this.dropPeer(peer, "invalid_msg1_payload");
       return;
     }
     const deviceRelayPub = Buffer.from(meta.deviceRelayPub, "base64url");
     if (deviceRelayPub.length !== 32) {
-      this.dropPeer(peer.connId, "invalid_device_relay_pub");
+      this.dropPeer(peer, "invalid_device_relay_pub");
       return;
     }
 
@@ -569,19 +632,19 @@ export class CompanionDaemonEngine {
     pairing.deviceRelayPub = deviceRelayPub;
     pairing.session = session;
 
-    this.sendPeerData(peer.connId, msg2);
+    peer.link.send(peer.connId, msg2);
   }
 
   private handleSessionMsg1(peer: ActivePeerConn, msg1: Buffer): void {
     const dev = getPairedDevice(this.store.handle, peer.peerId);
     const identity = this.store.workspaceIdentity();
     if (dev === null || dev.revokedAt !== null || dev.recoveryGeneration !== identity.recoveryGeneration) {
-      this.dropPeer(peer.connId, "device_invalid_or_restored");
+      this.dropPeer(peer, "device_invalid_or_restored");
       return;
     }
     const account = this.store.accountOf(dev.accountName);
     if (!deviceAccountStands(dev, account)) {
-      this.dropPeer(peer.connId, "account_revoked");
+      this.dropPeer(peer, "account_revoked");
       return;
     }
 
@@ -596,11 +659,11 @@ export class CompanionDaemonEngine {
     try {
       ({ payload, remoteStaticPublicKey } = responder.readMessage1(msg1));
     } catch {
-      this.dropPeer(peer.connId, "handshake_failed");
+      this.dropPeer(peer, "handshake_failed");
       return;
     }
     if (!timingSafeEqual(remoteStaticPublicKey, dev.phoneStaticPub)) {
-      this.dropPeer(peer.connId, "static_key_mismatch");
+      this.dropPeer(peer, "static_key_mismatch");
       return;
     }
     // Message 1 carries metadata only — never executes RPCs.
@@ -608,11 +671,11 @@ export class CompanionDaemonEngine {
     try {
       meta = JSON.parse(payload.toString("utf8")) as typeof meta;
     } catch {
-      this.dropPeer(peer.connId, "invalid_msg1_payload");
+      this.dropPeer(peer, "invalid_msg1_payload");
       return;
     }
     if (meta.protocolVersion !== 1 || meta.mode !== "session" || meta.deviceId !== dev.deviceId) {
-      this.dropPeer(peer.connId, "invalid_msg1_payload");
+      this.dropPeer(peer, "invalid_msg1_payload");
       return;
     }
 
@@ -630,7 +693,7 @@ export class CompanionDaemonEngine {
       recoveryGeneration: identity.recoveryGeneration,
       requestFromThisComputer: false,
     };
-    this.sendPeerData(peer.connId, msg2);
+    peer.link.send(peer.connId, msg2);
   }
 
   private verifyLiveStanding(principal: PairedDevicePrincipal): boolean {
@@ -662,7 +725,7 @@ export class CompanionDaemonEngine {
 
   private async handleAuthenticatedFrame(peer: ActivePeerConn, frame: CompanionFrame): Promise<void> {
     if (peer.principal === null || !this.verifyLiveStanding(peer.principal)) {
-      this.dropPeer(peer.connId, "standing_revoked");
+      this.dropPeer(peer, "standing_revoked");
       return;
     }
 
@@ -690,7 +753,7 @@ export class CompanionDaemonEngine {
       try {
         grant = decodeCreditPayload(frame.payload);
       } catch {
-        this.dropPeer(peer.connId, "invalid_credit");
+        this.dropPeer(peer, "invalid_credit");
         return;
       }
       const pacer = peer.unaryPacers.get(frame.streamId);
@@ -715,7 +778,7 @@ export class CompanionDaemonEngine {
         seq: 0,
         payload: encodeErrorPayload(ingested.code, ingested.message),
       });
-      if (ingested.closeSession) this.dropPeer(peer.connId, ingested.code);
+      if (ingested.closeSession) this.dropPeer(peer, ingested.code);
       return;
     }
     if (ingested.completePayload === undefined) return; // still awaiting more REQ_CHUNK / END
@@ -736,11 +799,15 @@ export class CompanionDaemonEngine {
     if (peer.state === "awaiting_hello") {
       if (method !== "device.hello") {
         this.sendRpcError(peer, frame.streamId, "hello_required", "First transport RPC must be device.hello");
-        this.dropPeer(peer.connId, "hello_required");
+        this.dropPeer(peer, "hello_required");
         return;
       }
       clearTimeout(peer.handshakeTimer);
       peer.state = "authenticated";
+      // One live session per phone: an older one (another path, a socket the phone gave up on) is closed.
+      for (const other of [...this.peers.values()]) {
+        if (other !== peer && other.state === "authenticated" && other.principal?.deviceId === peer.principal.deviceId) this.dropPeer(other, "superseded");
+      }
       touchPairedDeviceLastSeen(this.store.handle, peer.principal.deviceId, new Date(this.nowMs()));
     }
 
@@ -818,9 +885,13 @@ export class CompanionDaemonEngine {
 
       let result: unknown;
       switch (method) {
-        case "device.hello":
-          result = await this.handlers.deviceHello(principal);
+        case "device.hello": {
+          const hello = await this.handlers.deviceHello(principal);
+          // The phone keeps the freshest ways back to this Mac (a new Wi-Fi address, Tailscale on or off).
+          const paths = this.pathsOf();
+          result = hello !== null && typeof hello === "object" && pathsAllowed(paths) ? { ...hello, paths } : hello;
           break;
+        }
         case "work.rows":
           result = await this.handlers.workRows(principal, params);
           break;
@@ -848,7 +919,7 @@ export class CompanionDaemonEngine {
       const code = typeof raw === "string" && /^[a-z_]{1,40}$/.test(raw) ? raw : "handler_error";
       const msg = code === "handler_error" ? "Something went wrong reading that on your Mac." : (err as Error).message;
       this.sendRpcError(peer, streamId, code, msg);
-      if (code === "standing_revoked") this.dropPeer(peer.connId, "standing_revoked");
+      if (code === "standing_revoked") this.dropPeer(peer, "standing_revoked");
     }
   }
 
@@ -917,34 +988,35 @@ export class CompanionDaemonEngine {
     if (peer.session === null) return;
     try {
       const ct = peer.session.encrypt(encodeFrame(frame), this.nowMs());
-      this.sendPeerData(peer.connId, ct);
+      peer.link.send(peer.connId, ct);
     } catch {
-      this.dropPeer(peer.connId, "encrypt_failed");
+      this.dropPeer(peer, "encrypt_failed");
     }
   }
 
-  private sendPeerData(connId: number, payload: Buffer): void {
-    this.sendToRelay(encodeRelayEnvelope({ op: RelayOp.PEER_DATA, connId, payload }));
+  private dropPeer(peer: ActivePeerConn, reason: string): void {
+    if (this.peers.get(peer.key) !== peer) return; // already gone (a late callback for a replaced peer)
+    this.cleanupPeerLocal(peer);
+    peer.link.close(peer.connId, reason);
   }
 
-  private dropPeer(connId: number, reason: string): void {
-    this.cleanupPeerLocal(connId);
-    this.sendToRelay(encodeRelayEnvelope({
-      op: RelayOp.PEER_CLOSE,
-      connId,
-      payload: Buffer.from(JSON.stringify({ reason }), "utf8"),
-    }));
-  }
-
-  private cleanupPeerLocal(connId: number): void {
-    const peer = this.peers.get(connId);
-    if (peer === undefined) return;
+  private cleanupPeerLocal(peer: ActivePeerConn): void {
+    if (this.peers.get(peer.key) !== peer) return;
     clearTimeout(peer.handshakeTimer);
     for (const w of peer.watchStreams.values()) w.unsubscribe();
     peer.watchStreams.clear();
     peer.unaryPacers.clear();
     peer.streamGuard.releaseAll();
     peer.session?.close();
-    this.peers.delete(connId);
+    this.peers.delete(peer.key);
+    for (const p of this.pairings.values()) {
+      if (p.peerKey === peer.key && p.status === "awaiting_confirm") {
+        p.pairPsk.fill(0);
+        p.session?.close();
+        p.session = null;
+        p.status = "aborted_rejected";
+      }
+      if (p.peerKey === peer.key) p.peerKey = null;
+    }
   }
 }

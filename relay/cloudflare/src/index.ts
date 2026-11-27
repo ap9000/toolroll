@@ -18,8 +18,15 @@ const OP_PEER_OPEN = 0x01;
 const OP_PEER_DATA = 0x02;
 const OP_PEER_CLOSE = 0x03;
 
+/** A Workers Rate Limiting binding (wrangler.jsonc `ratelimits`). */
+interface RateLimit { limit(options: { key: string }): Promise<{ success: boolean }> }
+
 interface Env {
   MACHINE_ROOM: DurableObjectNamespace;
+  /** Per client address: registration challenges and registrations (each can wake a machine room). */
+  RL_REGISTER?: RateLimit;
+  /** Per client address: WebSocket connects and device-set changes. */
+  RL_CONNECT?: RateLimit;
   RELAY_PUBLIC_HOST: string;
   /** HMAC key for stateless registration challenges (`wrangler secret put CHALLENGE_SECRET`). */
   CHALLENGE_SECRET: string;
@@ -167,6 +174,13 @@ export default {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/v1/health") {
       return jsonResponse(200, { ok: true, version: 1, runtime: "cloudflare-do" });
+    }
+    // Everything past health is rate limited per client address before any work (a made-up machine id still wakes a
+    // room). Without the bindings (local dev, self-hosters who skip them) nothing is limited.
+    const client = request.headers.get("cf-connecting-ip") ?? "unknown";
+    const limiter = url.pathname === "/v1/challenge" || url.pathname === "/v1/machines/register" ? env.RL_REGISTER : env.RL_CONNECT;
+    if (limiter !== undefined && !(await limiter.limit({ key: client })).success) {
+      return jsonResponse(429, { error: "rate_limited" });
     }
     if (request.method === "POST" && url.pathname === "/v1/challenge") {
       if (!env.CHALLENGE_SECRET) return jsonResponse(503, { error: "relay_not_configured" });

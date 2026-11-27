@@ -1,42 +1,60 @@
 /**
- * Phone access for this console: the companion engine (daemon.ts) joined to a relay.
+ * Phone access for this console: the companion engine (daemon.ts) reachable two ways.
  *
- * Off until an approver turns it on (Settings → Phone). Then it holds one outbound WebSocket to the relay as this
- * machine's daemon, proves it owns the machine id (registration proof of possession), keeps the relay's set of
- * admitted phones exactly equal to this workspace's live paired devices (PUT after every connect, POST on pairing,
- * DELETE on removal), and passes every routed envelope to the engine. A dropped socket drops every phone session and
- * pending pairing riding it (engine.handleRelayDisconnected) and reconnects with jittered backoff.
+ * - **Direct** (direct-server.ts): a listener on this Mac's network (port 4199 by default) that a phone on the same
+ *   Wi-Fi, or on this Mac's tailnet, connects straight to. No relay and no relay tokens: Noise from the first message.
+ * - **Hosted** (optional): one outbound WebSocket to an end-to-end encrypted relay (wss://relay.toolroll.dev unless
+ *   configured otherwise) as this machine's daemon, for a phone anywhere else. The service proves it owns the machine id
+ *   (registration proof of possession), keeps the relay's set of admitted phones exactly equal to this workspace's live
+ *   paired devices (PUT after every connect and after any change it couldn't deliver, POST on a pairing made through
+ *   the relay, DELETE on removal), and passes every routed envelope to the engine.
  *
- * The built-in relay (relay-server.ts, the reference implementation) listens on this computer's loopback only: it
- * serves the iOS Simulator and anything else on this Mac. A phone elsewhere needs a relay it can reach over TLS
- * (a hosted or self-hosted `wss://` relay, configured with its URL).
+ * Each path starts, fails and reports on its own: a port in use doesn't stop the hosted path; an unreachable relay
+ * doesn't stop the direct one. A dropped relay socket drops only the phone sessions and pairings riding it.
  */
 
+import type { Socket } from "node:net";
 import { WebSocket } from "ws";
-import { CompanionDaemonEngine, type CompanionReadHandlers, type PairingQrPayload } from "./daemon.js";
+import { CompanionDaemonEngine, relayEnvelopeLink, type CompanionReadHandlers, type PairingQrPayload, type PeerLink } from "./daemon.js";
+import { startDirectServer, type RunningDirectServer } from "./direct-server.js";
+import { buildPaths, lanAddressesOf, type CompanionPath } from "./paths.js";
 import { decodeRelayEnvelope, signRegistrationPop, signRelayToken } from "./relay-auth.js";
-import { startReferenceRelay, type RunningReferenceRelay } from "./relay-server.js";
 import { listPairedDevices, type PairedDeviceRow } from "./store.js";
+import { readTailnetIpv4 } from "../tailnet.js";
 import type { Store } from "../store.js";
 
-export type CompanionRelayChoice =
-  | { kind: "built-in"; port: number }
-  | { kind: "external"; url: string };
+export type DirectPathState =
+  | { state: "off" }
+  | { state: "listening"; port: number }
+  | { state: "failed"; error: string };
 
-export type CompanionServiceState =
+export type HostedPathState =
+  | { state: "off" }
   | { state: "starting"; relay: string }
   | { state: "connected"; relay: string; since: string }
-  | { state: "unreachable"; relay: string; error: string; retryAt: string }
-  | { state: "stopped" };
+  | { state: "unreachable"; relay: string; error: string; retryAt: string };
+
+export interface CompanionServiceStatus {
+  running: boolean;
+  direct: DirectPathState;
+  hosted: HostedPathState;
+}
 
 export interface CompanionServiceOptions {
   store: Store;
   reads: CompanionReadHandlers;
-  relay: CompanionRelayChoice;
+  /** The direct listener (null: no direct path). */
+  direct: { port: number; host?: string } | null;
+  /** The hosted relay's URL (null: no hosted path). */
+  hosted: string | null;
   log?: (line: string) => void;
   nowMs?: () => number;
   /** Test seam: the backoff's first and largest waits (ms). */
   backoff?: { first: number; max: number };
+  /** Test seams: this Mac's LAN addresses and Tailscale address, and how a direct socket's peer address is read. */
+  lanAddresses?: () => string[];
+  tailnetIpv4?: () => Promise<string | null>;
+  directPeerAddressOf?: (socket: Socket) => string | undefined;
 }
 
 /** The relay's HTTP base and WebSocket connect address for a configured `wss://host[/…]` or `ws://…` URL. */
@@ -52,75 +70,115 @@ export function relayAddressesOf(url: string): { http: string; ws: string; host:
   return { http: base, ws: `${secure ? "wss" : "ws"}://${parsed.host}/v1/connect`, host: parsed.host };
 }
 
+const TAILNET_REFRESH_MS = 10_000;
+
 export class CompanionService {
   readonly engine: CompanionDaemonEngine;
   private readonly store: Store;
-  private readonly choice: CompanionRelayChoice;
+  private readonly opts: CompanionServiceOptions;
   private readonly log: (line: string) => void;
   private readonly nowMs: () => number;
   private readonly backoff: { first: number; max: number };
-  private builtIn: RunningReferenceRelay | null = null;
-  private addresses: { http: string; ws: string; host: string } | null = null;
+  private readonly addresses: { http: string; ws: string; host: string } | null;
+  private directServer: RunningDirectServer | null = null;
+  private directState: DirectPathState = { state: "off" };
   private socket: WebSocket | null = null;
+  private link: PeerLink | null = null;
   private keepalive: ReturnType<typeof setInterval> | null = null;
   private retry: ReturnType<typeof setTimeout> | null = null;
   private attempt = 0;
   /** Bumped by every connect and every stop: an older connect that finishes late sees it moved on and stands down. */
   private connectGeneration = 0;
   private stopped = true;
-  private current: CompanionServiceState = { state: "stopped" };
-  /** A removal the relay didn't hear (it was unreachable): the next connect's reconcile settles it. */
+  private hostedState: HostedPathState = { state: "off" };
+  /** Changes to the relay's admitted set run one at a time, each reading the live device set when it runs. */
+  private admission: Promise<void> = Promise.resolve();
+  /** A change the relay didn't hear yet: a fresh full-set PUT is owed (retried while connected, and on reconnect). */
   private reconcileOwed = false;
+  private reconcileTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconcileAttempt = 0;
+  private tailnet: { ip: string | null; at: number } = { ip: null, at: -Infinity };
 
   constructor(opts: CompanionServiceOptions) {
     this.store = opts.store;
-    this.choice = opts.relay;
+    this.opts = opts;
     this.log = opts.log ?? (() => {});
     this.nowMs = opts.nowMs ?? (() => Date.now());
     this.backoff = opts.backoff ?? { first: 1_000, max: 60_000 };
+    this.addresses = opts.hosted === null ? null : relayAddressesOf(opts.hosted);
     this.engine = new CompanionDaemonEngine({
       store: opts.store,
       handlers: opts.reads,
-      sendToRelay: envelope => {
-        if (this.socket !== null && this.socket.readyState === WebSocket.OPEN) this.socket.send(envelope, { binary: true });
-      },
-      onDeviceRegistered: async (deviceId, deviceRelayPub) => {
-        // Throws when the relay didn't take it: the engine undoes the pairing.
-        await this.relayRequest("POST", `/v1/machines/${this.engine.hostKeys.machineId}/devices`, { deviceId, deviceRelayPub });
+      onDeviceRegistered: async (deviceId, deviceRelayPub, via) => {
+        if (via === this.link && this.link !== null) {
+          // Paired through the relay: it must admit the phone before the phone is told (throws → the engine undoes it).
+          await this.admit(() => this.relayRequest("POST", `/v1/machines/${this.engine.hostKeys.machineId}/devices`, { deviceId, deviceRelayPub }));
+        } else if (this.addresses !== null) {
+          // Paired directly: the relay learns of the phone on its own schedule; its outage never undoes the pairing.
+          this.oweReconcile();
+        }
       },
       onDeviceRevoked: async deviceId => {
+        if (this.addresses === null) return;
         try {
-          await this.relayRequest("DELETE", `/v1/machines/${this.engine.hostKeys.machineId}/devices/${encodeURIComponent(deviceId)}`);
+          await this.admit(() => this.relayRequest("DELETE", `/v1/machines/${this.engine.hostKeys.machineId}/devices/${encodeURIComponent(deviceId)}`));
         } catch {
-          this.reconcileOwed = true;
+          this.oweReconcile();
         }
       },
       ...(opts.nowMs === undefined ? {} : { nowMs: opts.nowMs }),
     });
+    this.engine.setPathsProvider(() => this.paths());
   }
 
   /** What Settings shows. */
-  status(): CompanionServiceState {
-    return this.current;
+  status(): CompanionServiceStatus {
+    return { running: !this.stopped, direct: this.directState, hosted: this.hostedState };
   }
 
-  /** The address phones are given (the QR's relayUrl), once started. */
-  relayUrl(): string | null {
-    return this.addresses?.ws ?? null;
+  /** This Mac's addresses a phone on the same network can use (empty when the direct path isn't listening). */
+  directAddresses(): string[] {
+    return this.paths().filter(path => path.kind === "direct").map(path => new URL(path.url).host);
+  }
+
+  /** The ways a phone can reach this Mac now: direct addresses first, the hosted relay last (only while connected). */
+  paths(): CompanionPath[] {
+    void this.refreshTailnet();
+    return buildPaths({
+      port: this.directState.state === "listening" ? this.directState.port : null,
+      lan: (this.opts.lanAddresses ?? lanAddressesOf)(),
+      tailnet: this.tailnet.ip,
+      hosted: this.hostedState.state === "connected" && this.addresses !== null ? this.addresses.ws : null,
+    });
   }
 
   async start(): Promise<void> {
     if (!this.stopped) return;
     this.stopped = false;
-    if (this.choice.kind === "built-in") {
-      this.builtIn = await startReferenceRelay({ host: "127.0.0.1", port: this.choice.port });
-      this.addresses = relayAddressesOf(this.builtIn.wsUrl);
-    } else {
-      this.addresses = relayAddressesOf(this.choice.url);
+    await this.refreshTailnet(true);
+    if (this.opts.direct !== null) {
+      try {
+        this.directServer = await startDirectServer({
+          engine: this.engine, port: this.opts.direct.port, log: this.log,
+          ...(this.opts.direct.host === undefined ? {} : { host: this.opts.direct.host }),
+          ...(this.opts.directPeerAddressOf === undefined ? {} : { peerAddressOf: this.opts.directPeerAddressOf }),
+        });
+        this.directState = { state: "listening", port: this.directServer.port };
+      } catch (error) {
+        const code = (error as { code?: unknown }).code;
+        this.directState = {
+          state: "failed",
+          error: code === "EADDRINUSE"
+            ? `Port ${this.opts.direct.port} on this computer is in use. Set TOOLROLL_PHONE_RELAY_PORT to another port and restart Toolroll.`
+            : error instanceof Error ? error.message : String(error),
+        };
+        this.log(`phone access: direct listener didn't start (${this.directState.error})`);
+      }
     }
-    this.engine.setAdvertisedRelayUrl(this.addresses.ws);
-    this.current = { state: "starting", relay: this.addresses.ws };
-    void this.connect();
+    if (this.addresses !== null) {
+      this.hostedState = { state: "starting", relay: this.addresses.ws };
+      void this.connect();
+    }
   }
 
   async stop(): Promise<void> {
@@ -128,24 +186,56 @@ export class CompanionService {
     this.connectGeneration += 1;
     if (this.retry !== null) clearTimeout(this.retry);
     this.retry = null;
+    if (this.reconcileTimer !== null) clearTimeout(this.reconcileTimer);
+    this.reconcileTimer = null;
     this.closeSocket("stopping");
     this.engine.handleRelayDisconnected();
-    if (this.builtIn !== null) {
-      const relay = this.builtIn;
-      this.builtIn = null;
-      await relay.close();
+    if (this.directServer !== null) {
+      const server = this.directServer;
+      this.directServer = null;
+      await server.close();
     }
-    this.current = { state: "stopped" };
+    this.directState = { state: "off" };
+    this.hostedState = { state: "off" };
   }
 
   startPairing(accountName: string, binding: string, accountGeneration: number | null = null): { ok: true; qr: PairingQrPayload; expiresAtMs: number } | { ok: false; error: string } {
-    if (this.current.state !== "connected") return { ok: false, error: "Phone access isn't connected to its relay yet. Try again in a moment." };
+    if (this.directState.state !== "listening" && this.hostedState.state !== "connected") {
+      return { ok: false, error: this.hostedState.state === "starting" ? "Phone access is still starting. Try again in a moment." : "A phone has no way to reach this Mac right now." };
+    }
     return this.engine.startPairing(accountName, binding, accountGeneration);
   }
 
   devices(): PairedDeviceRow[] {
     const generation = this.store.workspaceIdentity().recoveryGeneration;
     return listPairedDevices(this.store.handle).filter(d => d.revokedAt === null && d.recoveryGeneration === generation);
+  }
+
+  private refreshTailnet(wait = false): Promise<void> {
+    if (!wait && this.nowMs() - this.tailnet.at < TAILNET_REFRESH_MS) return Promise.resolve();
+    this.tailnet.at = this.nowMs();
+    const read = (this.opts.tailnetIpv4 ?? (() => readTailnetIpv4()))().then(ip => { this.tailnet.ip = ip; }, () => {});
+    return wait ? read : Promise.resolve();
+  }
+
+  /** Serializes one change to the relay's admitted set; the result (or failure) is the caller's. */
+  private admit<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.admission.then(work, work);
+    this.admission = run.then(() => {}, () => {});
+    return run;
+  }
+
+  /** A change didn't reach the relay: a fresh full-set PUT, retried with backoff while connected (and on reconnect). */
+  private oweReconcile(): void {
+    this.reconcileOwed = true;
+    if (this.reconcileTimer !== null || this.stopped || this.socket === null) return;
+    const wait = Math.min(30_000, 1_000 * 2 ** Math.min(this.reconcileAttempt, 5));
+    this.reconcileTimer = setTimeout(() => {
+      this.reconcileTimer = null;
+      if (this.stopped || this.socket === null || !this.reconcileOwed) return;
+      this.reconcile().then(() => { this.reconcileAttempt = 0; }, () => { this.reconcileAttempt += 1; this.oweReconcile(); });
+    }, wait);
+    this.reconcileTimer.unref?.();
   }
 
   private async connect(): Promise<void> {
@@ -160,12 +250,16 @@ export class CompanionService {
       if (!current()) return;
       const socket = await this.openSocket();
       if (!current()) { socket.close(1000, "stopping"); return; }
+      const link = relayEnvelopeLink(`hosted#${generation}`, envelope => { if (socket.readyState === WebSocket.OPEN) socket.send(envelope, { binary: true }); });
       this.socket = socket;
+      this.link = link;
       this.attempt = 0;
-      this.current = { state: "connected", relay, since: new Date(this.nowMs()).toISOString() };
+      this.hostedState = { state: "connected", relay, since: new Date(this.nowMs()).toISOString() };
       this.log(`phone access: connected to ${relay}`);
       this.keepalive = setInterval(() => { if (socket.readyState === WebSocket.OPEN) socket.ping(); }, 20_000);
       this.keepalive.unref?.();
+      // A change that failed while the socket was opening: settle it now.
+      if (this.reconcileOwed) this.oweReconcile();
       socket.on("message", (raw, isBinary) => {
         if (!isBinary) return;
         const buf = Buffer.isBuffer(raw) ? raw : Array.isArray(raw) ? Buffer.concat(raw) : Buffer.from(raw);
@@ -174,14 +268,17 @@ export class CompanionService {
         } catch {
           return;
         }
-        this.engine.handleRelayEnvelope(buf).catch(error => this.log(`phone access: envelope failed: ${error instanceof Error ? error.message : String(error)}`));
+        this.engine.handleRelayEnvelope(buf, link).catch(error => this.log(`phone access: envelope failed: ${error instanceof Error ? error.message : String(error)}`));
       });
       socket.on("close", (_code, reason) => {
         if (this.socket !== socket) return;
         this.socket = null;
+        this.link = null;
         if (this.keepalive !== null) clearInterval(this.keepalive);
         this.keepalive = null;
-        this.engine.handleRelayDisconnected();
+        if (this.reconcileTimer !== null) clearTimeout(this.reconcileTimer);
+        this.reconcileTimer = null;
+        this.engine.handleRelayDisconnected(link);
         if (!this.stopped) this.scheduleRetry(`the relay closed the connection${reason.length > 0 ? ` (${reason.toString("utf8")})` : ""}`);
       });
       socket.on("error", () => { /* "close" follows */ });
@@ -195,7 +292,7 @@ export class CompanionService {
     this.attempt += 1;
     const ceiling = Math.min(this.backoff.max, this.backoff.first * 2 ** Math.min(this.attempt - 1, 16));
     const wait = Math.round(ceiling / 2 + Math.random() * (ceiling / 2));
-    this.current = { state: "unreachable", relay: this.addresses.ws, error, retryAt: new Date(this.nowMs() + wait).toISOString() };
+    this.hostedState = { state: "unreachable", relay: this.addresses.ws, error, retryAt: new Date(this.nowMs() + wait).toISOString() };
     this.log(`phone access: relay unreachable (${error}); retrying in ${Math.round(wait / 1000)} s`);
     if (this.retry !== null) clearTimeout(this.retry);
     this.retry = setTimeout(() => { this.retry = null; void this.connect(); }, wait);
@@ -205,6 +302,7 @@ export class CompanionService {
   private closeSocket(reason: string): void {
     const socket = this.socket;
     this.socket = null;
+    this.link = null;
     if (this.keepalive !== null) clearInterval(this.keepalive);
     this.keepalive = null;
     if (socket !== null && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) socket.close(1000, reason);
@@ -227,10 +325,17 @@ export class CompanionService {
     if (registered.machineId !== keys.machineId) throw new Error("the relay derived a different machine id");
   }
 
-  /** Makes the relay's admitted phones exactly this workspace's live paired devices. */
-  private async reconcile(): Promise<void> {
-    await this.relayRequest("PUT", `/v1/machines/${this.engine.hostKeys.machineId}/devices`, { devices: this.engine.admittedDevices() });
-    this.reconcileOwed = false;
+  /** Makes the relay's admitted phones exactly this workspace's live paired devices (the set read when it runs). */
+  private reconcile(): Promise<void> {
+    return this.admit(async () => {
+      this.reconcileOwed = false;
+      try {
+        await this.relayRequest("PUT", `/v1/machines/${this.engine.hostKeys.machineId}/devices`, { devices: this.engine.admittedDevices() });
+      } catch (error) {
+        this.reconcileOwed = true;
+        throw error;
+      }
+    });
   }
 
   private openSocket(): Promise<WebSocket> {
@@ -243,7 +348,7 @@ export class CompanionService {
   }
 
   private async relayRequest(method: string, path: string, body?: unknown, authorized = true): Promise<unknown> {
-    if (this.addresses === null) throw new Error("phone access isn't started");
+    if (this.addresses === null) throw new Error("no hosted relay is configured");
     const response = await fetch(`${this.addresses.http}${path}`, {
       method,
       headers: {
@@ -269,7 +374,7 @@ export class CompanionService {
     }
   }
 
-  /** Test seam: whether a removal is waiting for the relay to hear it. */
+  /** Test seam: whether a change is waiting for the relay to hear it. */
   get owesReconcile(): boolean {
     return this.reconcileOwed;
   }

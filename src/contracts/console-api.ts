@@ -210,7 +210,7 @@ export const CONSOLE_FORMS = {
   slack: formContract("POST /settings/slack/connect|pair|unpair|disconnect|alerts", ["password", "app-token", "bot-token"]),
   chatApproval: formContract("POST /settings/chat-approval/confirm, /settings/chat-approval/save, /settings/chat-approval/off", ["scope", "full-access", "cap-usd", "nonce", "digest", "token"]),
   telegramPair: formContract("POST /settings/telegram/pair, /settings/telegram/unpair", ["password"]),
-  phoneAccess: formContract("POST /settings/phone/access", ["password", "act"]),
+  phoneAccess: formContract("POST /settings/phone/access", ["password", "act", "hosted"]),
   phonePair: formContract("POST /settings/phone/pair", ["password"]),
   phonePairing: formContract("POST /settings/phone/confirm, /settings/phone/cancel", ["pairing"]),
   phoneRemove: formContract("POST /settings/phone/remove", ["password", "device"]),

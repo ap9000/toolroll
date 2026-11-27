@@ -40,3 +40,32 @@ export async function readTailnetNames(runner: Runner = run, platform: NodeJS.Pl
   }
   return [];
 }
+
+/** This computer's Tailscale IPv4 address (100.64/10) from `tailscale status --json`, or null. */
+export function tailnetIpv4Of(statusJson: string): string | null {
+  let status: unknown;
+  try { status = JSON.parse(statusJson); } catch { return null; }
+  if (typeof status !== "object" || status === null) return null;
+  const body = status as { BackendState?: unknown; Self?: { TailscaleIPs?: unknown } };
+  if (body.BackendState !== "Running" || !Array.isArray(body.Self?.TailscaleIPs)) return null;
+  for (const ip of body.Self.TailscaleIPs) {
+    if (typeof ip !== "string") continue;
+    const m = /^100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);
+    if (m !== null && Number(m[1]) >= 64 && Number(m[1]) <= 127 && Number(m[2]) <= 255 && Number(m[3]) <= 255) return ip;
+  }
+  return null;
+}
+
+export async function readTailnetIpv4(runner: Runner = run, platform: NodeJS.Platform = process.platform): Promise<string | null> {
+  const candidates = ["tailscale", ...(platform === "darwin" && existsSync(MAC_APP_CLI) ? [MAC_APP_CLI] : [])];
+  for (const file of candidates) {
+    try {
+      const answer = await runner(file, ["status", "--json"], { timeoutMs: 3_000 });
+      if (answer.notFound === true) continue;
+      if (answer.code === 0) return tailnetIpv4Of(answer.stdout);
+    } catch {
+      // No Tailscale here.
+    }
+  }
+  return null;
+}
