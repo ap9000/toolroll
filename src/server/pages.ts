@@ -1511,6 +1511,18 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
       const after = admitRemoteTerminalRequest(request, store, who.principal, clock);
       if (!after.ok) return sendTerminalConnectionRefusal(request, response, after.status, after.error);
     }
+    return respond(response, 200, "application/json", JSON.stringify(checkEngineResponse("workRows", workRowsBodyOf(built, who, now))));
+  }
+
+  /** The paired phone's work.rows (companion/reads.ts): the very view and rows GET /work/rows sends, or null when the
+   * list refused the address (it has answered `ctx.response` with why). The caller proves who may read first. */
+  async function readWorkRows(ctx: HandlerContext): Promise<WorkRows | null> {
+    const built = await workViewOf(ctx);
+    return built === null ? null : checkEngineResponse("workRows", workRowsBodyOf(built, ctx.who, ctx.now));
+  }
+
+  /** Work's rows as data for a view already built: GET /work/rows' body, and the paired phone's. */
+  function workRowsBodyOf(built: NonNullable<Awaited<ReturnType<typeof workViewOf>>>, who: Who, now: Date): WorkRows {
     const { view } = built, list = view.list;
     // The cost line: the Limits view's own audience (an instance operator on a browser-style session), else nothing.
     // The providers' windows: the same audience, or this computer's own local owner. One operator check and one
@@ -1542,10 +1554,10 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
       needs: view.needs.map(group => ({ key: group.key, label: group.label, count: group.count, rows: group.rows.map(needOf) })),
       next: list.pages.next, room: "workspace", spend, limits,
     };
-    return respond(response, 200, "application/json", JSON.stringify(checkEngineResponse("workRows", body)));
+    return body;
   }
 
-  return { registrations, projectsScreen };
+  return { registrations, projectsScreen, readWorkRows };
 }
 
 /** The ledger's action for a repository added from outside every projects folder (a password typed now). */

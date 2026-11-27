@@ -35,6 +35,7 @@ import {
 } from "./relay-auth.js";
 import {
   getPairedDevice,
+  listPairedDevices,
   loadOrCreateCompanionHostKeys,
   revokePairedDeviceRecord,
   sanitizeDeviceName,
@@ -88,6 +89,8 @@ export interface CompanionReadHandlers {
     principal: PairedDevicePrincipal,
     params: Record<string, unknown>,
     emit: (record: Buffer) => void,
+    /** The run finished (or the watch can't go on): the phone gets END after what was emitted. */
+    end?: () => void,
   ) => { ok: true; unsubscribe: () => void } | { ok: false; code: string; message: string };
 }
 
@@ -107,7 +110,10 @@ export interface PendingPairingState {
   accountName: string;
   pairPsk: Buffer;
   expiresAtMs: number;
-  status: "awaiting_scan" | "awaiting_confirm" | "confirmed" | "aborted_race" | "aborted_rejected" | "expired";
+  status: "awaiting_scan" | "awaiting_confirm" | "confirming" | "confirmed" | "aborted_race" | "aborted_rejected" | "expired" | "failed";
+  /** Who may see, confirm and cancel this pairing: the console's binding of the person and the very session that
+   * started it (opaque to the engine). A different session — even the same account's — gets "unknown pairing". */
+  binding: string;
   connId: number | null;
   confirmCode: string | null;
   deviceName: string | null;
@@ -165,11 +171,30 @@ export class CompanionDaemonEngine {
     sweepCompanionIdempotencyOnStartup(this.store.handle, new Date(this.nowMs()));
   }
 
-  /** Step 1 of pairing: initiated ONLY by a signed-in approver account on the Mac. */
-  startPairing(accountName: string): { ok: true; qr: PairingQrPayload; expiresAtMs: number } | { ok: false; error: string } {
+  /** The relay address phones are told to use (the QR's `relayUrl`). The host-key row keeps the address it was made
+   * with; the console sets the one it actually serves, so a changed relay setting is what the next QR carries. */
+  private advertisedRelayUrl: string | null = null;
+
+  setAdvertisedRelayUrl(url: string | null): void {
+    this.advertisedRelayUrl = url;
+  }
+
+  /** Step 1 of pairing: initiated ONLY by a signed-in approver account on the Mac. `binding` names the person and
+   * the session that started it; status, confirmation and cancellation answer only to the same binding. */
+  startPairing(accountName: string, binding: string = accountName): { ok: true; qr: PairingQrPayload; expiresAtMs: number } | { ok: false; error: string } {
     const account = this.store.accountOf(accountName);
     if (account === null || account.revokedAt !== null || account.role !== "approver") {
       return { ok: false, error: "Only an active approver account can start pairing." };
+    }
+    // One pairing at a time per binding: a new QR retires the previous one (its phone, if any, is dropped).
+    for (const [id, p] of [...this.pairings]) {
+      if (p.binding === binding) {
+        this.abortPairing(id, "aborted_rejected");
+        this.pairings.delete(id);
+      } else if (this.nowMs() > p.expiresAtMs || p.status === "confirmed" || p.status === "failed" || p.status.startsWith("aborted")) {
+        this.abortPairing(id, "aborted_rejected");
+        this.pairings.delete(id);
+      }
     }
     const identity = this.store.workspaceIdentity();
     const pairSessionId = `pair_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
@@ -190,6 +215,7 @@ export class CompanionDaemonEngine {
       pairPsk,
       expiresAtMs,
       status: "awaiting_scan",
+      binding,
       connId: null,
       confirmCode: null,
       deviceName: null,
@@ -203,7 +229,7 @@ export class CompanionDaemonEngine {
       expiresAtMs,
       qr: {
         v: 1,
-        relayUrl: this.hostKeys.relayUrl,
+        relayUrl: this.advertisedRelayUrl ?? this.hostKeys.relayUrl,
         machineId: this.hostKeys.machineId,
         workspaceId: identity.id,
         macStaticPub: this.hostKeys.noiseStaticPub.toString("base64url"),
@@ -214,9 +240,14 @@ export class CompanionDaemonEngine {
     };
   }
 
-  getPairingStatus(pairSessionId: string): Omit<PendingPairingState, "pairPsk" | "session" | "phoneStaticPub" | "deviceRelayPub"> | null {
+  /** A pairing's state, for the binding that started it only (anyone else: null, as if it didn't exist). */
+  getPairingStatus(pairSessionId: string, binding?: string): Omit<PendingPairingState, "pairPsk" | "session" | "phoneStaticPub" | "deviceRelayPub" | "binding"> | null {
     const p = this.pairings.get(pairSessionId);
-    if (p === undefined) return null;
+    if (p === undefined || (binding !== undefined && p.binding !== binding)) return null;
+    if ((p.status === "awaiting_scan" || p.status === "awaiting_confirm") && this.nowMs() > p.expiresAtMs) {
+      this.abortPairing(pairSessionId, "aborted_rejected");
+      p.status = "expired";
+    }
     return {
       pairSessionId: p.pairSessionId,
       accountName: p.accountName,
@@ -228,12 +259,19 @@ export class CompanionDaemonEngine {
     };
   }
 
-  /** Step 5 of pairing: owner explicitly confirms the 6-char code on the Mac. */
-  async confirmPairing(pairSessionId: string): Promise<{ ok: true; deviceId: string } | { ok: false; error: string }> {
+  /** Step 5 of pairing: owner explicitly confirms the 6-char code on the Mac. Claimed once, synchronously, before any
+   * await: a second confirm (a double click, another tab) finds "confirming" and is refused. */
+  async confirmPairing(pairSessionId: string, binding?: string): Promise<{ ok: true; deviceId: string } | { ok: false; error: string }> {
     const p = this.pairings.get(pairSessionId);
-    if (p === undefined) return { ok: false, error: "Unknown pairing session." };
+    if (p === undefined || (binding !== undefined && p.binding !== binding)) return { ok: false, error: "Unknown pairing session." };
     if (p.status !== "awaiting_confirm" || p.session === null || p.connId === null || p.phoneStaticPub === null || p.deviceRelayPub === null) {
       return { ok: false, error: `Pairing cannot be confirmed in state: ${p.status}` };
+    }
+    // The phone that showed the code must still be the one attached.
+    const attached = this.peers.get(p.connId);
+    if (attached === undefined || attached.role !== "pair" || attached.peerId !== pairSessionId || attached.state !== "pair_pending_confirm") {
+      this.abortPairing(pairSessionId, "aborted_rejected");
+      return { ok: false, error: "The phone disconnected. Start pairing again." };
     }
     if (this.nowMs() > p.expiresAtMs) {
       p.status = "expired";
@@ -251,6 +289,8 @@ export class CompanionDaemonEngine {
     const deviceId = `dev_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
     const pskEntropy = randomPsk32();
     const devicePsk = deriveDevicePsk(pskEntropy, p.session.handshakeHash, identity.id, deviceId);
+    const session = p.session, connId = p.connId, deviceRelayPub = p.deviceRelayPub;
+    p.status = "confirming";
 
     savePairedDevice(this.store.handle, {
       deviceId,
@@ -264,7 +304,25 @@ export class CompanionDaemonEngine {
       createdAt: new Date(this.nowMs()).toISOString(),
     });
 
-    await this.onDeviceRegistered?.(deviceId, p.deviceRelayPub.toString("base64url"));
+    try {
+      await this.onDeviceRegistered?.(deviceId, deviceRelayPub.toString("base64url"));
+    } catch {
+      // The relay never admitted the phone: undo the record rather than leave a device that can never connect.
+      revokePairedDeviceRecord(this.store.handle, deviceId, new Date(this.nowMs()));
+      this.abortPairing(pairSessionId, "aborted_rejected");
+      p.status = "failed";
+      return { ok: false, error: "The relay didn't accept the phone. Check phone access in Settings and pair again." };
+    }
+    // Standing, the phone's socket and the pairing itself may have changed while the relay answered.
+    const after = this.store.accountOf(p.accountName);
+    const still = this.peers.get(connId);
+    if (p.status !== "confirming" || after === null || after.revokedAt !== null || after.role !== "approver"
+      || still === undefined || still.peerId !== pairSessionId || still.state !== "pair_pending_confirm") {
+      await this.revokeDevice(deviceId);
+      this.abortPairing(pairSessionId, "aborted_rejected");
+      p.status = "failed";
+      return { ok: false, error: "Pairing was interrupted. Start pairing again." };
+    }
 
     // Send encrypted pairing finalization payload including recoveryGeneration (needed for reconnect prologue!)
     const finalizePayload = Buffer.from(JSON.stringify({
@@ -274,12 +332,44 @@ export class CompanionDaemonEngine {
       pskEntropy: pskEntropy.toString("base64url"),
       pskVersion: 1,
     }), "utf8");
-    const ct = p.session.encrypt(finalizePayload, this.nowMs());
-    this.sendPeerData(p.connId, ct);
+    const ct = session.encrypt(finalizePayload, this.nowMs());
+    this.sendPeerData(connId, ct);
 
     p.status = "confirmed";
     p.pairPsk.fill(0);
     return { ok: true, deviceId };
+  }
+
+  /** Cancel from the Mac (the owner's Cancel, or codes that didn't match): only the binding that started it. */
+  cancelPairing(pairSessionId: string, binding: string): boolean {
+    const p = this.pairings.get(pairSessionId);
+    if (p === undefined || p.binding !== binding) return false;
+    if (p.status === "confirming" || p.status === "confirmed") return false;
+    this.abortPairing(pairSessionId, "aborted_rejected");
+    return true;
+  }
+
+  /** The paired devices the relay should admit right now: live, this recovery generation. */
+  admittedDevices(): { deviceId: string; deviceRelayPub: string }[] {
+    const generation = this.store.workspaceIdentity().recoveryGeneration;
+    return listPairedDevices(this.store.handle)
+      .filter(d => d.revokedAt === null && d.recoveryGeneration === generation)
+      .map(d => ({ deviceId: d.deviceId, deviceRelayPub: d.deviceRelayPub.toString("base64url") }));
+  }
+
+  /** The relay socket went away: every phone session and pending pairing riding it is gone too. Nothing is kept that
+   * a reconnect could resurrect (a phone reconnects with a fresh handshake; a pairing starts over). */
+  handleRelayDisconnected(): void {
+    for (const connId of [...this.peers.keys()]) this.cleanupPeerLocal(connId);
+    for (const p of this.pairings.values()) {
+      if (p.status === "awaiting_scan" || p.status === "awaiting_confirm") {
+        p.pairPsk.fill(0);
+        p.session?.close();
+        p.session = null;
+        p.connId = null;
+        p.status = "aborted_rejected";
+      }
+    }
   }
 
   abortPairing(pairSessionId: string, reason: "aborted_race" | "aborted_rejected" = "aborted_rejected"): void {
@@ -671,8 +761,16 @@ export class CompanionDaemonEngine {
         const buffer = new LiveWatchBuffer();
         const watchEntry = { buffer, unsubscribe: () => {}, seq: 0 };
         const sub = this.handlers.runWatchSubscribe(principal, params, record => {
+          if (peer.watchStreams.get(streamId) !== watchEntry) return; // stopped watching, or not admitted yet
           buffer.push(record);
           this.pumpWatchStream(peer, streamId, watchEntry);
+        }, () => {
+          // Ended by the read side: whatever is buffered goes first, then END; the stream is closed.
+          if (peer.watchStreams.get(streamId) !== watchEntry) return;
+          this.pumpWatchStream(peer, streamId, watchEntry);
+          peer.watchStreams.delete(streamId);
+          peer.streamGuard.closeStream(streamId);
+          this.sendEncryptedFrame(peer, { type: FrameType.END, streamId, seq: watchEntry.seq++, payload: Buffer.alloc(0) });
         });
         if (!sub.ok) {
           peer.streamGuard.closeStream(streamId);
@@ -711,8 +809,13 @@ export class CompanionDaemonEngine {
       }
       this.sendRpcResult(peer, streamId, result);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Internal error";
-      this.sendRpcError(peer, streamId, "handler_error", msg);
+      // A read's own refusal keeps its code (not_found, invalid_params, invalid_cursor, standing_revoked); anything
+      // else is a server failure the phone shows as "Couldn't load", without the internal message.
+      const raw = err instanceof Error ? (err as Error & { code?: unknown }).code : undefined;
+      const code = typeof raw === "string" && /^[a-z_]{1,40}$/.test(raw) ? raw : "handler_error";
+      const msg = code === "handler_error" ? "Something went wrong reading that on your Mac." : (err as Error).message;
+      this.sendRpcError(peer, streamId, code, msg);
+      if (code === "standing_revoked") this.dropPeer(peer.connId, "standing_revoked");
     }
   }
 

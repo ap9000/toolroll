@@ -20,7 +20,7 @@ import {
   signRegistrationPop,
   signRelayToken,
 } from "./relay-auth.js";
-import { startReferenceRelay, type RunningReferenceRelay } from "../../relay/reference/server.js";
+import { startReferenceRelay, type RunningReferenceRelay } from "./relay-server.js";
 
 const relays: RunningReferenceRelay[] = [];
 
