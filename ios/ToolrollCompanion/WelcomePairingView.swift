@@ -33,7 +33,7 @@ struct WelcomePairingView: View {
                         Text("To pair")
                             .font(.footnote.weight(.semibold))
                             .foregroundStyle(ToolrollTheme.muted)
-                        Text("On your Mac, open Toolroll → Settings → Phone → **Pair a phone**, then scan the code it shows.")
+                        Text("On your Mac, open Toolroll → Settings → Phone → **Pair an iPhone**, then scan the code it shows.")
                             .font(.body)
                             .foregroundStyle(ToolrollTheme.ink)
                             .fixedSize(horizontal: false, vertical: true)

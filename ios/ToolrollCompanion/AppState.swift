@@ -116,6 +116,15 @@ final class CompanionAppState {
         } else {
             restoreSavedWorkspace()
         }
+        #if DEBUG
+        // DEBUG only (the Simulator has no camera): `--pair-payload <base64url of the pairing code>` pairs on launch,
+        // exactly as pasting the code into "Can't scan?" does.
+        if let i = args.firstIndex(of: "--pair-payload"), i + 1 < args.count,
+           let data = CompanionRelayAuth.base64UrlDecode(args[i + 1]), let text = String(data: data, encoding: .utf8) {
+            let payload = text
+            Task { @MainActor [weak self] in self?.startPairing(payload: payload) }
+        }
+        #endif
         let client = self.client
         let owner = WeakOwner(self)
         Task {
@@ -212,7 +221,7 @@ final class CompanionAppState {
         notice = nil
         let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let qr = try? JSONDecoder().decode(PairingQRPayload.self, from: Data(trimmed.utf8)), qr.v == 1 else {
-            pairingError = "That isn't a Toolroll pairing code. On your Mac, open Settings → Phone → Pair a phone for a new one."
+            pairingError = "That isn't a Toolroll pairing code. On your Mac, open Settings → Phone → Pair an iPhone for a new one."
             return
         }
         pairingTask?.cancel()
