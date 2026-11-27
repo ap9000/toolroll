@@ -97,6 +97,8 @@ interface MachineRoom {
   nextConnId: number;
   machineFrameBucket: TokenBucket;
   machineByteBucket: TokenBucket;
+  /** Daemon → phones: its own budget (phones can't spend it); over it, the phone being sent to is closed, never the daemon. */
+  daemonByteBucket: TokenBucket;
 }
 
 /** Machines one reference relay holds at once (it is for self-hosting a household or team, not the public). */
@@ -299,6 +301,7 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
           nextConnId: 1,
           machineFrameBucket: new TokenBucket(machineFramesPerMin, Math.max(phoneFrameBurst * 2, 240), t),
           machineByteBucket: new TokenBucket(machineBytesPerMin, Math.max(phoneByteBurst * 2, 4 * 1024 * 1024), t),
+          daemonByteBucket: new TokenBucket(machineBytesPerMin, Math.max(phoneByteBurst * 2, 4 * 1024 * 1024), t),
         });
       }
       sendJson(res, 200, { machineId: checked.machineId });
@@ -519,9 +522,13 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
             ws.close(1013, "relay_budget_exceeded");
             return;
           }
-          // The daemon's replies aren't charged to the machine's buckets: phones spend those, and a phone that drained
-          // them must not get the daemon (and with it every other phone) closed. The Mac paces replies by phone credit.
+          // The daemon's replies have their own bucket (phones can't drain it to get the daemon closed); over it, only
+          // the phone being sent to is closed.
           const peer = room.peers.get(env.connId);
+          if (peer !== undefined && !room.daemonByteBucket.tryConsume(env.payload.length, nowMs())) {
+            cleanupPeer(room, env.connId, "rate_limited", true);
+            return;
+          }
           if (peer !== undefined && peer.ws.readyState === WebSocket.OPEN) {
             totalForwardedFrames += 1;
             peer.ws.send(env.payload, { binary: true });

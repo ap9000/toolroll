@@ -18,9 +18,9 @@ const MAX_ID_LENGTH = 128;
 /** Per phone socket, per minute (PROTOCOL.md data-plane limits). */
 const PHONE_FRAMES_PER_MIN = 600;
 const PHONE_BYTES_PER_MIN = 4 * 1024 * 1024;
-/** Everything through one machine's room, per minute: past it the sender is closed (a phone) or its frame dropped and
- * the daemon closed (the daemon proved the machine key, so this only bites a machine used as a free bandwidth relay). */
-const MACHINE_BYTES_PER_MIN = 32 * 1024 * 1024;
+/** Per machine, per minute, in each direction: phones → daemon over it closes the sending phone; daemon → phones over it
+ * closes the phone being sent to. Never the daemon, so one phone can't cut the others off. */
+const MACHINE_BYTES_PER_MIN = 32 * 1024 * 1024; // each direction
 /** A phone socket that has sent nothing for this long is closed (the app pings well within it). */
 const PHONE_IDLE_MS = 90_000;
 /** A phone socket must send its first message (Noise message 1) within this. */
@@ -307,7 +307,10 @@ export class MachineRoomDO {
   private readonly state: DurableObjectState;
   /** Per phone socket: its frame and byte buckets and when it last sent anything (in memory, reset on hibernation). */
   private readonly phones = new Map<WebSocket, { frames: MinuteBucket; bytes: MinuteBucket; lastAt: number }>();
+  /** Phones → daemon, all phones of this machine together. */
   private readonly machineBytes = new MinuteBucket(MACHINE_BYTES_PER_MIN);
+  /** Daemon → phones: its own budget, so phones can't spend it and a flooding daemon only loses the phone it floods. */
+  private readonly daemonBytes = new MinuteBucket(MACHINE_BYTES_PER_MIN);
 
   constructor(state: DurableObjectState) {
     this.state = state;
@@ -504,16 +507,14 @@ export class MachineRoomDO {
         ws.close(1009, "invalid_frame_size");
         return;
       }
-      if (!this.machineBytes.take(bytes.length)) {
-        ws.close(1008, "rate_limited");
-        return;
-      }
       const op = bytes[0]!;
       const connId = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(1, false);
       const target = connId === 0 ? undefined : sockets.find(s => attachmentOf(s)?.connId === connId);
       if (op === OP_PEER_CLOSE) {
         target?.close(1000, "closed_by_daemon");
       } else if (op === OP_PEER_DATA && target) {
+        // Over the daemon's own budget: that phone is closed (the frame isn't sent); the daemon and other phones stay.
+        if (!this.daemonBytes.take(bytes.length)) { target.close(1008, "rate_limited"); return; }
         sendQuietly(target, bytes.subarray(RELAY_ENVELOPE_HEADER_BYTES));
       }
       return;

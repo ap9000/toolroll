@@ -71,6 +71,8 @@ export function relayAddressesOf(url: string): { http: string; ws: string; host:
 }
 
 const TAILNET_REFRESH_MS = 10_000;
+/** Bytes queued for the relay before the connection is treated as stalled and reopened. */
+const RELAY_BACKLOG_CAP = 16 * 1024 * 1024;
 
 export class CompanionService {
   readonly engine: CompanionDaemonEngine;
@@ -255,9 +257,14 @@ export class CompanionService {
       if (!current()) return;
       const socket = await this.openSocket();
       if (!current()) { socket.close(1000, "stopping"); return; }
-      // No backlog limit here: the relay socket carries every phone, so its queue says nothing about any one of them.
-      // What each phone gets is bounded by its own credit and its 1 MiB of held responses.
-      const link = relayEnvelopeLink(`hosted#${generation}`, envelope => { if (socket.readyState === WebSocket.OPEN) socket.send(envelope, { binary: true }); });
+      // The relay socket carries every phone, so its queue says nothing about any one of them: no phone is dropped for
+      // it (each is bounded by its own credit and 1 MiB of held responses). A queue past the hard cap means the relay
+      // itself has stalled: the socket is closed and reconnected rather than allowed to grow.
+      const link = relayEnvelopeLink(`hosted#${generation}`, envelope => {
+        if (socket.readyState !== WebSocket.OPEN) return;
+        if (socket.bufferedAmount > RELAY_BACKLOG_CAP) { socket.close(1013, "relay_backlog"); return; }
+        socket.send(envelope, { binary: true });
+      });
       this.socket = socket;
       this.link = link;
       this.attempt = 0;
