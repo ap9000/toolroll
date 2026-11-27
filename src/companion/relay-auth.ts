@@ -217,28 +217,69 @@ export function checkRelayClaims(
   return { ok: true, claims: c as unknown as RelayTokenClaims };
 }
 
+/** Replay budgets per principal within one machine (relay/PROTOCOL.md "Replay"): the daemon has its own reserved
+ * rows, each device and each pair session its own, so no principal can fill the cache for another. Class totals bound
+ * the room: 512 + 32 × 64 + 4 × 16 rows. */
+export const RELAY_REPLAY_BUDGETS = Object.freeze({
+  daemon: 512,
+  perDevice: 64,
+  perPairSession: 16,
+  devicesTotal: 32 * 64,
+  pairSessionsTotal: 4 * 16,
+});
+
+export type ReplayPrincipalKind = "daemon" | "device" | "pair";
+
+/** The principal a token's jti is charged to: the daemon, one deviceId or one pairSessionId. */
+export function replayPrincipalOf(parsed: Pick<ParsedRelayToken, "role" | "deviceId" | "pairSessionId">): { kind: ReplayPrincipalKind; key: string } {
+  if (parsed.role === "device") return { kind: "device", key: `d:${parsed.deviceId}` };
+  if (parsed.role === "pair") return { kind: "pair", key: `p:${parsed.pairSessionId}` };
+  return { kind: "daemon", key: "daemon" };
+}
+
+function replayBudget(kind: ReplayPrincipalKind): { own: number; total: number } {
+  if (kind === "device") return { own: RELAY_REPLAY_BUDGETS.perDevice, total: RELAY_REPLAY_BUDGETS.devicesTotal };
+  if (kind === "pair") return { own: RELAY_REPLAY_BUDGETS.perPairSession, total: RELAY_REPLAY_BUDGETS.pairSessionsTotal };
+  return { own: RELAY_REPLAY_BUDGETS.daemon, total: RELAY_REPLAY_BUDGETS.daemon };
+}
+
 /** One-time `jti` bookkeeping for one machine (relay/PROTOCOL.md "Replay"): daemon and device tokens once, pair tokens
- * at most 3 times, at most 2048 remembered ids. Rows are kept until 30 s after the token's expiry. */
+ * at most 3 times. Ids are remembered per principal (a device can't spend or collide with the daemon's ids) until
+ * 30 s after the token's expiry; each principal has its own budget (RELAY_REPLAY_BUDGETS). */
 export class RelayReplayCache {
-  private readonly rows = new Map<string, { exp: number; uses: number }>();
-  constructor(private readonly cap = 2048) {}
-  /** Consumes one use. "ok", "replayed" (used up) or "full" (cap reached with no expired row to drop). */
-  consume(jti: string, expSec: number, maxUses: number, nowSec: number): "ok" | "replayed" | "full" {
-    const row = this.rows.get(jti);
+  private readonly rows = new Map<string, { principal: string; kind: ReplayPrincipalKind; exp: number; uses: number }>();
+  private readonly perPrincipal = new Map<string, number>();
+  private readonly perKind = new Map<ReplayPrincipalKind, number>();
+  /** Consumes one use. "ok", "replayed" (used up) or "full" (this principal's budget is spent, nothing expired). */
+  consume(principal: { kind: ReplayPrincipalKind; key: string }, jti: string, expSec: number, maxUses: number, nowSec: number): "ok" | "replayed" | "full" {
+    const id = `${principal.key}\u0000${jti}`;
+    const row = this.rows.get(id);
     if (row !== undefined) {
       if (row.uses >= maxUses) return "replayed";
       row.uses += 1;
       return "ok";
     }
-    if (this.rows.size >= this.cap) this.prune(nowSec);
-    if (this.rows.size >= this.cap) return "full";
-    this.rows.set(jti, { exp: expSec, uses: 1 });
+    const budget = replayBudget(principal.kind);
+    const over = (): boolean => (this.perPrincipal.get(principal.key) ?? 0) >= budget.own || (this.perKind.get(principal.kind) ?? 0) >= budget.total;
+    if (over()) this.prune(nowSec);
+    if (over()) return "full";
+    this.rows.set(id, { principal: principal.key, kind: principal.kind, exp: expSec, uses: 1 });
+    this.perPrincipal.set(principal.key, (this.perPrincipal.get(principal.key) ?? 0) + 1);
+    this.perKind.set(principal.kind, (this.perKind.get(principal.kind) ?? 0) + 1);
     return "ok";
   }
   prune(nowSec: number): void {
-    for (const [id, row] of this.rows) if (row.exp < nowSec - RELAY_TOKEN_SKEW_SEC) this.rows.delete(id);
+    for (const [id, row] of this.rows) {
+      if (row.exp >= nowSec - RELAY_TOKEN_SKEW_SEC) continue;
+      this.rows.delete(id);
+      const left = (this.perPrincipal.get(row.principal) ?? 1) - 1;
+      if (left <= 0) this.perPrincipal.delete(row.principal); else this.perPrincipal.set(row.principal, left);
+      this.perKind.set(row.kind, (this.perKind.get(row.kind) ?? 1) - 1);
+    }
   }
   get size(): number { return this.rows.size; }
+  /** Rows charged to one principal (tests). */
+  rowsOf(principalKey: string): number { return this.perPrincipal.get(principalKey) ?? 0; }
 }
 
 /** Uses a `jti` may have: pair tokens ride in the QR and a phone may retry, so 3; every other role once. */
