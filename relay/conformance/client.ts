@@ -108,14 +108,17 @@ export function connect(target: RelayTarget, bearer?: string, headers: Record<st
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(target.wsUrl, { headers: { ...(bearer !== undefined ? { authorization: `Bearer ${bearer}` } : {}), ...headers } });
     ws.once("open", () => resolve({ ws }));
-    ws.once("unexpected-response", (_req, res) => {
+    ws.once("unexpected-response", (req, res) => {
       let body = "";
+      // With this listener attached, ws leaves the refused request's socket open; a keep-alive server (Cloudflare)
+      // then holds it forever and the process (the post-deploy smoke test) never exits.
       res.on("data", (chunk: Buffer) => { body += chunk.toString("utf8"); });
       res.on("end", () => {
+        req.socket?.destroy();
         const code = res.headers["toolroll-relay-error"];
         resolve({ refused: { status: res.statusCode ?? 0, code: typeof code === "string" ? code : null, headers: res.headers, body } });
       });
-      res.on("error", () => resolve({ refused: { status: res.statusCode ?? 0, code: null, headers: res.headers, body } }));
+      res.on("error", () => { req.socket?.destroy(); resolve({ refused: { status: res.statusCode ?? 0, code: null, headers: res.headers, body } }); });
     });
     ws.once("error", error => reject(error));
   });
