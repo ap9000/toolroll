@@ -1314,7 +1314,7 @@ public actor CompanionRelayClient {
 
 /// The encrypted channel of one pairing socket after msg2: frames out through one ordered writer, frames in read
 /// until the answer on a given stream. Pings keep relay and Mac from seeing silence while the owner compares codes.
-private final class PairingLink: @unchecked Sendable {
+final class PairingLink: @unchecked Sendable {
     private let socket: any CompanionSocket
     private let session: NoiseTransportSession
     private let lock = NSLock()
@@ -1337,11 +1337,14 @@ private final class PairingLink: @unchecked Sendable {
         }
     }
 
-    /// Encrypts under the lock (nonce order = queue order) and queues.
+    /// Encrypts and queues under one lock, so nonce order is queue order even when the keepalive and a request send at
+    /// once (yielding outside the lock let nonce N+1 be queued before N, which the Mac can't decrypt).
     func send(_ frame: CompanionFrame) throws {
         let plaintext = try frame.encode()
-        let ciphertext = try lock.withLock { try session.encrypt(plaintext) }
-        outbox.yield(ciphertext)
+        try lock.withLock {
+            let ciphertext = try session.encrypt(plaintext)
+            outbox.yield(ciphertext)
+        }
     }
 
     func startKeepalive(every interval: Duration, sleep: @escaping CompanionSleep) {

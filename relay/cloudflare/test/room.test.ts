@@ -209,6 +209,25 @@ describe("SQLite tables and housekeeping", () => {
     await admit(w, m, []); // re-arms at the (past) GC deadline
     await until("the room to be deleted", async () => (await admin(w, m, "PUT", `/v1/machines/${m.machineId}/devices`, { devices: [] })).status === 404);
   });
+
+  test("a daemon connected past the 90-day mark keeps its room, is marked seen, and the alarm doesn't spin on the GC deadline", async () => {
+    const w = await worker({ timing: { phoneFirstFrameMs: 300, phoneIdleMs: 2500, daemonSilenceMs: 2500 } });
+    const m = await register(w);
+    const daemon = await connectDaemon(w, m);
+    const beat = setInterval(() => daemon.heartbeat(Date.now()), 300);
+    try {
+      const stale = Date.now() - LIMITS.roomIdleDeleteMs - 1000;
+      await sql(w, m.machineId, `UPDATE machine SET last_daemon_at = ${stale}`);
+      await admit(w, m, []); // arms the (past) GC deadline
+      await until("the alarm to mark the live daemon as seen", async () =>
+        ((await sql<{ t: number }>(w, m.machineId, "SELECT last_daemon_at AS t FROM machine"))[0]?.t ?? 0) > stale);
+      // The room is still there and the daemon still connected.
+      expect((await admin(w, m, "PUT", `/v1/machines/${m.machineId}/devices`, { devices: [] })).status).toBe(200);
+      expect(daemon.ws.readyState).toBe(1);
+    } finally {
+      clearInterval(beat);
+    }
+  });
 });
 
 describe("configuration", () => {

@@ -362,10 +362,12 @@ export class MachineRoomDO extends DurableObject<Env> {
 
   // ---- alarm: the earliest deadline across sockets, plus the far housekeeping deadlines ----
 
-  private nextHousekeeping(machine: MachineRow): number {
+  /** The far deadlines: replay rows and tombstones expiring, and — only while nothing is connected — the room's idle GC
+   * (a connected room is never collected, so its GC deadline must not keep the alarm firing). */
+  private nextHousekeeping(machine: MachineRow, idle: boolean): number {
     const jti = this.sql.exec<{ m: number | null }>("SELECT MIN(exp) AS m FROM jti").toArray()[0]?.m ?? null;
     const stone = this.sql.exec<{ m: number | null }>("SELECT MIN(expires_at) AS m FROM tombstone").toArray()[0]?.m ?? null;
-    let next = machine.last_daemon_at + LIMITS.roomIdleDeleteMs;
+    let next = idle ? machine.last_daemon_at + LIMITS.roomIdleDeleteMs : Infinity;
     if (jti !== null) next = Math.min(next, (jti + 31) * 1000);
     if (stone !== null) next = Math.min(next, stone);
     return next;
@@ -383,6 +385,7 @@ export class MachineRoomDO extends DurableObject<Env> {
     if (machine === null) return;
     let next = Infinity;
     let sockets = 0;
+    let daemonLive = false;
     for (const ws of this.state.getWebSockets()) {
       const att = this.view(ws);
       if (att === null) continue;
@@ -395,8 +398,11 @@ export class MachineRoomDO extends DurableObject<Env> {
         continue;
       }
       sockets += 1;
+      if (att.role === "daemon") daemonLive = true;
       next = Math.min(next, due.at);
     }
+    // A daemon connected for months still counts as seen (a daily write at most), so its room never ages toward GC.
+    if (daemonLive && now - machine.last_daemon_at > DAEMON_SEEN_WRITE_MS) this.sql.exec("UPDATE machine SET last_daemon_at = ? WHERE k = 1", now);
     const nowSec = Math.floor(now / 1000);
     this.sql.exec("DELETE FROM jti WHERE exp < ?", nowSec - 30);
     this.sql.exec("DELETE FROM tombstone WHERE expires_at <= ?", now);
@@ -405,7 +411,8 @@ export class MachineRoomDO extends DurableObject<Env> {
       await this.deleteRoom();
       return;
     }
-    next = Math.min(next, this.nextHousekeeping(machine));
+    next = Math.min(next, this.nextHousekeeping(machine, sockets === 0));
+    if (next === Infinity) return; // nothing connected or pending: no alarm until something arrives
     await this.state.storage.setAlarm(Math.max(next, now + 1));
   }
 
@@ -472,7 +479,7 @@ export class MachineRoomDO extends DurableObject<Env> {
     } else if (now - existing.last_daemon_at > DAEMON_SEEN_WRITE_MS) {
       this.sql.exec("UPDATE machine SET last_daemon_at = ? WHERE k = 1", now);
     }
-    await this.armBy(this.nextHousekeeping(this.machine()!));
+    await this.armBy(this.nextHousekeeping(this.machine()!, true));
     return jsonResponse(200, { machineId });
   }
 
@@ -523,7 +530,7 @@ export class MachineRoomDO extends DurableObject<Env> {
       for (const phone of this.phones()) {
         if (phone.att.role === "device" && phone.att.peerId === deviceId) this.closePhone(phone.ws, phone.att, CLOSE.revoked, "device_revoked", true);
       }
-      await this.armBy(this.nextHousekeeping(this.machine()!));
+      await this.armBy(this.nextHousekeeping(this.machine()!, true));
       return jsonResponse(200, { ok: true });
     }
 
@@ -588,7 +595,7 @@ export class MachineRoomDO extends DurableObject<Env> {
       if (gone.has(phone.att.peerId)) this.closePhone(phone.ws, phone.att, CLOSE.revoked, "device_revoked", true);
       else if (rekeyed.has(phone.att.peerId)) this.closePhone(phone.ws, phone.att, CLOSE.superseded, "superseded", true);
     }
-    if (gone.size > 0) await this.armBy(this.nextHousekeeping(this.machine()!));
+    if (gone.size > 0) await this.armBy(this.nextHousekeeping(this.machine()!, true));
     return jsonResponse(200, { ok: true, devices: next.size });
   }
 

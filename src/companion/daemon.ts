@@ -565,14 +565,23 @@ export class CompanionDaemonEngine {
       return { ok: false, error };
     }
 
-    // The linearization point: from here the phone holds the keys.
+    // The linearization point: once the RES is handed to the link, the phone may hold the keys.
     p.status = "finishing";
     attached.state = "pair_finishing";
-    this.sendControl(attached, {
+    const delivered = this.sendControl(attached, {
       type: FrameType.RES, streamId: PAIR_READY_STREAM, seq: 0,
       payload: Buffer.from(JSON.stringify({ ok: true, result: { deviceId, recoveryGeneration: identity.recoveryGeneration, pskEntropy: pskEntropy.toString("base64url") } }), "utf8"),
     });
     pskEntropy.fill(0);
+    if (!delivered) {
+      // Never handed over: the phone can't have the keys, so nothing committed. Undo the row and the relays' admission.
+      deletePendingDevice(this.store.handle, deviceId);
+      this.forgetOnRelays(deviceId);
+      const error = "The phone disconnected before pairing finished. Pair again.";
+      p.status = "confirming"; // endPairing ends a pairing that hasn't reached finishing
+      this.endPairing(p, "failed", error);
+      return { ok: false, error };
+    }
     return { ok: true, deviceId };
   }
 
@@ -763,10 +772,11 @@ export class CompanionDaemonEngine {
       else this.handleSessionMsg1(peer, data);
       return;
     }
-    // A refused phone gets nothing more than an unanswered hello would: its first transport message ends it the way the
-    // hello deadline would have.
+    // A refused connection must look, from outside, exactly like a valid one whose first transport message doesn't
+    // decrypt: someone replaying a captured message 1 can send bytes but can't encrypt them, and a different close for
+    // a refused phone would tell them it was removed. The real phone reads the refusal and closes on its own.
     if (peer.state === "refusing") {
-      this.dropPeer(peer, "hello_timeout", CLOSE_TIMEOUT);
+      this.dropPeer(peer, "decrypt_failed");
       return;
     }
     if (peer.session === null) {
@@ -1421,26 +1431,31 @@ export class CompanionDaemonEngine {
   /** A control frame (PONG, ERROR, a pairing outcome): never paced, encrypted and sent now — after every frame already
    * encrypted, ahead of data frames pacing still holds (those aren't encrypted yet, so the order on the wire is the
    * encryption order). */
-  private sendControl(peer: ActivePeerConn, frame: CompanionFrame): void {
-    this.emit(peer, frame);
+  /** Sends one frame now; false when it couldn't be handed to the link (the phone is then dropped). */
+  private sendControl(peer: ActivePeerConn, frame: CompanionFrame): boolean {
+    return this.emit(peer, frame);
   }
 
-  private emit(peer: ActivePeerConn, frame: CompanionFrame): void {
-    if (peer.session === null || this.peers.get(peer.key) !== peer) return;
+  /** Encrypts and hands one frame to the link. False when it wasn't handed over (the peer is gone, isn't reading, needs
+   * a rekey, or encryption or the link's send failed): callers that commit to a delivery must undo on false. */
+  private emit(peer: ActivePeerConn, frame: CompanionFrame): boolean {
+    if (peer.session === null || this.peers.get(peer.key) !== peer) return false;
     // A phone that stops reading leaves what we send queued in memory: past the link's limit it is dropped, not fed.
     if (peer.link.backlog !== undefined && peer.link.backlogLimit !== undefined && peer.link.backlog() > peer.link.backlogLimit) {
       this.dropPeer(peer, "not_reading");
-      return;
+      return false;
     }
     if (peer.role === "device" && peer.state === "authenticated" && this.needsRekey(peer.session) && !(frame.type === FrameType.ERROR && frame.streamId === 0)) {
       this.endForRekey(peer);
-      return;
+      return false;
     }
     try {
       const ct = peer.session.encrypt(encodeFrame(frame), this.nowMs());
       peer.link.send(peer.connId, ct);
+      return true;
     } catch {
       this.dropPeer(peer, "encrypt_failed");
+      return false;
     }
   }
 

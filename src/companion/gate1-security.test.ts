@@ -118,6 +118,27 @@ async function connect(w: World, phone: PairedPhone): Promise<PhoneSession> {
 const errorCode = (payload: Buffer): string => (JSON.parse(payload.toString("utf8")) as { code: string }).code;
 
 describe("1. pairing: key confirmation, contest rules, activation", () => {
+  test("keys that can't be handed to the phone's link commit nothing: confirm fails, the row and relay admission are undone", async () => {
+    const w = world();
+    const qr = start(w);
+    const failing = { on: false };
+    const wire = EngineWire.open(w.engine, "pair", qr.pairSessionId, {
+      send: (_connId, payload) => { if (failing.on) throw new Error("socket gone"); queued.push(Buffer.from(payload)); },
+    });
+    const queued: Buffer[] = [];
+    // The phone reads what the engine queued through the override.
+    const relay = { next: async () => queued.shift() ?? null, send: (b: Buffer) => wire.send(b), close: () => wire.close() };
+    const phone = await PairingPhone.scan(qr, relay as unknown as EngineWire);
+    await phone.ready("Test iPhone");
+    failing.on = true;
+    const confirmed = await w.engine.confirmPairing(qr.pairSessionId, BINDING);
+    expect(confirmed.ok).toBe(false);
+    expect(w.registered).toHaveLength(1);
+    expect(w.revoked).toEqual(w.registered);
+    expect(listPairedDevices(w.store.handle)).toEqual([]);
+    expect(w.engine.pairingView(qr.pairSessionId, BINDING)?.status).toBe("failed");
+  });
+
   test("a bare open and a message 1 never abort a pairing or show a code; pair.ready attaches the first proven phone", async () => {
     const w = world();
     const qr = start(w);
@@ -359,8 +380,29 @@ describe("3. refusals: authenticated, padded, terminal", () => {
     expect(WIRE.msg2.refusedReasons).toContain(refused.status.reason);
     await refused.open("device.hello");
     expect(wire.closed).toBe(true);
-    expect(wire.closeReason).toBe("hello_timeout");
-    expect(wire.closeCode).toBe(4408);
+    // From outside, the refused connection ends exactly like a valid one sent bytes it can't decrypt.
+    const valid = await pairPhone(w, "owner:C");
+    const validWire = EngineWire.open(w.engine, "device", valid.deviceId);
+    await PhoneSession.handshake(valid, validWire);
+    await validWire.send(Buffer.alloc(48, 7));
+    expect(validWire.closed).toBe(true);
+    expect([wire.closeReason, wire.closeCode]).toEqual([validWire.closeReason, validWire.closeCode]);
+  });
+
+  test("someone replaying a removed phone's message 1 can't tell it was removed: same msg2 size, same close on garbage", async () => {
+    const w = world();
+    const removed = await pairPhone(w);
+    const kept = await pairPhone(w, "owner:B");
+    expect(w.engine.revokeDevice(removed.deviceId)).toBe(true);
+    const outcomes = [];
+    for (const phone of [removed, kept]) {
+      const wire = EngineWire.open(w.engine, "device", phone.deviceId);
+      const s = await PhoneSession.handshake(phone, wire);
+      // The prober can't encrypt: it sends whatever bytes it likes.
+      await wire.send(Buffer.alloc(64, 1));
+      outcomes.push({ msg2: s.msg2.length, closed: wire.closed, reason: wire.closeReason, code: wire.closeCode });
+    }
+    expect(outcomes[0]).toEqual(outcomes[1]);
   });
 
   test("a password change retires the phone as account_revoked; a moved generation without the record says the same", async () => {
