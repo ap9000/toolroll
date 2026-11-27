@@ -4,9 +4,16 @@ import ToolrollCompanionCore
 struct TaskDetailView: View {
     let appState: CompanionAppState
     let taskId: String
-    @State private var showLive = false
+    /// The run the Live sheet watches, fixed when it opens (the task's next step may change underneath it).
+    @State private var liveSheet: LiveSheet?
     @State private var showUsual = false
     @State private var showHistory = false
+    @State private var refreshed = 0
+
+    struct LiveSheet: Identifiable {
+        let run: Int
+        var id: Int { run }
+    }
 
     private var row: WorkRow? { appState.row(taskId) }
     private var steps: Loadable<StepCards> { appState.steps(taskId) }
@@ -24,6 +31,9 @@ struct TaskDetailView: View {
                         HStack { Spacer(); ProgressView(); Spacer() }
                             .padding(.vertical, 32)
                     }
+                    if appState.isOffline, steps.value != nil {
+                        StaleDataBanner(lastUpdated: appState.lastUpdated)
+                    }
                     if let cards = steps.value {
                         if let terms = cards.waitingTerms {
                             termsSection(terms)
@@ -39,10 +49,14 @@ struct TaskDetailView: View {
                 }
                 .padding(16)
                 .padding(.bottom, 8)
-                .opacity(appState.isOffline ? 0.6 : 1)
             }
             .background(ToolrollTheme.paper.ignoresSafeArea())
-            .refreshable { await appState.loadTask(taskId) }
+            .environment(\.showsStaleData, appState.isOffline)
+            .refreshable {
+                await appState.loadTask(taskId)
+                if steps.phase == .loaded { refreshed += 1 }
+            }
+            .sensoryFeedback(.success, trigger: refreshed)
             .safeAreaInset(edge: .bottom) {
                 bottomBar(proxy: proxy)
             }
@@ -55,14 +69,20 @@ struct TaskDetailView: View {
             #if DEBUG
             if appState.debugScreen == "openLive" {
                 appState.debugScreen = nil
-                showLive = true
+                if case .watchLive(let run) = next { liveSheet = LiveSheet(run: run) }
             }
             #endif
         }
-        .sheet(isPresented: $showLive) {
-            if case .watchLive(let run) = next {
-                LiveWatchView(appState: appState, run: run, title: title)
+        .task(id: taskId) {
+            // While this task is on screen and connected, keep it current.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                guard !Task.isCancelled else { return }
+                if appState.canAutoRefresh { await appState.loadTask(taskId, quiet: true) }
             }
+        }
+        .sheet(item: $liveSheet) { sheet in
+            LiveWatchView(appState: appState, run: sheet.run, title: title)
         }
     }
 
@@ -78,6 +98,9 @@ struct TaskDetailView: View {
                 StateChip(word: row.kind.word(for: row), tone: row.kind.tone)
             } else if let chip = next.chip {
                 StateChip(word: chip.word, tone: chip.tone)
+            } else if let cards = steps.value, let word = cards.headline, !word.isEmpty {
+                // No Work row and no next step (a build between steps): the task's own state word.
+                StateChip(word: word, tone: cards.liveRun != nil ? .live : .neutral)
             }
             Text(next.headline)
                 .font(.title2.weight(.bold))
@@ -98,11 +121,29 @@ struct TaskDetailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// The line under the title, unless it only says the headline again.
     private var headerLine: String? {
+        guard let line = rawHeaderLine, !repeats(line, next.headline) else { return nil }
+        return line
+    }
+
+    private var rawHeaderLine: String? {
         if let question = row?.need?.question { return question.text }
         if let line = row?.need?.line ?? row?.need?.reason { return line }
         if let landing = steps.value?.landing { return landing.words }
         return row?.problem ?? row?.detail
+    }
+
+    /// Two lines say the same thing (case and punctuation aside, or one is the other plus a tail).
+    private func repeats(_ a: String, _ b: String) -> Bool {
+        func words(_ s: String) -> String {
+            s.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.map(String.init).joined()
+        }
+        let x = words(a), y = words(b)
+        guard !x.isEmpty, !y.isEmpty else { return false }
+        if x == y { return true }
+        // One starting with the other counts only when the shorter is a real phrase, not a word like "Done".
+        return min(x.count, y.count) >= 10 && (x.hasPrefix(y) || y.hasPrefix(x))
     }
 
     // MARK: Approval terms
@@ -116,7 +157,7 @@ struct TaskDetailView: View {
                         .font(.subheadline)
                         .foregroundStyle(ToolrollTheme.muted)
                 }
-                ForEach(terms.warnings, id: \.self) { warning in
+                ForEach(Array(terms.warnings.enumerated()), id: \.offset) { _, warning in
                     Label { Text(verbatim: warning) } icon: { Image(systemName: "exclamationmark.triangle") }
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(ToolrollTheme.ink)
@@ -133,7 +174,7 @@ struct TaskDetailView: View {
                             .font(.subheadline)
                             .foregroundStyle(ToolrollTheme.ink)
                             .fixedSize(horizontal: false, vertical: true)
-                        ForEach(row.lines, id: \.self) { line in
+                        ForEach(Array(row.lines.enumerated()), id: \.offset) { _, line in
                             Text(verbatim: line)
                                 .font(.footnote.monospaced())
                                 .foregroundStyle(ToolrollTheme.ink)
@@ -175,13 +216,18 @@ struct TaskDetailView: View {
 
     @ViewBuilder
     private func nowSection(_ cards: StepCards) -> some View {
-        let current = (cards.cards ?? []).filter { $0.inChain && ($0.state == .current || $0.state == .stuck) && !$0.sentence.isEmpty }
+        // A card that only restates the headline (the review step's "A result for you to review") is left out.
+        let current = (cards.cards ?? []).filter {
+            $0.inChain && ($0.state == .current || $0.state == .stuck) && !$0.sentence.isEmpty
+                && !(next == .reviewChanges && $0.key == .ready)
+                && !repeats($0.sentence, next.headline)
+        }
         let notes = problemNotes(cards)
         if !current.isEmpty || !notes.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 sectionTitle("Now")
                 VStack(alignment: .leading, spacing: 12) {
-                    ForEach(current) { card in
+                    ForEach(Array(current.enumerated()), id: \.offset) { _, card in
                         HStack(alignment: .firstTextBaseline, spacing: 10) {
                             Image(systemName: symbol(card.mark))
                                 .foregroundStyle(tone(card.mark).hue)
@@ -198,7 +244,7 @@ struct TaskDetailView: View {
                         }
                         .accessibilityElement(children: .combine)
                     }
-                    ForEach(notes, id: \.self) { note in
+                    ForEach(Array(notes.enumerated()), id: \.offset) { _, note in
                         markdownText(note)
                             .font(.subheadline)
                             .foregroundStyle(ToolrollTheme.ink)
@@ -302,7 +348,7 @@ struct TaskDetailView: View {
         let finished = (cards.cards ?? []).filter { $0.inChain && ($0.state == .done || $0.state == .skipped) }
         DisclosureGroup(isExpanded: $showHistory) {
             VStack(alignment: .leading, spacing: 14) {
-                ForEach(finished) { card in
+                ForEach(Array(finished.enumerated()), id: \.offset) { _, card in
                     historyRow(card)
                 }
                 detailsBlock(cards)
@@ -330,9 +376,11 @@ struct TaskDetailView: View {
                         .foregroundStyle(ToolrollTheme.ink)
                     Spacer()
                     if let at = RelativeTime.date(card.finishedAt ?? card.at) {
-                        Text(RelativeTime.ago(at))
-                            .font(.caption)
-                            .foregroundStyle(ToolrollTheme.muted)
+                        TimelineView(.periodic(from: .now, by: 60)) { context in
+                            Text(RelativeTime.ago(at, now: context.date))
+                                .font(.caption)
+                                .foregroundStyle(ToolrollTheme.muted)
+                        }
                     }
                 }
                 if !card.sentence.isEmpty {
@@ -400,21 +448,31 @@ struct TaskDetailView: View {
                 Group {
                     switch next {
                     case .approveOnMac:
-                        onMacRow("Approve on your Mac", detail: "Approving from this iPhone is coming later.")
+                        onMacRow("Approve on your Mac", detail: nil)
                     case .answerOnMac:
                         onMacRow("Answer on your Mac", detail: nil)
                     case .unblockOnMac:
                         onMacRow("Retry or unblock it on your Mac", detail: nil)
                     case .reviewChanges:
-                        Button("Review changes") { jumpToChanges(proxy) }
-                            .buttonStyle(InkButtonStyle())
-                            .disabled(diff.value?.files.isEmpty ?? true)
+                        VStack(spacing: 10) {
+                            if let first = firstFileRoute {
+                                NavigationLink(value: Route.diff(first)) {
+                                    Text("Review changes")
+                                }
+                                .buttonStyle(InkButtonStyle())
+                            } else {
+                                Button("Review changes") { jumpToChanges(proxy) }
+                                    .buttonStyle(InkButtonStyle())
+                                    .disabled(diff.value?.files.isEmpty ?? true)
+                            }
+                            onMacRow("Accept on your Mac", detail: nil)
+                        }
                     case .viewChanges:
                         Button("View changes") { jumpToChanges(proxy) }
                             .buttonStyle(OutlineButtonStyle())
-                    case .watchLive:
+                    case .watchLive(let run):
                         Button {
-                            showLive = true
+                            liveSheet = LiveSheet(run: run)
                         } label: {
                             Label("Watch live", systemImage: "dot.radiowaves.left.and.right")
                         }
@@ -450,6 +508,14 @@ struct TaskDetailView: View {
         }
         .frame(minHeight: 44)
         .accessibilityElement(children: .combine)
+    }
+
+    /// The first file that can be opened (binary files can't), where "Review changes" starts.
+    private var firstFileRoute: DiffRoute? {
+        guard let value = diff.value, let run = value.run,
+              let entry = value.files.first(where: { !$0.binary }) else { return nil }
+        return DiffRoute(task: taskId, run: run, file: entry.file, path: entry.path,
+                         additions: entry.additions, deletions: entry.deletions)
     }
 
     private func jumpToChanges(_ proxy: ScrollViewProxy) {
