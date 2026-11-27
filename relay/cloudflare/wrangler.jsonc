@@ -3,6 +3,9 @@
   "name": "toolroll-companion-relay",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-01",
+  // The official relay's address (the QR's relayUrl is wss://relay.toolroll.dev/v1/connect). A self-hoster changes
+  // this and RELAY_PUBLIC_HOST together. CHALLENGE_SECRET is a secret: `wrangler secret put CHALLENGE_SECRET`.
+  "routes": [{ "pattern": "relay.toolroll.dev", "custom_domain": true }],
   "durable_objects": {
     "bindings": [
       {

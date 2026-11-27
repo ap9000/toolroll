@@ -2,7 +2,7 @@
  * Cloudflare Workers + Durable Object (WebSocket Hibernation) hosting adapter
  * for the Toolroll Companion Relay (`relay/PROTOCOL.md`).
  *
- * One hosting option implementing the exact same v1 wire contract as `src/companion/reference-relay.ts`.
+ * One hosting option implementing the exact same v1 wire contract as `src/companion/relay-server.ts`.
  * Holds zero Noise keys, never sees plaintext RPC payloads, and enforces Ed25519 pre-upgrade admission,
  * deterministic machineId ownership, 5-byte connId multi-phone routing, 65,535 B frame cap, and rate caps.
  */
@@ -21,6 +21,8 @@ const OP_PEER_CLOSE = 0x03;
 interface Env {
   MACHINE_ROOM: DurableObjectNamespace;
   RELAY_PUBLIC_HOST: string;
+  /** HMAC key for stateless registration challenges (`wrangler secret put CHALLENGE_SECRET`). */
+  CHALLENGE_SECRET: string;
   APNS_TOPIC?: string;
   APNS_ENVIRONMENT?: string;
   APNS_TEAM_ID?: string;
@@ -128,6 +130,31 @@ function encodeEnvelope(op: number, connId: number, payload: Uint8Array): Uint8A
   return out;
 }
 
+/** A registration challenge with no storage: 16 random bytes, an expiry, and an HMAC over both. Unauthenticated callers
+ * can ask for as many as they like without writing anything. A replay inside its minute only re-registers the same
+ * machine key (machine ids are derived from the key), which changes nothing. */
+async function challengeKey(secret: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+}
+async function mintChallenge(secret: string, nowMs: number): Promise<string> {
+  const body = new Uint8Array(24);
+  body.set(crypto.getRandomValues(new Uint8Array(16)), 0);
+  new DataView(body.buffer).setBigUint64(16, BigInt(nowMs + 60_000), false);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", await challengeKey(secret), body));
+  const out = new Uint8Array(body.length + mac.length);
+  out.set(body, 0);
+  out.set(mac, body.length);
+  return toB64Url(out);
+}
+async function challengeValid(secret: string, challenge: string, nowMs: number): Promise<boolean> {
+  let raw: Uint8Array;
+  try { raw = fromB64Url(challenge); } catch { return false; }
+  if (raw.length !== 24 + 32) return false;
+  const body = raw.subarray(0, 24), mac = raw.subarray(24);
+  if (!(await crypto.subtle.verify("HMAC", await challengeKey(secret), mac, body))) return false;
+  return Number(new DataView(body.buffer, body.byteOffset, 24).getBigUint64(16, false)) > nowMs;
+}
+
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -142,30 +169,25 @@ export default {
       return jsonResponse(200, { ok: true, version: 1, runtime: "cloudflare-do" });
     }
     if (request.method === "POST" && url.pathname === "/v1/challenge") {
-      // Stateless HMAC-free short-lived random challenge routed to global challenge DO or room
-      const challengeBytes = crypto.getRandomValues(new Uint8Array(32));
-      const challenge = toB64Url(challengeBytes);
-      const id = env.MACHINE_ROOM.idFromName("__challenges__");
-      const stub = env.MACHINE_ROOM.get(id);
-      await stub.fetch("https://do/challenge", { method: "POST", body: JSON.stringify({ challenge }) });
-      return jsonResponse(200, { challenge, expiresInSec: 60 });
+      if (!env.CHALLENGE_SECRET) return jsonResponse(503, { error: "relay_not_configured" });
+      return jsonResponse(200, { challenge: await mintChallenge(env.CHALLENGE_SECRET, Date.now()), expiresInSec: 60 });
     }
     if (request.method === "POST" && url.pathname === "/v1/machines/register") {
       const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
       if (!body || typeof body["relayMachinePub"] !== "string" || typeof body["challenge"] !== "string" || typeof body["signature"] !== "string") {
         return jsonResponse(400, { error: "invalid_body" });
       }
-      const chalStub = env.MACHINE_ROOM.get(env.MACHINE_ROOM.idFromName("__challenges__"));
-      const chalRes = await chalStub.fetch("https://do/challenge/consume", {
-        method: "POST",
-        body: JSON.stringify({ challenge: body["challenge"] }),
-      });
-      if (!chalRes.ok) return jsonResponse(401, { error: "invalid_or_expired_challenge" });
-
-      const pubKey = fromB64Url(body["relayMachinePub"]);
+      if (!env.CHALLENGE_SECRET || !(await challengeValid(env.CHALLENGE_SECRET, body["challenge"], Date.now()))) {
+        return jsonResponse(401, { error: "invalid_or_expired_challenge" });
+      }
+      let pubKey: Uint8Array;
+      try { pubKey = fromB64Url(body["relayMachinePub"]); } catch { return jsonResponse(400, { error: "invalid_body" }); }
+      if (pubKey.length !== 32) return jsonResponse(400, { error: "invalid_body" });
       const host = env.RELAY_PUBLIC_HOST || url.host;
       const popMsg = new TextEncoder().encode(`register\0${host}\0${body["challenge"]}`);
-      const ok = await verifyEd25519(pubKey, popMsg, fromB64Url(body["signature"]));
+      let signature: Uint8Array;
+      try { signature = fromB64Url(body["signature"]); } catch { return jsonResponse(400, { error: "invalid_body" }); }
+      const ok = await verifyEd25519(pubKey, popMsg, signature);
       if (!ok) return jsonResponse(401, { error: "invalid_pop_signature" });
 
       const machineId = await deriveMachineId(pubKey);
@@ -202,9 +224,18 @@ interface SocketAttachment {
   peerId: string;
 }
 
+/** A socket's attachment, or null for a socket that has none (never a thrown error). */
+function attachmentOf(ws: WebSocket): SocketAttachment | null {
+  try { return ws.deserializeAttachment() as SocketAttachment | null; } catch { return null; }
+}
+
+/** Sends, ignoring a socket that has just closed (its close handler does the bookkeeping). */
+function sendQuietly(ws: WebSocket, data: Uint8Array): void {
+  try { ws.send(data); } catch { /* closed */ }
+}
+
 export class MachineRoomDO {
   private readonly state: DurableObjectState;
-  private nextConnId = 1;
 
   constructor(state: DurableObjectState) {
     this.state = state;
@@ -212,20 +243,6 @@ export class MachineRoomDO {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-
-    // Challenge pool endpoints (when invoked on __challenges__ singleton)
-    if (url.pathname === "/challenge" && request.method === "POST") {
-      const { challenge } = (await request.json()) as { challenge: string };
-      await this.state.storage.put(`chal:${challenge}`, Date.now() + 60_000);
-      return jsonResponse(200, { ok: true });
-    }
-    if (url.pathname === "/challenge/consume" && request.method === "POST") {
-      const { challenge } = (await request.json()) as { challenge: string };
-      const exp = await this.state.storage.get<number>(`chal:${challenge}`);
-      await this.state.storage.delete(`chal:${challenge}`);
-      if (exp === undefined || exp <= Date.now()) return jsonResponse(401, { error: "expired" });
-      return jsonResponse(200, { ok: true });
-    }
 
     if (url.pathname === "/register" && request.method === "POST") {
       const { machineId, relayMachinePub } = (await request.json()) as { machineId: string; relayMachinePub: string };
@@ -278,7 +295,8 @@ export class MachineRoomDO {
         return jsonResponse(200, { ok: true, devices: next.size });
       }
       if (request.method === "DELETE" && devMatch[2]) {
-        const deviceId = decodeURIComponent(devMatch[2]);
+        let deviceId: string;
+        try { deviceId = decodeURIComponent(devMatch[2]); } catch { return jsonResponse(400, { error: "invalid_device_id" }); }
         await this.state.storage.delete(`dev:${deviceId}`);
         for (const ws of this.state.getWebSockets()) {
           const att = ws.deserializeAttachment() as SocketAttachment | null;
@@ -297,6 +315,9 @@ export class MachineRoomDO {
       const parsed = parseToken(token);
       if (!parsed) return jsonResponse(401, { error: "malformed_token" });
 
+      if ((parsed.claims.role === "pair" && !parsed.claims.pairSessionId) || (parsed.claims.role === "device" && !parsed.claims.deviceId)) {
+        return jsonResponse(401, { error: "malformed_token" });
+      }
       let verifyKey: Uint8Array | null = null;
       if (parsed.claims.role === "daemon" || parsed.claims.role === "pair") {
         verifyKey = machinePub;
@@ -309,14 +330,24 @@ export class MachineRoomDO {
       if (!claims) return jsonResponse(401, { error: "invalid_token" });
 
       const activeSockets = this.state.getWebSockets();
-      const peerCount = activeSockets.filter(s => (s.deserializeAttachment() as SocketAttachment | null)?.role !== "daemon").length;
+      const daemonNow = activeSockets.find(s => attachmentOf(s)?.role === "daemon");
+      const peerCount = activeSockets.filter(s => attachmentOf(s)?.role !== "daemon").length;
       if (claims.role !== "daemon" && peerCount >= MAX_PHONES_PER_MACHINE) {
         return jsonResponse(429, { error: "too_many_peers" });
+      }
+      // A phone with no Mac connected has nobody to talk to: refused now, so the app says it can't reach the Mac.
+      if (claims.role !== "daemon" && daemonNow === undefined) {
+        return jsonResponse(503, { error: "daemon_unavailable" });
       }
 
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
-      const connId = claims.role === "daemon" ? 0 : this.nextConnId++;
+      // Ids from the sockets themselves (they survive hibernation; an in-memory counter wouldn't).
+      const connId = claims.role === "daemon" ? 0 : Math.max(0, ...activeSockets.map(s => attachmentOf(s)?.connId ?? 0)) + 1;
+      if (claims.role === "daemon") {
+        // A new daemon replaces the old (it proved the machine key); the old one's phones go with it.
+        for (const s of activeSockets) s.close(1000, attachmentOf(s)?.role === "daemon" ? "replaced_by_new_daemon" : "daemon_replaced");
+      }
       const attachment: SocketAttachment = {
         role: claims.role,
         connId,
@@ -325,11 +356,8 @@ export class MachineRoomDO {
       this.state.acceptWebSocket(server);
       server.serializeAttachment(attachment);
 
-      if (claims.role !== "daemon") {
-        const daemon = activeSockets.find(s => (s.deserializeAttachment() as SocketAttachment | null)?.role === "daemon");
-        if (daemon) {
-          daemon.send(encodeEnvelope(OP_PEER_OPEN, connId, new TextEncoder().encode(JSON.stringify({ role: claims.role, id: attachment.peerId }))));
-        }
+      if (claims.role !== "daemon" && daemonNow !== undefined) {
+        sendQuietly(daemonNow, encodeEnvelope(OP_PEER_OPEN, connId, new TextEncoder().encode(JSON.stringify({ role: claims.role, id: attachment.peerId }))));
       }
       return new Response(null, { status: 101, webSocket: client });
     }
@@ -343,7 +371,7 @@ export class MachineRoomDO {
       return;
     }
     const bytes = new Uint8Array(message);
-    const att = ws.deserializeAttachment() as SocketAttachment | null;
+    const att = attachmentOf(ws);
     if (!att) {
       ws.close(1008, "unattached");
       return;
@@ -357,11 +385,11 @@ export class MachineRoomDO {
       }
       const op = bytes[0]!;
       const connId = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(1, false);
-      const target = sockets.find(s => (s.deserializeAttachment() as SocketAttachment | null)?.connId === connId);
+      const target = connId === 0 ? undefined : sockets.find(s => attachmentOf(s)?.connId === connId);
       if (op === OP_PEER_CLOSE) {
         target?.close(1000, "closed_by_daemon");
       } else if (op === OP_PEER_DATA && target) {
-        target.send(bytes.subarray(RELAY_ENVELOPE_HEADER_BYTES));
+        sendQuietly(target, bytes.subarray(RELAY_ENVELOPE_HEADER_BYTES));
       }
       return;
     }
@@ -370,28 +398,33 @@ export class MachineRoomDO {
       ws.close(1009, "frame_too_large");
       return;
     }
-    const daemon = sockets.find(s => (s.deserializeAttachment() as SocketAttachment | null)?.role === "daemon");
+    const daemon = sockets.find(s => attachmentOf(s)?.role === "daemon");
     if (!daemon) {
       ws.close(1000, "daemon_unavailable");
       return;
     }
-    daemon.send(encodeEnvelope(OP_PEER_DATA, att.connId, bytes));
+    sendQuietly(daemon, encodeEnvelope(OP_PEER_DATA, att.connId, bytes));
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
-    const att = ws.deserializeAttachment() as SocketAttachment | null;
+    const att = attachmentOf(ws);
     if (!att) return;
-    const sockets = this.state.getWebSockets();
+    const sockets = this.state.getWebSockets().filter(s => s !== ws);
     if (att.role === "daemon") {
+      // Only when no other daemon has taken over (a replacement closes the old one too).
+      if (sockets.some(s => attachmentOf(s)?.role === "daemon")) return;
       for (const s of sockets) {
-        const other = s.deserializeAttachment() as SocketAttachment | null;
-        if (other && other.role !== "daemon") s.close(1000, "daemon_disconnected");
+        if (attachmentOf(s)?.role !== "daemon") s.close(1000, "daemon_disconnected");
       }
     } else {
-      const daemon = sockets.find(s => (s.deserializeAttachment() as SocketAttachment | null)?.role === "daemon");
+      const daemon = sockets.find(s => attachmentOf(s)?.role === "daemon");
       if (daemon) {
-        daemon.send(encodeEnvelope(OP_PEER_CLOSE, att.connId, new TextEncoder().encode(JSON.stringify({ reason: "peer_closed" }))));
+        sendQuietly(daemon, encodeEnvelope(OP_PEER_CLOSE, att.connId, new TextEncoder().encode(JSON.stringify({ reason: "peer_closed" }))));
       }
     }
+  }
+
+  async webSocketError(ws: WebSocket): Promise<void> {
+    await this.webSocketClose(ws);
   }
 }
