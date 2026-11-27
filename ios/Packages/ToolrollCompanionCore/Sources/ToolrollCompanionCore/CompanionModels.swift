@@ -20,6 +20,49 @@ public enum CompanionPairingPhase: Equatable, Sendable {
     case awaitingMacConfirm(code: String)
 }
 
+/// Which pairing attempt owns the pairing UI. Every scan starts a new attempt; a late callback from an older one
+/// (its code, its result, its failure) is dropped instead of overwriting the newer scan's state.
+public struct CompanionPairingGate: Equatable, Sendable {
+    public private(set) var phase: CompanionPairingPhase = .idle
+    public private(set) var current: UInt64 = 0
+
+    public init() {}
+
+    /// A new scan: it owns the pairing UI from now on.
+    public mutating func begin() -> UInt64 {
+        current &+= 1
+        phase = .contacting
+        return current
+    }
+
+    /// True while `attempt` is the newest scan and hasn't ended or been cancelled.
+    public func owns(_ attempt: UInt64) -> Bool {
+        attempt == current && phase != .idle
+    }
+
+    /// Shows `attempt`'s confirmation code, if it still owns the UI.
+    @discardableResult
+    public mutating func codeReady(_ code: String, attempt: UInt64) -> Bool {
+        guard owns(attempt) else { return false }
+        phase = .awaitingMacConfirm(code: code)
+        return true
+    }
+
+    /// `attempt` finished (paired or failed). Only its owner may clear the UI; false means drop the outcome's UI.
+    @discardableResult
+    public mutating func end(_ attempt: UInt64) -> Bool {
+        guard owns(attempt) else { return false }
+        phase = .idle
+        return true
+    }
+
+    /// The person cancelled (or left for the demo): no running attempt owns the UI any more.
+    public mutating func cancel() {
+        current &+= 1
+        phase = .idle
+    }
+}
+
 /// The pairing QR code (`v: 2`). Build one with `parse(_:)`, which enforces every rule in the wire contract.
 public struct PairingQRPayload: Codable, Equatable, Sendable {
     public static let version = 2

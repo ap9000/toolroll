@@ -151,3 +151,42 @@ func derivedURLs() {
     #expect(CompanionPathRules.directSocketURL("ws://192.168.1.20:4199/v1/direct", role: "device", id: "dev-1")?.absoluteString
         == "ws://192.168.1.20:4199/v1/direct?role=device&id=dev-1")
 }
+
+// MARK: - Pairing ownership
+
+@Test("A late code or failure from scan A never touches scan B's pairing state")
+func lateCallbacksFromOlderScanAreDropped() {
+    var gate = CompanionPairingGate()
+    let a = gate.begin()
+    let b = gate.begin()
+    #expect(gate.phase == .contacting)
+
+    let lateCodeA = gate.codeReady("AAAAAA", attempt: a)
+    let lateFailureA = gate.end(a)
+    #expect(!lateCodeA && !lateFailureA)
+    #expect(gate.phase == .contacting)
+    #expect(gate.owns(b))
+
+    let codeB = gate.codeReady("BBBBBB", attempt: b)
+    #expect(codeB)
+    let laterCodeA = gate.codeReady("AAAAAA", attempt: a)
+    let laterEndA = gate.end(a)
+    #expect(!laterCodeA && !laterEndA)
+    #expect(gate.phase == .awaitingMacConfirm(code: "BBBBBB"))
+
+    let endB = gate.end(b)
+    let endBAgain = gate.end(b)
+    #expect(endB && !endBAgain)
+    #expect(gate.phase == .idle)
+}
+
+@Test("After Cancel, the cancelled scan's late code and failure are dropped")
+func cancelledScanIsDropped() {
+    var gate = CompanionPairingGate()
+    let a = gate.begin()
+    gate.cancel()
+    let code = gate.codeReady("AAAAAA", attempt: a)
+    let end = gate.end(a)
+    #expect(!code && !end)
+    #expect(gate.phase == .idle)
+}
