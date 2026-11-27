@@ -1893,6 +1893,7 @@ function FlowCanvas(props: CanvasProps) {
         onPaneClick={() => { if (editing) props.onZone(null); }}
         // A node with a click handler keeps its pointer events outside edit mode: cards are clicked and dragged.
         onNodeClick={() => undefined}
+        fitView fitViewOptions={{ padding: 0.14, maxZoom: 1 }}
         nodesDraggable={editing} nodesConnectable={editing} elementsSelectable={editing} minZoom={ZOOM.min} maxZoom={ZOOM.max}
         zoomOnScroll={false} zoomActivationKeyCode={["Meta", "Control"]} zoomOnPinch zoomOnDoubleClick={!editing} panOnDrag preventScrolling={false}
         proOptions={{ hideAttribution: true }} deleteKeyCode={editing ? ["Backspace", "Delete"] : null}>

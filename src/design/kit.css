@@ -109,8 +109,9 @@
 /* A native select in the same family, with the chevron: 36px (sm 28px in a toolbar). */
 .k-selw { position: relative; display: inline-block; min-width: 0; max-width: 100%; }
 .k-selw::after { content: ""; position: absolute; right: 13px; top: 50%; margin-top: -5px; width: 6px; height: 6px; border: solid var(--so-muted); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); pointer-events: none; }
-.k-sel.k-sel { appearance: none; -webkit-appearance: none; height: 36px; min-height: 0; padding: 0 32px 0 12px; line-height: 1; text-overflow: ellipsis; cursor: pointer; }
-.k-selw.sm .k-sel { height: 28px; border-radius: 999px; font: 500 12.5px/1 var(--so-font-sans); padding: 0 26px 0 11px; }
+.k-sel.k-sel { appearance: none; -webkit-appearance: none; -moz-appearance: none; background-image: none; height: 36px; min-height: 0; padding: 0 32px 0 12px; line-height: 34px; text-overflow: ellipsis; cursor: pointer; }
+.k-sel.k-sel::picker-icon { display: none; }
+.k-selw.sm .k-sel { height: 28px; border-radius: 999px; font: 500 12.5px/26px var(--so-font-sans); padding: 0 26px 0 11px; }
 .k-selw.sm::after { right: 11px; }
 .k-selw.wide { display: block; width: 100%; }
 /* A select drawn as a pill chip (a composer's project): filled, no box, works without script. */
@@ -226,8 +227,9 @@
 .k-tb-ctx > .k-seg + .k-seg { margin-left: 8px; }
 /* Phone header: menu or back · title · one trailing action. Hidden at a desk. */
 .k-ph { display: none; }
-/* Reading pages: one 760px column, a back link and the doc header. */
+/* Reading pages: one 760px column, expanding to 960px on wide desks when reviewing code diffs. */
 .k-doc { box-sizing: border-box; width: 100%; max-width: 760px; margin: 0 auto; padding: 22px 28px 120px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; align-content: start; }
+@media (min-width: 1100px) { .k-doc:has(.diff-review) { max-width: 960px; } }
 .k-backlink { display: inline-flex; align-items: center; gap: 6px; color: var(--so-muted); font: var(--so-typography-label); justify-self: start; min-height: 24px; text-decoration: none; }
 .k-dh { display: flex; align-items: flex-start; gap: 6px; }
 .k-dh > div { flex: 1; display: grid; gap: 6px; min-width: 0; }
@@ -564,6 +566,7 @@ html:not(.k-js) .k-composer:focus-within, html.k-kbd .k-composer:focus-within { 
   .k-btn-icon, .k-btn-sm.k-btn-icon { width: 44px; padding: 0; }
   .k-input.k-input, .k-textarea.k-textarea, .k-sel.k-sel { font-size: 16px; }
   .k-input.k-input, .k-pop .k-input.k-input, .k-sel.k-sel, .k-selw.sm .k-sel { height: 44px; }
+  .k-sel.k-sel, .k-selw.sm .k-sel { line-height: 42px; }
   .k-selw::after { right: 13px; }
   .k-seg > a, .k-seg > button { height: 44px; font-size: 13.5px; }
   .k-seg.k-seg-icons > a, .k-seg.k-seg-icons > button { min-width: 44px; justify-content: center; }

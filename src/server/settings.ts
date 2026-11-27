@@ -213,7 +213,8 @@ export function createSettingsHandlers(runtime: ServerRuntime) {
     const items = spendItems(store.handle, current.from, current.to);
     const saved = store.budgets();
     const budgets = budgetStates(saved, items);
-    const has = (scope: string, key: string) => saved.some(one => one.scope === scope && one.key === key);
+    const canonicalRepoKey = (value: string): string => { try { return realpathSync(value); } catch { return value; } };
+    const has = (scope: string, key: string) => saved.some(one => one.scope === scope && (scope === "project" ? canonicalRepoKey(one.key) === canonicalRepoKey(key) : one.key === key));
     // Everything and each project with no limit yet, with what it spent this month (counted as a limit would count it).
     const spentFor = (scope: "installation" | "project", key: string) => budgetStates([{ id: 0, scope, key, limitMicrousd: 1, hardStop: false, updatedBy: "", updatedAt: "" }], items)[0]!.spentMicrousd;
     const unlimited: LimitRowView[] = [
@@ -2382,7 +2383,7 @@ ${postForm("/settings/chat-approval/save", html`\
         classifier: readProviderKey("openrouter", providerHome) !== null ? "A quick AI check (Jev, through your OpenRouter key) reads its title and description." : `A quick AI check (${SIZING_CLAUDE_MODEL}, on this computer's Claude sign-in) reads its title and description.` },
       routing: `When a task is filed and Claude has used over ${HEADROOM_FIVE_HOUR_LIMIT}% of its 5-hour window or ${HEADROOM_WEEKLY_LIMIT}% of its week, ${alsoSet ? "the other provider you set for that size is preferred if it has more room" : "an alternate provider with more room would be preferred, but none is set"}; with no room anywhere, the first choice is kept. This is a preference at filing time, not a limit.`,
       recent: recentRuns(store).map(one => ({ taskId: one.taskId, runId: one.runId, role: one.role,
-        chosen: one.chosen === null ? "its default" : /^(opus|sonnet|haiku|fable)$/.test(one.chosen) ? `floating ${one.chosen}` : one.chosen,
+        chosen: one.chosen === null ? "its default" : /^(opus|sonnet|haiku|fable)$/.test(one.chosen) ? `${one.chosen} (latest)` : one.chosen,
         ranOn: one.ranOn ?? "not reported" })),
       waiting: canManage ? store.scopesAwaitingApproval(null, 10, admissionList()).map(one => ({ taskId: one.taskId, title: one.title })) : [],
       suggested: suggestedView(repo, projects, query.get("suggestion"), now),

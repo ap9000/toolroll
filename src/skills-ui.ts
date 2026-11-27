@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
 import { whenUtc } from "./when-html.js";
 import { html, joinHtml, postForm, type Html } from "./html.js";
 import { acts, btn, chip, disclose, facts, formRow, input, note, notice, select, settingsRecord, settingsSection, textarea } from "./server/kit.js";
@@ -11,6 +12,11 @@ import type {
 } from "./project-skills.js";
 import type { SkillLibraryView } from "./skill-library.js";
 import type { DetectedLocalTool } from "./skill-local-sync.js";
+// Shorten the current user's home directory prefix to ~ so detected local tool folders stay scannable.
+function prettyHomePath(target: string): string {
+  const home = homedir();
+  return home && (target === home || target.startsWith(`${home}/`)) ? `~${target.slice(home.length)}` : target;
+}
 // Hidden fields as they always were: a missing value is an empty field.
 const fields = (data: Record<string, unknown>): Record<string, string> =>
   Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v ?? "")]));
@@ -177,12 +183,12 @@ export function skillLibrarySectionHtml(
   const projectOptedOutAll = library.projectOptOut?.all === true;
   const projectOptOutNames = new Set(library.projectOptOut?.names ?? []);
   const importBundleForm = manage
-    ? disclose("Import a GitHub skill bundle", libForm("import-bundle", joinHtml([
+    ? disclose("Import a GitHub skill bundle", libForm("import-bundle", html`<div class="k-sec">${joinHtml([
         formRow("GitHub repository URL", "Imports every SKILL.md found in the repository, pinned to its exact commit SHA.",
           input({ id: "bundle-url", name: "url", type: "url", value: bundleUrl, attrs: { required: true, placeholder: "https://github.com/owner/repo", "aria-label": "GitHub repository URL" } }), "wide"),
-        html`<label class="k-note"><input type="checkbox" name="autoUpdate" value="1" checked> Check daily and apply clean updates automatically (suspicious changes are held for review)</label>`,
+        html`<div class="k-checks"><label><input type="checkbox" name="autoUpdate" value="1" checked> Check daily and apply clean updates automatically (suspicious changes are held for review)</label></div>`,
         acts(btn("Import bundle", { variant: "primary", type: "submit" })),
-      ])), bundleUrl !== "" || (library.bundles.length === 0 && library.skills.length === 0))
+      ])}</div>`), bundleUrl !== "" || (library.bundles.length === 0 && library.skills.length === 0))
     : "";
 
   const addGlobalSkillForm = manage
@@ -266,14 +272,14 @@ export function skillLibrarySectionHtml(
     id: "global-library",
     title: "Global Skill Library",
     lead: `${enabledCount ? `${plural(enabledCount, "skill", "skills")} active across all projects by default.` : "No global skills installed yet."} Every agent (tasks, Direct Chat, threads, terminals, and the lead) receives this pinned set unless a project opts out.`,
-    body: joinHtml([
+    body: html`<div class="k-sec">${joinHtml([
       importBundleForm,
       addGlobalSkillForm,
       bundleCards.length ? html`<h3>Tracked GitHub bundles</h3>${joinHtml(bundleCards)}` : "",
       projectOptOutToggle,
       globalSearch,
       globalSkillCards.length ? joinHtml(globalSkillCards) : note("Import a GitHub skill repository or add a skill above to share it across every project."),
-    ]),
+    ])}</div>`,
   });
 
   const localToolCards = localTools.map((tool) => {
@@ -283,7 +289,7 @@ export function skillLibrarySectionHtml(
         ? chip(`Synced (${tool.installedCount})`, "done")
         : chip("Detected · off", "");
     const sub = tool.detected
-      ? html`Writes only Toolroll-managed skills to <span class="k-mono">${tool.skillsDir ?? tool.toolHome}</span>. Your own hand-written skills are never overwritten.`
+      ? html`Writes only Toolroll-managed skills to <span class="k-mono">${prettyHomePath(tool.skillsDir ?? tool.toolHome)}</span>. Your own hand-written skills are never overwritten.`
       : "Folder not found on this computer — Toolroll only writes where a tool is already installed.";
     const actions = manage && tool.detected
       ? html`<div class="skill-controls">

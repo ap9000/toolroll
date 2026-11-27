@@ -161,7 +161,7 @@ function choiceSection(view: ModelsView, manage: boolean, previewing: boolean): 
   const presetItems = view.presets.map(one => ({ value: one.name, label: one.label, text: `${one.words}${one.recommended ? " Recommended." : ""}${one.inUse ? " In use." : ""}` }));
   const presets = manage
     ? html`<form method="get" action="/settings/models" class="models-presets" id="models-preset">${view.scope.value === "installation" ? "" : html`<input type="hidden" name="scope" value="${view.scope.value}">`}\
-${radios({ name: "preset", legend: "Preset", current, items: presetItems })}${acts(btn("Review changes", { variant: previewing ? "outline" : "primary", type: "submit", docked: !previewing }))}</form>`
+${radios({ name: "preset", legend: "Preset", current, items: presetItems })}${acts(btn("Review changes", { variant: previewing || current === "" ? "outline" : "primary", type: "submit", docked: !previewing && current !== "" }))}</form>`
     : factList(view.presets.map(one => [one.label, `${one.words}${one.inUse ? " In use." : ""}`] as const));
   const newer = view.newer.length === 0 ? "" : html`${group("Newer models")}${view.newer.map(one => formRow(one.name, `Newer than ${one.from}, used by ${one.roles}.`,
     manage ? btn("Switch to it", { sm: true, href: `/settings/models?switch=${encodeURIComponent(one.from)}&to=${encodeURIComponent(one.to)}${scopeQuery(view)}` }) : html``, "inline"))}`;
@@ -201,7 +201,10 @@ function sizingSection(view: ModelsView): Html {
 /** The model each recent run was set to, next to the model its provider reported. */
 function recentSection(view: ModelsView): Html | "" {
   if (view.recent.length === 0) return "";
-  return sec("recent", "Recent work", "", view.recent.map(one => formRow(one.role, `Chosen ${one.chosen} → ran on ${one.ranOn}`, html`<a class="k-link k-mono" href="/t/${encodeURIComponent(one.taskId)}">${one.taskId}</a>`, "inline")));
+  return sec("recent", "Recent work", "", view.recent.map(one => {
+    const detail = one.ranOn === "not reported" ? `Set to ${one.chosen} · actual model not reported` : `Set to ${one.chosen} → ran on ${one.ranOn}`;
+    return formRow(one.role, detail, html`<a class="k-link k-mono" href="/t/${encodeURIComponent(one.taskId)}">${one.taskId}</a>`, "inline");
+  }));
 }
 
 /** Settings → Models → Suggested (docs/plans/results-routing.md slice 2): what a project's own results suggest, each

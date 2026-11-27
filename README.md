@@ -97,7 +97,7 @@ checked and marked Complete.
 Slack, Discord or Teams with buttons. One tap answers; the build resumes.
 
 **Triage issues as they arrive.** A new GitHub or Linear issue starts a card
-in a flow. Jev, a small sorting model, triages it; real bugs become tasks you approve.
+in a flow. A small triage model (Jev) sorts it; real bugs become tasks you approve.
 
 **Repeat work on a schedule.** Dependency bumps, coverage, docs drift: a
 scheduled flow files the same approved terms each time, with a per-run budget
@@ -126,6 +126,7 @@ the CLI or MCP. Every act lands in one ledger.
 | **Approvals** | Digest-bound scopes, password step-up, typed decisions with reversibility, expiring operating modes |
 | **Agents** | Claude Code, Codex, Gemini, OpenRouter; an exact model per phase; subscription or API key |
 | **Models** | One editor (Settings → Models): "Sized by job" by default (Haiku for small tasks, Sonnet for routine, Opus for large or risky, Opus plans and reviews), or "Opus for everything"; every change shown before → after and logged |
+| **Skills** | Global Skill Library (Settings → Agents and models → Skills): import GitHub skill bundles pinned to exact commit SHAs, daily auto-updates with suspicious-change holds, and one-click local mirror to Claude Code, Codex, and Gemini CLI |
 | **Surfaces** | Native macOS app (SwiftUI), terminal workbench, web console (desktop & phone), CLI, Telegram, Slack, Discord, Teams, MCP |
 | **Flows** | Zones on a canvas; triggers from schedules, GitHub, Linear, webhooks, email and chat; scripts, drafts, AI triage |
 | **Team** | Team server, OpenID Connect sign-in, per-person API tokens, project grants, subagents |

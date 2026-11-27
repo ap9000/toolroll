@@ -105,10 +105,21 @@ type Item = { id: string; title: string; href: string; meta: string; reason: str
 type Section = { key: string; label: string; count: number; items: Item[] };
 
 const metaOf = (project: string | null, age: string): string => [project, age].filter(Boolean).join(" · ");
+/** Semantic tone for a waiting row's chip: failures read red, ready results read green, releases stay high-contrast,
+ * and everyday decisions/questions/flows wear the kit's quiet ink-dot chip so the list can be triaged at a glance. */
+function askChipTone(row: BrowserHomeRow, word: string): Item["chip"]["tone"] {
+  if (row.ask === "release") return "needs";
+  if (row.ask === "review" || word === "Ready") return "done";
+  if (row.ask === "wrong" || /^(Failed|Blocked|Stopped|Plan didn't pass|Checks failed)/i.test(word)) return "failed";
+  return "ask";
+}
 /** A waiting row keeps its source's own chip and act (No builder → Connect a builder, Plan didn't pass → Plan again);
  * only a row whose source names none falls back to its ask's words. */
-const homeItem = (row: BrowserHomeRow, chip: string | null = null): Item => ({ id: row.id, title: row.title, href: row.href, meta: metaOf(row.project, row.age), reason: row.reason,
-  chip: { word: chip ?? ASK_CHIP[row.ask ?? "other"], tone: "needs" }, act: row.action?.label ?? ASK_ACT[row.ask ?? "other"], home: row, task: null });
+const homeItem = (row: BrowserHomeRow, chip: string | null = null): Item => {
+  const word = chip ?? ASK_CHIP[row.ask ?? "other"];
+  return { id: row.id, title: row.title, href: row.href, meta: metaOf(row.project, row.age), reason: row.reason,
+    chip: { word, tone: askChipTone(row, word) }, act: row.action?.label ?? ASK_ACT[row.ask ?? "other"], home: row, task: null };
+};
 const taskItem = (row: BrowserTaskRow, act: string): Item => ({ id: row.id, title: row.title, href: row.href, meta: metaOf(row.project, row.age), reason: null,
   chip: row.word, act, home: null, task: row });
 

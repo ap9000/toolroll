@@ -1372,7 +1372,7 @@ export function createDemoSandbox(now: Date): {
     { window: "seven_day", usedPercent: 83, windowMinutes: 10_080, resetsAt: later(62), reached: false },
   ] }, now);
   store.recordProviderLimits({ provider: "codex", plan: "pro", windows: [{ window: "seven_day", usedPercent: 12, windowMinutes: 10_080, resetsAt: later(130), reached: false }] }, now);
-  store.setBudget({ scope: "project", key: repos.web, limitMicrousd: 25_000_000, hardStop: true }, seed.login.name, now);
+  store.setBudget({ scope: "project", key: realpathSync(repos.web), limitMicrousd: 25_000_000, hardStop: true }, seed.login.name, now);
   const passwordFile = join(sandbox, "demo-login.txt");
   writeFileSync(passwordFile, `name: ${seed.login.name}\npassword: ${seed.login.password}\n`, { mode: 0o600 });
   const lead = createDemoLead({ store, repos, evidenceRoot, approver: seed.login.name, token: seed.login.password });
