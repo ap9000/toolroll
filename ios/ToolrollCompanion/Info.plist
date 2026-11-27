@@ -33,6 +33,10 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Toolroll connects straight to your Mac when you're on the same Wi‑Fi.</string>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>dev.toolroll.ios.task</string>
+	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>Toolroll uses the camera only to scan the pairing QR code displayed on your Mac.</string>
 	<key>UIApplicationSceneManifest</key>

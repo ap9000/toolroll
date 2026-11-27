@@ -53,8 +53,6 @@ struct SettingsView: View {
                     }
                 } header: {
                     Text("Privacy")
-                } footer: {
-                    Text("Notifications aren't available yet. Open the app to see what needs you.")
                 }
 
                 if !appState.isDemoMode && appState.pairedRecord != nil {
@@ -63,16 +61,20 @@ struct SettingsView: View {
                             confirmUnpair = true
                         } label: {
                             HStack {
-                                Text("Remove this iPhone")
+                                Text(appState.isTerminal ? "Remove from this iPhone" : "Remove this iPhone")
+                                    .foregroundStyle(ToolrollTheme.danger)
                                 if removing {
                                     Spacer()
                                     ProgressView()
+                                        .accessibilityLabel("Removing")
                                 }
                             }
                         }
                         .disabled(removing)
                     } footer: {
-                        Text("Removes the keys from this iPhone and asks your Mac to forget it.")
+                        Text(appState.isTerminal
+                            ? "Removes the pairing and its keys from this iPhone. Your Mac already removed it."
+                            : "Removes the keys from this iPhone and asks your Mac to forget it.")
                     }
                 }
             }
@@ -106,7 +108,8 @@ struct SettingsView: View {
         case .connected: return connectionText ?? "Connected"
         case .connecting: return "Connecting…"
         case .unreachable: return "Can't reach your Mac"
-        case .notRecognized: return "Not accepted by your Mac"
+        case .refused: return "Removed by your Mac"
+        case .damaged: return "Pairing data is damaged"
         default: return "Not connected"
         }
     }

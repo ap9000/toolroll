@@ -11,10 +11,11 @@ struct ToolrollCompanionApp: App {
             RootView(appState: appState)
                 .tint(ToolrollTheme.ink)
                 .overlay {
-                    // Cover the app when it goes to the background, so the app switcher never keeps a snapshot of a
-                    // diff, a pairing code or a pasted payload. Not while merely inactive: that would also hide the
-                    // camera and Local Network prompts and the pairing screen behind them.
-                    if scenePhase == .background {
+                    // Cover the app as soon as it stops being active (C7), so the app switcher never keeps a snapshot
+                    // of a diff, a pairing code or a pasted payload: SwiftUI may not draw the cover in time if it waits
+                    // for .background. Not while a pairing, the scanner or a system prompt (camera, Local Network) is
+                    // up: those make the app inactive too, and the cover would hide what they're about.
+                    if scenePhase == .background || (scenePhase == .inactive && !appState.suppressesPrivacyCover) {
                         PrivacyCover()
                     }
                 }

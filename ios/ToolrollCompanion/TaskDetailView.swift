@@ -9,6 +9,11 @@ struct TaskDetailView: View {
     @State private var showUsual = false
     @State private var showHistory = false
     @State private var refreshed = 0
+    @State private var showOpenOnMac = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// Handoff type for "this task, on the Mac" (Info.plist NSUserActivityTypes).
+    static let handoffActivity = "dev.toolroll.ios.task"
 
     struct LiveSheet: Identifiable {
         let run: Int
@@ -45,6 +50,17 @@ struct TaskDetailView: View {
                     if let cards = steps.value {
                         upcomingSection(cards)
                         historySection(cards)
+                    }
+                    if dynamicTypeSize.isAccessibilitySize, next.isOnMac || next == .reviewChanges {
+                        // At accessibility sizes the bottom bar keeps one line or one button; the rest moves here so
+                        // the bar doesn't cover a third of the screen (U21).
+                        VStack(alignment: .leading, spacing: 10) {
+                            if next == .reviewChanges { onMacRow("Accept on your Mac", detail: nil) }
+                            Text(Self.needsYouDetail)
+                                .font(.footnote)
+                                .foregroundStyle(ToolrollTheme.muted)
+                            openOnMacButton
+                        }
                     }
                 }
                 .padding(16)
@@ -84,7 +100,27 @@ struct TaskDetailView: View {
         .sheet(item: $liveSheet) { sheet in
             LiveWatchView(appState: appState, run: sheet.run, title: title)
         }
+        // Handoff (U12): the Mac's Dock offers this task's console page, one click from the approval.
+        .userActivity(Self.handoffActivity, isActive: handoffURL != nil) { activity in
+            activity.title = title
+            activity.webpageURL = handoffURL
+            activity.isEligibleForHandoff = true
+            activity.isEligibleForSearch = false
+            activity.isEligibleForPublicIndexing = false
+        }
+        .confirmationDialog("Open on your Mac", isPresented: $showOpenOnMac, titleVisibility: .visible) {
+            if let url = handoffURL {
+                Button("Copy link") { UIPasteboard.general.url = url }
+            }
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Your Mac shows this task in its Dock as a Handoff icon (on the left, or in the app switcher). Click it to open the task in Toolroll. Or copy the link and paste it in a browser on your Mac.")
+        }
     }
+
+    private var handoffURL: URL? { appState.handoffURL(task: taskId) }
+
+    static let needsYouDetail = "It's at the top of Toolroll's Needs you list."
 
     private var title: String {
         row?.title ?? steps.value?.task.title ?? "Task"
@@ -280,12 +316,21 @@ struct TaskDetailView: View {
     private var changesSection: some View {
         if let value = diff.value, !value.files.isEmpty, let run = value.run {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline) {
-                    sectionTitle("Changes")
-                    Spacer()
-                    Text(filesSummary(value))
-                        .font(.footnote.monospacedDigit())
-                        .foregroundStyle(ToolrollTheme.muted)
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline) {
+                        sectionTitle("Changes")
+                        Spacer()
+                        Text(filesSummary(value))
+                            .font(.footnote.monospacedDigit())
+                            .foregroundStyle(ToolrollTheme.muted)
+                            .fixedSize()
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        sectionTitle("Changes")
+                        Text(filesSummary(value))
+                            .font(.footnote.monospacedDigit())
+                            .foregroundStyle(ToolrollTheme.muted)
+                    }
                 }
                 VStack(spacing: 0) {
                     ForEach(Array(value.files.enumerated()), id: \.element.file) { index, entry in
@@ -317,8 +362,9 @@ struct TaskDetailView: View {
     /// The count always matches the files listed; a truncated list says so.
     private func filesSummary(_ diff: ResultDiff) -> String {
         let shown = diff.files.count
-        let added = diff.files.reduce(0) { $0 + $1.additions }
-        let removed = diff.files.reduce(0) { $0 + $1.deletions }
+        // Server-written counts: summed without overflow traps.
+        let added = diff.files.reduce(0) { $0.addingReportingOverflow(max($1.additions, 0)).partialValue }
+        let removed = diff.files.reduce(0) { $0.addingReportingOverflow(max($1.deletions, 0)).partialValue }
         let files = shown == 1 ? "1 file" : "\(shown) files"
         if let total = diff.totals?.files, total > shown {
             return "\(shown) of \(total) files · +\(added) −\(removed)"
@@ -448,11 +494,11 @@ struct TaskDetailView: View {
                 Group {
                     switch next {
                     case .approveOnMac:
-                        onMacRow("Approve on your Mac", detail: nil)
+                        onMacBar("Approve on your Mac")
                     case .answerOnMac:
-                        onMacRow("Answer on your Mac", detail: nil)
+                        onMacBar("Answer on your Mac")
                     case .unblockOnMac:
-                        onMacRow("Retry or unblock it on your Mac", detail: nil)
+                        onMacBar("Retry or unblock it on your Mac")
                     case .reviewChanges:
                         VStack(spacing: 10) {
                             if let first = firstFileRoute {
@@ -465,7 +511,10 @@ struct TaskDetailView: View {
                                     .buttonStyle(InkButtonStyle())
                                     .disabled(diff.value?.files.isEmpty ?? true)
                             }
-                            onMacRow("Accept on your Mac", detail: nil)
+                            if !dynamicTypeSize.isAccessibilitySize {
+                                onMacRow("Accept on your Mac", detail: Self.needsYouDetail)
+                                openOnMacButton
+                            }
                         }
                     case .viewChanges:
                         Button("View changes") { jumpToChanges(proxy) }
@@ -485,6 +534,32 @@ struct TaskDetailView: View {
                 .padding(.vertical, 12)
             }
             .background(ToolrollTheme.paper)
+        }
+    }
+
+    /// The "on your Mac" line and, when the Mac gave its console address, a way across (Handoff / copy link).
+    @ViewBuilder
+    private func onMacBar(_ text: String) -> some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            onMacRow(text, detail: nil)
+        } else {
+            VStack(spacing: 8) {
+                onMacRow(text, detail: Self.needsYouDetail)
+                openOnMacButton
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var openOnMacButton: some View {
+        if handoffURL != nil {
+            Button {
+                showOpenOnMac = true
+            } label: {
+                Label("Open on Mac", systemImage: "laptopcomputer.and.arrow.down")
+            }
+            .buttonStyle(OutlineButtonStyle())
+            .accessibilityHint("Shows how to open this task on your Mac.")
         }
     }
 
@@ -578,6 +653,7 @@ struct TaskDetailView: View {
 
 private struct FileRow: View {
     let entry: ResultDiffEntry
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         HStack(spacing: 10) {
@@ -585,7 +661,7 @@ private struct FileRow: View {
                 Text((entry.path as NSString).lastPathComponent)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(ToolrollTheme.ink)
-                    .lineLimit(1)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
                 let folder = (entry.path as NSString).deletingLastPathComponent
                 if !folder.isEmpty {
                     Text(folder)

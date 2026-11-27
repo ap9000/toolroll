@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 /// Noise Protocol Framework (Revision 34) — `Noise_IKpsk2_25519_ChaChaPoly_SHA256`
-/// plus Toolroll companion key/ID derivations and RFC 8291 `aes128gcm` push decryption.
+/// plus the Toolroll companion key derivations the phone uses.
 ///
 /// Built over Apple `CryptoKit` primitives with strict `UInt64` nonces and verified byte-for-byte
 /// against independent Revision 34 `snow` test vectors in `test/fixtures/companion-noise/vectors.json`.
@@ -49,7 +49,7 @@ public struct X25519KeyPair: Sendable {
     }
 }
 
-private func x25519DH(privateKey: Data, publicKey: Data) throws -> Data {
+func x25519DH(privateKey: Data, publicKey: Data) throws -> Data {
     guard privateKey.count == 32 else {
         throw CompanionNoiseError.invalidKeyLength("privateKey", privateKey.count)
     }
@@ -67,7 +67,7 @@ private func x25519DH(privateKey: Data, publicKey: Data) throws -> Data {
     return raw
 }
 
-private func sha256(_ data: Data) -> Data {
+func sha256(_ data: Data) -> Data {
     Data(SHA256.hash(data: data))
 }
 
@@ -111,7 +111,7 @@ public func encodeNoiseNonce(_ n: UInt64) throws -> ChaChaPoly.Nonce {
     return try ChaChaPoly.Nonce(data: bytes)
 }
 
-private func chachaEncrypt(key: Data, nonce: UInt64, ad: Data, plaintext: Data) throws -> Data {
+func chachaEncrypt(key: Data, nonce: UInt64, ad: Data, plaintext: Data) throws -> Data {
     guard plaintext.count <= CompanionNoiseConstants.maxPlaintextBytes else {
         throw CompanionNoiseError.messageTooLarge(plaintext.count)
     }
@@ -124,7 +124,7 @@ private func chachaEncrypt(key: Data, nonce: UInt64, ad: Data, plaintext: Data) 
     return out
 }
 
-private func chachaDecrypt(key: Data, nonce: UInt64, ad: Data, ciphertext: Data) throws -> Data {
+func chachaDecrypt(key: Data, nonce: UInt64, ad: Data, ciphertext: Data) throws -> Data {
     guard ciphertext.count >= CompanionNoiseConstants.aeadTagBytes,
           ciphertext.count <= CompanionNoiseConstants.maxMessageBytes
     else {
@@ -142,8 +142,8 @@ private func chachaDecrypt(key: Data, nonce: UInt64, ad: Data, ciphertext: Data)
 }
 
 public final class NoiseCipherState: @unchecked Sendable {
-    private var key: Data?
-    public private(set) var nonce: UInt64 = 0
+    private(set) var key: Data?
+    public internal(set) var nonce: UInt64 = 0
     private let maxMessages: UInt64
 
     public init(key: Data? = nil, maxMessages: UInt64 = CompanionNoiseConstants.maxSessionMessages) throws {
@@ -162,10 +162,6 @@ public final class NoiseCipherState: @unchecked Sendable {
         }
         self.key = newKey
         self.nonce = 0
-    }
-
-    public func setNonceForTest(_ value: UInt64) {
-        self.nonce = value
     }
 
     public func encryptWithAd(_ ad: Data, plaintext: Data, enforceSessionCap: Bool = false) throws -> Data {
@@ -193,19 +189,10 @@ public final class NoiseCipherState: @unchecked Sendable {
         nonce += 1
         return pt
     }
-
-    public func encryptExplicitNonce(_ explicitNonce: UInt64, ad: Data, plaintext: Data) throws -> Data {
-        guard let key else { throw CompanionNoiseError.authenticationFailed }
-        return try chachaEncrypt(key: key, nonce: explicitNonce, ad: ad, plaintext: plaintext)
-    }
-
-    public func decryptExplicitNonce(_ explicitNonce: UInt64, ad: Data, ciphertext: Data) throws -> Data {
-        guard let key else { throw CompanionNoiseError.authenticationFailed }
-        return try chachaDecrypt(key: key, nonce: explicitNonce, ad: ad, ciphertext: ciphertext)
-    }
 }
 
-private final class SymmetricState {
+/// Internal so the test target's Noise responder (the fake Mac) can share it; nothing outside this module sees it.
+final class SymmetricState {
     let cipher: NoiseCipherState
     var ck: Data
     var h: Data
@@ -339,12 +326,17 @@ public final class NoiseIKpsk2Initiator {
     private var e: X25519KeyPair?
     private var step = 0
 
-    public init(
+    public convenience init(localStatic: X25519KeyPair, remoteStaticPublicKey: Data, psk: Data, prologue: Data) throws {
+        try self.init(localStatic: localStatic, remoteStaticPublicKey: remoteStaticPublicKey, psk: psk, prologue: prologue, fixedEphemeral: nil)
+    }
+
+    /// A fixed ephemeral is for the test vectors only (internal: the shipping app can't pin one).
+    init(
         localStatic: X25519KeyPair,
         remoteStaticPublicKey: Data,
         psk: Data,
         prologue: Data,
-        ephemeralForTest: X25519KeyPair? = nil
+        fixedEphemeral: X25519KeyPair?
     ) throws {
         guard remoteStaticPublicKey.count == 32 else {
             throw CompanionNoiseError.invalidKeyLength("remoteStaticPublicKey", remoteStaticPublicKey.count)
@@ -355,7 +347,7 @@ public final class NoiseIKpsk2Initiator {
         self.s = localStatic
         self.rs = remoteStaticPublicKey
         self.psk = psk
-        self.fixedE = ephemeralForTest
+        self.fixedE = fixedEphemeral
         self.sym = SymmetricState(protocolName: CompanionNoiseConstants.protocolName)
         self.sym.mixHash(prologue)
         self.sym.mixHash(rs)
@@ -422,90 +414,11 @@ public final class NoiseIKpsk2Initiator {
     }
 }
 
-public final class NoiseIKpsk2Responder {
-    private let sym: SymmetricState
-    private let s: X25519KeyPair
-    private let psk: Data
-    private let fixedE: X25519KeyPair?
-    private var re: Data?
-    private var rsRemote: Data?
-    private var step = 0
-
-    public init(
-        localStatic: X25519KeyPair,
-        psk: Data,
-        prologue: Data,
-        ephemeralForTest: X25519KeyPair? = nil
-    ) throws {
-        guard psk.count == 32 else {
-            throw CompanionNoiseError.invalidKeyLength("psk", psk.count)
-        }
-        self.s = localStatic
-        self.psk = psk
-        self.fixedE = ephemeralForTest
-        self.sym = SymmetricState(protocolName: CompanionNoiseConstants.protocolName)
-        self.sym.mixHash(prologue)
-        self.sym.mixHash(localStatic.publicKey)
-    }
-
-    public func readMessage1(_ message: Data) throws -> (payload: Data, remoteStaticPublicKey: Data) {
-        guard step == 0 else { throw CompanionNoiseError.outOfOrderHandshake }
-        guard message.count >= 32 + 48 + CompanionNoiseConstants.aeadTagBytes,
-              message.count <= CompanionNoiseConstants.maxMessageBytes
-        else {
-            throw CompanionNoiseError.invalidMessageLength(message.count)
-        }
-        let re = Data(message.prefix(32))
-        let encS = Data(message.subdata(in: 32..<80))
-        let encPayload = Data(message.dropFirst(80))
-        sym.mixHash(re)
-        try sym.mixKey(re)
-        try sym.mixKey(x25519DH(privateKey: s.privateKey, publicKey: re))
-        let rsRemote = try sym.decryptAndHash(encS)
-        guard rsRemote.count == 32 else {
-            throw CompanionNoiseError.invalidKeyLength("remoteStaticPublicKey", rsRemote.count)
-        }
-        try sym.mixKey(x25519DH(privateKey: s.privateKey, publicKey: rsRemote))
-        let payload = try sym.decryptAndHash(encPayload)
-        self.re = re
-        self.rsRemote = rsRemote
-        step = 1
-        return (payload, rsRemote)
-    }
-
-    public func writeMessage2(payload: Data, now: Date = Date()) throws -> (message: Data, session: NoiseTransportSession) {
-        guard step == 1, let re, let rsRemote else { throw CompanionNoiseError.outOfOrderHandshake }
-        let eph = fixedE ?? X25519KeyPair.generate()
-        sym.mixHash(eph.publicKey)
-        try sym.mixKey(eph.publicKey)
-        try sym.mixKey(x25519DH(privateKey: eph.privateKey, publicKey: re))
-        try sym.mixKey(x25519DH(privateKey: eph.privateKey, publicKey: rsRemote))
-        try sym.mixKeyAndHash(psk)
-        let encPayload = try sym.encryptAndHash(payload)
-        var msg = Data(capacity: 32 + encPayload.count)
-        msg.append(eph.publicKey)
-        msg.append(encPayload)
-        guard msg.count <= CompanionNoiseConstants.maxMessageBytes else {
-            throw CompanionNoiseError.messageTooLarge(msg.count)
-        }
-        let (recvCipher, sendCipher) = try sym.split()
-        step = 2
-        let session = NoiseTransportSession(
-            handshakeHash: sym.h,
-            remoteStaticPublicKey: rsRemote,
-            sendCipher: sendCipher,
-            recvCipher: recvCipher,
-            createdAt: now
-        )
-        return (msg, session)
-    }
-}
-
 // MARK: - Prologues & Companion Key/ID Derivations
 
 public enum CompanionDerivations {
     private static let crockfordAlphabet = Array("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
-    private static let rfc4648LowerAlphabet = Array("abcdefghijklmnopqrstuvwxyz234567")
+    static let rfc4648LowerAlphabet = Array("abcdefghijklmnopqrstuvwxyz234567")
 
     public static func base32Encode(_ data: Data, alphabet: [Character]) -> String {
         var out = ""
@@ -583,99 +496,5 @@ public enum CompanionDerivations {
             outputByteCount: 32
         )
         return key.withUnsafeBytes { Data($0) }
-    }
-
-    public static func deriveMachineId(relayMachinePublicKey: Data) throws -> String {
-        guard relayMachinePublicKey.count == 32 else {
-            throw CompanionNoiseError.invalidKeyLength("relayMachinePublicKey", relayMachinePublicKey.count)
-        }
-        var input = Data("toolroll-machine-id-v1\0".utf8)
-        input.append(relayMachinePublicKey)
-        let digest = sha256(input)
-        return String(base32Encode(digest, alphabet: rfc4648LowerAlphabet).prefix(26))
-    }
-
-    public static func derivePasskeyUserHandle(workspaceId: String, accountName: String) throws -> Data {
-        guard !workspaceId.isEmpty, !workspaceId.contains("\0"),
-              !accountName.isEmpty, !accountName.contains("\0")
-        else {
-            throw CompanionNoiseError.invalidInput("workspaceId/accountName")
-        }
-        return sha256(Data("toolroll-passkey-user-v1\0\(workspaceId)\0\(accountName)".utf8))
-    }
-}
-
-// MARK: - RFC 8291 aes128gcm Push Decryption (for iOS Notification Service Extension)
-
-public enum RFC8291PushCrypto {
-    /// Decrypts a single-record RFC 8291 `aes128gcm` push payload produced by `src/push.ts:encryptPushPayload`.
-    public static func decrypt(
-        ciphertextBody: Data,
-        uaPrivateKey: P256.KeyAgreement.PrivateKey,
-        authSecret: Data
-    ) throws -> Data {
-        guard authSecret.count == 16 else {
-            throw CompanionNoiseError.invalidKeyLength("authSecret", authSecret.count)
-        }
-        // Header: 16B salt + 4B rs + 1B idlen(65) + 65B asPublic = 86B, plus >= 17B (delimiter + 16B tag)
-        guard ciphertextBody.count >= 86 + 17 else {
-            throw CompanionNoiseError.invalidMessageLength(ciphertextBody.count)
-        }
-        let salt = Data(ciphertextBody.subdata(in: 0..<16))
-        let idLen = Int(ciphertextBody[20])
-        guard idLen == 65 else {
-            throw CompanionNoiseError.invalidInput("RFC 8291 idlen must be 65")
-        }
-        let asPublicBytes = Data(ciphertextBody.subdata(in: 21..<86))
-        guard asPublicBytes.first == 0x04 else {
-            throw CompanionNoiseError.invalidInput("RFC 8291 asPublic must be uncompressed P-256")
-        }
-        let asPublic = try P256.KeyAgreement.PublicKey(x963Representation: asPublicBytes)
-        let uaPublicBytes = uaPrivateKey.publicKey.x963Representation
-        let ecdhSecret = try uaPrivateKey.sharedSecretFromKeyAgreement(with: asPublic)
-
-        var keyInfo = Data("WebPush: info\0".utf8)
-        keyInfo.append(uaPublicBytes)
-        keyInfo.append(asPublicBytes)
-
-        let ikm = ecdhSecret.hkdfDerivedSymmetricKey(
-            using: SHA256.self,
-            salt: authSecret,
-            sharedInfo: keyInfo,
-            outputByteCount: 32
-        )
-        let cek = HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: ikm,
-            salt: salt,
-            info: Data("Content-Encoding: aes128gcm\0".utf8),
-            outputByteCount: 16
-        )
-        let nonceKey = HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: ikm,
-            salt: salt,
-            info: Data("Content-Encoding: nonce\0".utf8),
-            outputByteCount: 12
-        )
-        let nonceData = nonceKey.withUnsafeBytes { Data($0) }
-        let gcmNonce = try AES.GCM.Nonce(data: nonceData)
-        let encryptedRecord = Data(ciphertextBody.dropFirst(86))
-        let body = encryptedRecord.prefix(encryptedRecord.count - 16)
-        let tag = encryptedRecord.suffix(16)
-        let box = try AES.GCM.SealedBox(nonce: gcmNonce, ciphertext: body, tag: tag)
-        let record: Data
-        do {
-            record = try AES.GCM.open(box, using: cek)
-        } catch {
-            throw CompanionNoiseError.authenticationFailed
-        }
-        // Strip trailing zero padding and verify 0x02 final-record delimiter (RFC 8188 §2).
-        var end = record.count
-        while end > 0 && record[end - 1] == 0x00 {
-            end -= 1
-        }
-        guard end > 0 && record[end - 1] == 0x02 else {
-            throw CompanionNoiseError.authenticationFailed
-        }
-        return Data(record.prefix(end - 1))
     }
 }

@@ -126,6 +126,14 @@ enum NextStep: Equatable {
         }
     }
 
+    /// Answered on the Mac (approve, answer, unblock).
+    var isOnMac: Bool {
+        switch self {
+        case .approveOnMac, .answerOnMac, .unblockOnMac: return true
+        default: return false
+        }
+    }
+
     /// The state word when the task's Work row isn't loaded (opened from a link).
     var chip: (word: String, tone: StateTone)? {
         switch self {
@@ -141,9 +149,9 @@ enum NextStep: Equatable {
     /// The ask in plain words: what the header leads with.
     var headline: String {
         switch self {
-        case .approveOnMac: return "Approve the plan"
-        case .answerOnMac: return "Answer the agent's question"
-        case .reviewChanges: return "Review the result"
+        case .approveOnMac: return "Waiting for your approval"
+        case .answerOnMac: return "Waiting for your answer"
+        case .reviewChanges: return "Waiting for your review"
         case .watchLive: return "An agent is working on it"
         case .viewChanges: return "Done"
         case .unblockOnMac: return "This task is stuck"
@@ -152,21 +160,10 @@ enum NextStep: Equatable {
     }
 }
 
-/// User-facing words for a failed load.
+/// User-facing words for a failed load (the copy lives in Core, where every code is tested).
 func loadFailureMessage(_ error: Error) -> String {
-    if let rpc = error as? CompanionRPCError {
-        switch rpc.code {
-        case CompanionRPCError.notFound: return "This isn't on your Mac anymore, or this account can't see it."
-        case CompanionRPCError.deadlineExceeded: return "Your Mac took too long to answer."
-        case CompanionRPCError.invalidResponse: return "Couldn't read your Mac's answer. Update Toolroll on your Mac and this iPhone."
-        case CompanionRPCError.responseTooLarge: return "This is too large to show on a phone. Open it on your Mac."
-        default: return "Couldn't load. Try again."
-        }
-    }
-    if error is CompanionConnectionError || error is OfflineError {
-        return "Can't reach your Mac."
-    }
-    return "Couldn't load. Try again."
+    if error is OfflineError { return "Can't reach your Mac." }
+    return CompanionCopy.loadFailure(error)
 }
 
 struct OfflineError: Error {}
