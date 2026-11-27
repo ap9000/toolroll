@@ -218,12 +218,14 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
     return { ok: true, room };
   };
 
-  const httpServer: Server = createServer(async (req, res) => {
+  // Every HTTP request runs guarded: a malformed path, escape or body answers 400 (or drops the socket) and can never
+  // reject unhandled — the console runs this relay in-process, so a crash here would take the console down with it.
+  const handleHttp = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (circuitTripped()) {
       sendJson(res, 503, { error: "relay_budget_exceeded" });
       return;
     }
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const url = new URL(req.url ?? "/", "http://relay.invalid"); // never the Host header: a bad one must not throw
 
     if (req.method === "GET" && url.pathname === "/v1/health") {
       sendJson(res, 200, { ok: true, version: 1 });
@@ -358,10 +360,16 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
     const deleteDeviceMatch = /^\/v1\/machines\/([a-z2-7]{26})\/devices\/([^/]+)$/.exec(url.pathname);
     if (req.method === "DELETE" && deleteDeviceMatch !== null) {
       const machineId = deleteDeviceMatch[1]!;
-      const deviceId = decodeURIComponent(deleteDeviceMatch[2]!);
       const auth = authenticateDaemonHttp(req, machineId);
       if (!auth.ok) {
         sendJson(res, auth.status, { error: auth.error });
+        return;
+      }
+      let deviceId: string;
+      try {
+        deviceId = decodeURIComponent(deleteDeviceMatch[2]!);
+      } catch {
+        sendJson(res, 400, { error: "invalid_device_id" });
         return;
       }
       auth.room.devices.delete(deviceId);
@@ -375,16 +383,29 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
     }
 
     sendJson(res, 404, { error: "not_found" });
+  };
+  const httpServer: Server = createServer((req, res) => {
+    handleHttp(req, res).catch(() => {
+      if (!res.headersSent) sendJson(res, 400, { error: "bad_request" });
+      else res.destroy();
+    });
   });
 
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_DAEMON_WS_FRAME_BYTES });
 
   httpServer.on("upgrade", (req, socket, head) => {
+    try {
+      upgrade(req, socket, head);
+    } catch {
+      rejectUpgrade(socket, 400, "bad_request");
+    }
+  });
+  const upgrade = (req: IncomingMessage, socket: Duplex, head: Buffer): void => {
     if (circuitTripped()) {
       rejectUpgrade(socket, 503, "relay_budget_exceeded");
       return;
     }
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const url = new URL(req.url ?? "/", "http://relay.invalid"); // never the Host header: a bad one must not throw
     if (url.pathname !== "/v1/connect") {
       rejectUpgrade(socket, 404, "not_found");
       return;
@@ -428,7 +449,7 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
     wss.handleUpgrade(req, socket, head, ws => {
       attachSocket(room, ws, role, deviceId ?? pairSessionId ?? "daemon");
     });
-  });
+  };
 
   const attachSocket = (room: MachineRoom, ws: WebSocket, role: RelayRole, peerId: string): void => {
     if (role === "daemon") {

@@ -410,3 +410,23 @@ describe("what reaches a phone after access changes (review round 2)", () => {
     expect(service.devices()).toHaveLength(0);
   });
 });
+
+describe("the built-in relay survives malformed requests (it runs inside the console)", () => {
+  test("a bad escape, a bad Host header and a bad upgrade get refusals, and the relay keeps answering", async () => {
+    const store = testStore();
+    const service = await startService(store);
+    const base = new URL(service.relayUrl()!);
+    const { request } = await import("node:http");
+    const raw = (method: string, path: string, headers: Record<string, string> = {}) => new Promise<number>(resolve => {
+      const req = request({ host: base.hostname, port: Number(base.port), method, path, headers }, res => { res.resume(); resolve(res.statusCode ?? 0); });
+      req.on("error", () => resolve(-1));
+      req.end();
+    });
+    const machine = service.engine.hostKeys.machineId;
+    expect(await raw("DELETE", `/v1/machines/${machine}/devices/%E0`)).toBe(401); // unauthenticated: refused before decoding
+    expect(await raw("GET", "/v1/health", { host: "[::not-a-host" })).toBe(200);
+    expect(await raw("GET", "/v1/connect", { host: "%%%", connection: "Upgrade", upgrade: "websocket", "sec-websocket-version": "13", "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==" })).toBeGreaterThanOrEqual(400);
+    expect(await raw("GET", "/v1/health")).toBe(200);
+    expect(service.status().state).toBe("connected");
+  });
+});
