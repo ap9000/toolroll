@@ -1,0 +1,119 @@
+{
+  "version": 1,
+  "session": {
+    "kind": "thread",
+    "id": "5b1e0c9a7d3f42e8a6c1b0d9e8f7a6b5",
+    "task": null
+  },
+  "room": "thread:5b1e0c9a7d3f42e8a6c1b0d9e8f7a6b5",
+  "live": true,
+  "file": "main",
+  "window": {
+    "ok": true,
+    "records": [
+      {
+        "k": "say",
+        "at": "2026-11-15T10:02:11.120Z",
+        "t": [
+          "The totals test fails because tax isn't added. I'll fix total() and run the tests."
+        ]
+      },
+      {
+        "k": "step",
+        "at": "2026-11-15T10:02:12.004Z",
+        "id": "s1",
+        "kind": "read",
+        "target": "src/total.ts"
+      },
+      {
+        "k": "done",
+        "at": "2026-11-15T10:02:12.031Z",
+        "id": "s1",
+        "ok": true
+      },
+      {
+        "k": "step",
+        "at": "2026-11-15T10:02:13.410Z",
+        "id": "s2",
+        "kind": "edit",
+        "target": "src/total.ts"
+      },
+      {
+        "k": "done",
+        "at": "2026-11-15T10:02:13.452Z",
+        "id": "s2",
+        "ok": true
+      }
+    ],
+    "cursor": "9f3c2a1b0e4d5c6a.5",
+    "restarted": false,
+    "earlier": false,
+    "quarantined": 0,
+    "skipped": 0,
+    "more": false
+  },
+  "thread": {
+    "version": "4b7d1e9a0c3f5a28",
+    "title": "Make the totals include tax",
+    "project": "shop",
+    "level": "full",
+    "agent": {
+      "provider": "claude",
+      "model": "claude-sonnet-4-5"
+    },
+    "turn": {
+      "seq": 2,
+      "status": "running",
+      "costUsd": 0.0412,
+      "costBasis": "measured",
+      "billing": "subscription"
+    },
+    "questions": [
+      {
+        "request": "c0ffee00c0ffee00c0ffee00c0ffee01",
+        "kind": "question",
+        "title": "The agent asks you",
+        "detail": null,
+        "tool": "AskUserQuestion",
+        "complete": true,
+        "digest": "3d1f0a8e5b7c9d2e4f6a8b0c1d3e5f7a9b0c2d4e6f8a1b3c5d7e9f0a2b4c6d8e",
+        "state": "sent",
+        "answerable": false,
+        "parts": [
+          {
+            "id": "1",
+            "question": "Should tax be rounded per line or on the total?",
+            "options": [
+              "Per line",
+              "On the total"
+            ]
+          }
+        ]
+      },
+      {
+        "request": "c0ffee00c0ffee00c0ffee00c0ffee02",
+        "kind": "permission",
+        "title": "Allow this command?",
+        "detail": "npm test -- --run src/total.test.ts\nnpm run lint",
+        "tool": "Bash",
+        "complete": true,
+        "digest": "7a9c1e3f5b7d9f1a3c5e7a9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f",
+        "state": "pending",
+        "answerable": true,
+        "parts": []
+      }
+    ],
+    "runtime": "stream-json",
+    "terminal": {
+      "available": false,
+      "launch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "generation": 1,
+      "lifecycle": "exited",
+      "viewing": "detached",
+      "control": "none",
+      "protocol": 1,
+      "cols": 80,
+      "rows": 24
+    }
+  }
+}

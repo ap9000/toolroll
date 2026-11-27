@@ -4,235 +4,251 @@ import ToolrollCompanionCore
 
 struct WelcomePairingView: View {
     @Bindable var appState: CompanionAppState
-    @State private var showScanner = false
-    @State private var showManualPaste = false
-    @State private var pastedQr = ""
+    @State private var scanner: ScannerMode?
+
+    enum ScannerMode: String, Identifiable {
+        case scan
+        case paste
+        var id: String { rawValue }
+    }
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                ToolrollTheme.paper.ignoresSafeArea()
+        ZStack {
+            ToolrollTheme.paper.ignoresSafeArea()
 
-                if case let .awaitingMacConfirm(code, _) = appState.connection {
-                    confirmCodeView(code: code)
-                } else {
-                    onboardingView
-                }
-            }
-            .sheet(isPresented: $showScanner) {
-                QRScannerSheet { payload in
-                    showScanner = false
-                    Task { await appState.startPairing(qrJson: payload) }
-                }
-            }
-            .sheet(isPresented: $showManualPaste) {
-                NavigationStack {
-                    Form {
-                        Section {
-                            TextEditor(text: $pastedQr)
-                                .font(.system(.caption, design: .monospaced))
-                                .frame(minHeight: 160)
-                        } header: {
-                            Text("Pairing QR Payload (JSON)")
-                        } footer: {
-                            Text("Run `toolroll phone pair` on your Mac and paste the JSON payload here when testing on iOS Simulator.")
-                        }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 28) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        BrandMark(size: 56)
+                        Text("Toolroll")
+                            .font(.largeTitle.weight(.bold))
+                            .foregroundStyle(ToolrollTheme.ink)
+                        Text("See what your agents need from you, wherever you are.")
+                            .font(.title3)
+                            .foregroundStyle(ToolrollTheme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .navigationTitle("Paste Pairing Code")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Cancel") { showManualPaste = false }
-                        }
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Pair") {
-                                let payload = pastedQr
-                                showManualPaste = false
-                                Task { await appState.startPairing(qrJson: payload) }
-                            }
-                            .disabled(pastedQr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("To pair")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(ToolrollTheme.muted)
+                        Text("On your Mac, open Toolroll → Settings → Phone → **Pair a phone**, then scan the code it shows.")
+                            .font(.body)
+                            .foregroundStyle(ToolrollTheme.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .card()
+
+                    if let message = appState.pairingError ?? appState.notice {
+                        Text(message)
+                            .font(.callout)
+                            .foregroundStyle(appState.pairingError != nil ? ToolrollTheme.danger : ToolrollTheme.ink)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+                .padding(.horizontal, 24)
+                .padding(.top, 72)
+                .padding(.bottom, 24)
             }
+            .scrollBounceBehavior(.basedOnSize)
         }
-    }
-
-    private var onboardingView: some View {
-        VStack(spacing: 0) {
-            Spacer()
-
-            VStack(spacing: 18) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .fill(ToolrollTheme.ink)
-                        .frame(width: 68, height: 68)
-                    Image(systemName: "checklist.checked")
-                        .font(.system(size: 30, weight: .semibold))
-                        .foregroundStyle(ToolrollTheme.paper)
-                }
-
-                VStack(spacing: 8) {
-                    Text("Toolroll")
-                        .font(.system(size: 32, weight: .bold, design: .default))
-                        .foregroundStyle(ToolrollTheme.ink)
-                    Text("Your agents build. You decide.")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(ToolrollTheme.muted)
-                }
-
-                VStack(alignment: .leading, spacing: 12) {
-                    featureRow(icon: "lock.shield", title: "End-to-end encrypted", detail: "Noise IKpsk2 directly to your Mac. The relay cannot read content or authorize anything.")
-                    featureRow(icon: "doc.text.magnifyingglass", title: "Review diffs in your pocket", detail: "Inspect plans, passing checks, and sealed diffs from anywhere.")
-                    featureRow(icon: "bell.badge", title: "Private notifications", detail: "Decrypted locally on your iPhone; task titles stay on your Mac by default.")
-                }
-                .padding(18)
-                .background(ToolrollTheme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(ToolrollTheme.hairline, lineWidth: 1)
-                )
-                .padding(.top, 12)
-
-                if let error = appState.errorBanner {
-                    Text(error)
-                        .font(.footnote)
-                        .foregroundStyle(ToolrollTheme.vermilion)
-                        .multilineTextAlignment(.center)
-                }
-            }
-            .padding(.horizontal, 24)
-
-            Spacer()
-
+        .safeAreaInset(edge: .bottom) {
             VStack(spacing: 12) {
                 Button {
-                    showScanner = true
+                    appState.notice = nil
+                    scanner = .scan
                 } label: {
                     Label("Pair with your Mac", systemImage: "qrcode.viewfinder")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 15)
-                        .background(ToolrollTheme.ink, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        .foregroundStyle(ToolrollTheme.paper)
                 }
+                .buttonStyle(InkButtonStyle())
 
-                HStack(spacing: 16) {
-                    Button {
-                        showManualPaste = true
-                    } label: {
-                        Text("Paste code")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(ToolrollTheme.muted)
-                    }
-
-                    Text("·")
-                        .foregroundStyle(ToolrollTheme.muted)
-
-                    Button {
-                        appState.enterDemoMode()
-                    } label: {
-                        Text("Try Demo Workspace")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(ToolrollTheme.ink)
-                    }
+                Button("Try the demo") {
+                    appState.enterDemoMode()
                 }
-                .padding(.top, 4)
+                .buttonStyle(OutlineButtonStyle())
             }
             .padding(.horizontal, 24)
-            .padding(.bottom, 28)
+            .padding(.top, 12)
+            .padding(.bottom, 12)
+            .background(ToolrollTheme.paper)
         }
-    }
-
-    private func confirmCodeView(code: String) -> some View {
-        VStack(spacing: 24) {
-            Spacer()
-            StatusPill(label: "Confirm on your Mac", tint: ToolrollTheme.cobalt)
-            Text(code)
-                .font(.system(size: 44, weight: .bold, design: .monospaced))
-                .tracking(3)
-                .foregroundStyle(ToolrollTheme.ink)
-                .padding(.horizontal, 28)
-                .padding(.vertical, 18)
-                .background(ToolrollTheme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(ToolrollTheme.hairline, lineWidth: 1)
-                )
-
-            Text("Click **Confirm match** on your Mac only if your Mac is displaying this exact 6-character code.")
-                .font(.subheadline)
-                .foregroundStyle(ToolrollTheme.muted)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 32)
-
-            ProgressView()
-                .padding(.top, 8)
-            Spacer()
-            Button("Cancel pairing", role: .destructive) {
-                Task { await appState.unpairThisPhone() }
+        .sheet(item: $scanner) { mode in
+            PairingScannerSheet(startOnPaste: mode == .paste) { payload in
+                scanner = nil
+                appState.startPairing(payload: payload)
             }
-            .padding(.bottom, 24)
         }
-    }
-
-    private func featureRow(icon: String, title: String, detail: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: icon)
-                .font(.body.weight(.semibold))
-                .foregroundStyle(ToolrollTheme.ink)
-                .frame(width: 24)
-                .padding(.top, 2)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(ToolrollTheme.ink)
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(ToolrollTheme.muted)
+        .onAppear {
+            #if DEBUG
+            if let screen = appState.debugScreen, let mode = ScannerMode(rawValue: screen) {
+                scanner = mode
+                appState.debugScreen = nil
             }
+            #endif
         }
     }
 }
 
-private struct QRScannerSheet: View {
-    let onScanned: (String) -> Void
+/// Scan the Mac's QR code; "Can't scan?" pastes the pairing code instead (the simulator has no camera).
+struct PairingScannerSheet: View {
+    let onPayload: (String) -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var showPaste = false
+    private let startOnPaste: Bool
+
+    init(startOnPaste: Bool = false, onPayload: @escaping (String) -> Void) {
+        self.onPayload = onPayload
+        self.startOnPaste = startOnPaste
+    }
 
     var body: some View {
         NavigationStack {
-            Group {
-                #if targetEnvironment(simulator)
-                VStack(spacing: 14) {
-                    Image(systemName: "camera.viewfinder")
-                        .font(.system(size: 44))
-                        .foregroundStyle(ToolrollTheme.muted)
-                    Text("Camera unavailable in Simulator")
-                        .font(.headline)
-                    Text("Use \"Paste code\" on the welcome screen, or run on a physical iPhone to scan your Mac's QR code.")
-                        .font(.subheadline)
-                        .foregroundStyle(ToolrollTheme.muted)
+            VStack(spacing: 0) {
+                scanner
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                VStack(spacing: 10) {
+                    #if !targetEnvironment(simulator)
+                    Text("Point your camera at the code on your Mac.")
+                        .font(.callout)
+                        .foregroundStyle(ToolrollTheme.ink)
                         .multilineTextAlignment(.center)
-                        .padding(.horizontal, 28)
+                    #endif
+                    Button("Can't scan? Paste pairing code") { showPaste = true }
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(ToolrollTheme.ink)
+                        .underline()
+                        .frame(minHeight: 44)
                 }
-                #else
-                CameraQRPreview(onScanned: onScanned)
-                    .ignoresSafeArea(edges: .bottom)
-                #endif
+                .padding(.horizontal, 24)
+                .padding(.vertical, 16)
+                .frame(maxWidth: .infinity)
+                .background(ToolrollTheme.paper)
             }
-            .navigationTitle("Scan Mac QR Code")
+            .background(ToolrollTheme.paper.ignoresSafeArea())
+            .navigationTitle("Scan your Mac's code")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
+                    Button("Cancel") { dismiss() }
                 }
             }
+            .navigationDestination(isPresented: $showPaste) {
+                PastePairingCodeView(onSubmit: onPayload)
+            }
+            .task {
+                if startOnPaste {
+                    try? await Task.sleep(for: .milliseconds(300))
+                    showPaste = true
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var scanner: some View {
+        #if targetEnvironment(simulator)
+        VStack(spacing: 12) {
+            Image(systemName: "camera")
+                .font(.system(size: 36))
+                .foregroundStyle(ToolrollTheme.muted)
+            Text("No camera here")
+                .font(.headline)
+                .foregroundStyle(ToolrollTheme.ink)
+            Text("Paste the pairing code instead.")
+                .font(.subheadline)
+                .foregroundStyle(ToolrollTheme.muted)
+        }
+        #else
+        CameraScanner(onScanned: onPayload)
+            .ignoresSafeArea(edges: .horizontal)
+        #endif
+    }
+}
+
+private struct PastePairingCodeView: View {
+    let onSubmit: (String) -> Void
+    @State private var text = ""
+
+    var body: some View {
+        Form {
+            Section {
+                TextEditor(text: $text)
+                    .font(.footnote.monospaced())
+                    .frame(minHeight: 140)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .accessibilityLabel("Pairing code")
+            } footer: {
+                Text("Paste the pairing code your Mac shows next to its QR code. It works once and expires in a few minutes.")
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(ToolrollTheme.paper.ignoresSafeArea())
+        .navigationTitle("Paste pairing code")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Pair") {
+                    let payload = text
+                    text = ""
+                    onSubmit(payload)
+                }
+                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .onDisappear { text = "" }
+    }
+}
+
+/// Shown while a pairing runs: contacting the Mac, then the code to compare.
+struct PairingProgressView: View {
+    let appState: CompanionAppState
+
+    var body: some View {
+        ZStack {
+            ToolrollTheme.paper.ignoresSafeArea()
+            VStack(spacing: 24) {
+                Spacer()
+                switch appState.pairing {
+                case .awaitingMacConfirm(let code):
+                    Text("Check the code on your Mac")
+                        .font(.title2.weight(.bold))
+                        .foregroundStyle(ToolrollTheme.ink)
+                        .multilineTextAlignment(.center)
+                    Text(code)
+                        .font(.system(.largeTitle, design: .monospaced).weight(.bold))
+                        .tracking(4)
+                        .foregroundStyle(ToolrollTheme.ink)
+                        .padding(.horizontal, 28)
+                        .padding(.vertical, 18)
+                        .card()
+                        .accessibilityLabel("Code \(code.map(String.init).joined(separator: " "))")
+                    Text("If your Mac shows the same code, choose **Codes match — pair** there. If not, cancel.")
+                        .font(.body)
+                        .foregroundStyle(ToolrollTheme.muted)
+                        .multilineTextAlignment(.center)
+                    ProgressView()
+                default:
+                    ProgressView()
+                    Text("Contacting your Mac…")
+                        .font(.headline)
+                        .foregroundStyle(ToolrollTheme.ink)
+                }
+                Spacer()
+                Button("Cancel pairing") { appState.cancelPairing() }
+                    .buttonStyle(OutlineButtonStyle())
+            }
+            .padding(24)
         }
     }
 }
 
 #if !targetEnvironment(simulator)
-private struct CameraQRPreview: UIViewControllerRepresentable {
+private struct CameraScanner: UIViewControllerRepresentable {
     let onScanned: (String) -> Void
 
     func makeUIViewController(context: Context) -> QRScannerViewController {
@@ -240,12 +256,18 @@ private struct CameraQRPreview: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ uiViewController: QRScannerViewController, context: Context) {}
+
+    static func dismantleUIViewController(_ controller: QRScannerViewController, coordinator: ()) {
+        controller.stop()
+    }
 }
 
 private final class QRScannerViewController: UIViewController, @preconcurrency AVCaptureMetadataOutputObjectsDelegate {
     private let onScanned: (String) -> Void
     private let session = AVCaptureSession()
+    private let sessionQueue = DispatchQueue(label: "dev.toolroll.companion.camera")
     private var didDeliver = false
+    private var preview: AVCaptureVideoPreviewLayer?
 
     init(onScanned: @escaping (String) -> Void) {
         self.onScanned = onScanned
@@ -261,23 +283,54 @@ private final class QRScannerViewController: UIViewController, @preconcurrency A
         guard let device = AVCaptureDevice.default(for: .video),
               let input = try? AVCaptureDeviceInput(device: device),
               session.canAddInput(input)
-        else { return }
+        else {
+            showUnavailable()
+            return
+        }
         session.addInput(input)
 
         let output = AVCaptureMetadataOutput()
-        guard session.canAddOutput(output) else { return }
+        guard session.canAddOutput(output) else {
+            showUnavailable()
+            return
+        }
         session.addOutput(output)
         output.setMetadataObjectsDelegate(self, queue: .main)
         output.metadataObjectTypes = [.qr]
 
-        let preview = AVCaptureVideoPreviewLayer(session: session)
-        preview.frame = view.bounds
-        preview.videoGravity = .resizeAspectFill
-        view.layer.addSublayer(preview)
-        nonisolated(unsafe) let captureSession = self.session
-        DispatchQueue.global(qos: .userInitiated).async {
-            captureSession.startRunning()
-        }
+        let layer = AVCaptureVideoPreviewLayer(session: session)
+        layer.videoGravity = .resizeAspectFill
+        view.layer.addSublayer(layer)
+        preview = layer
+        nonisolated(unsafe) let captureSession = session
+        sessionQueue.async { captureSession.startRunning() }
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        preview?.frame = view.bounds
+    }
+
+    func stop() {
+        nonisolated(unsafe) let captureSession = session
+        sessionQueue.async { captureSession.stopRunning() }
+    }
+
+    private func showUnavailable() {
+        let label = UILabel()
+        label.text = "The camera isn't available. Paste the pairing code instead."
+        label.textColor = .white
+        label.numberOfLines = 0
+        label.textAlignment = .center
+        label.font = .preferredFont(forTextStyle: .body)
+        label.adjustsFontForContentSizeCategory = true
+        label.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            label.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
+            label.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
+        ])
     }
 
     func metadataOutput(
@@ -290,7 +343,7 @@ private final class QRScannerViewController: UIViewController, @preconcurrency A
               let text = obj.stringValue
         else { return }
         didDeliver = true
-        session.stopRunning()
+        stop()
         onScanned(text)
     }
 }
