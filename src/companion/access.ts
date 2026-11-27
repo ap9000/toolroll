@@ -116,7 +116,12 @@ export function createPhoneAccess(opts: { store: Store; reads: CompanionReadHand
     relayKind: () => kind,
     turn: (on, by, now) => serially(async () => {
       savePhoneAccess(opts.store.handle, on, by, now);
-      if (on) await start(); else { await stop(); problem = null; kind = null; }
+      if (on) {
+        await start();
+        // Give the first connection a moment, so the page the person returns to usually says On, not Starting.
+        const deadline = Date.now() + 3_000;
+        while (running !== null && running.status().state === "starting" && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+      } else { await stop(); problem = null; kind = null; }
     }),
     resume: () => serially(async () => { if (phoneAccessEnabled(opts.store.handle)) await start(); }),
     stop: () => serially(stop),

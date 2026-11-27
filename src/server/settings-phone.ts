@@ -21,7 +21,7 @@ import { refuse, relativeAge, screen } from "./chrome.js";
 import type { HandlerContext } from "./handler-context.js";
 import { handlersOf } from "./handler-registry.js";
 import { redirect } from "./http.js";
-import { acts, btn, codeLine, note, notice, settingsRecord, settingsSection } from "./kit.js";
+import { acts, btn, codeLine, infoLine, note, notice, settingsRecord, settingsSection } from "./kit.js";
 import type { ServerRuntime } from "./runtime.js";
 import { browserCaller, type Who } from "./session.js";
 
@@ -123,7 +123,7 @@ export function createPhoneSettingsHandlers(runtime: Pick<ServerRuntime, "store"
         acts(postForm("/settings/phone/cancel", html`<button type="submit" class="k-btn k-btn-outline k-btn-sm"><span class="k-face">Cancel</span></button>`, { hidden: { pairing: openId! } })),
       ]);
     } else {
-      const last = open === null ? "" : open.status === "confirmed" ? notice("Your iPhone is paired.") : open.status === "expired" ? notice("That pairing code expired. Pair again.")
+      const last = open === null ? "" : open.status === "confirmed" ? infoLine("Your iPhone is paired. Open the Toolroll app to see your work.") : open.status === "expired" ? notice("That pairing code expired. Pair again.")
         : open.status === "aborted_race" ? notice("Two phones tried the same code, so pairing stopped. Pair again and keep the code to yourself.") : open.status === "failed" || open.status.startsWith("aborted") ? notice("Pairing stopped. Pair again.") : "";
       pairBody = joinHtml([
         last,
@@ -143,7 +143,7 @@ export function createPhoneSettingsHandlers(runtime: Pick<ServerRuntime, "store"
         title: device.deviceName,
         sub: `Paired ${relativeAge(device.createdAt, now)}${device.lastSeenAt === null ? "" : ` · last connected ${relativeAge(device.lastSeenAt, now)}`}`,
         more: kitSectionForm({ proof: "phone-remove", action: "/settings/phone/remove", id: `phone-remove-${device.deviceId}`, hidden: { device: device.deviceId },
-          save: { label: "Remove", variant: "danger" }, confirm: `Remove ${device.deviceName}`, body: note("It's disconnected now and can't connect again until you pair it.") }),
+          save: { label: "Remove", variant: "danger" }, confirm: `Remove ${device.deviceName}`, body: "" }),
       }))),
     });
 
