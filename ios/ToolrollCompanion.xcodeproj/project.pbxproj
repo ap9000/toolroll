@@ -1,0 +1,430 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		AA0000010000000000000001 /* ToolrollCompanionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000010000000000000001 /* ToolrollCompanionApp.swift */; };
+		AA0000020000000000000001 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000020000000000000001 /* AppState.swift */; };
+		AA0000030000000000000001 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000030000000000000001 /* Theme.swift */; };
+		AA0000040000000000000001 /* WelcomePairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000040000000000000001 /* WelcomePairingView.swift */; };
+		AA0000050000000000000001 /* WorkInboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000050000000000000001 /* WorkInboxView.swift */; };
+		AA0000060000000000000001 /* TaskDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000060000000000000001 /* TaskDetailView.swift */; };
+		AA0000070000000000000001 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000070000000000000001 /* SettingsView.swift */; };
+		AA0000080000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BB0000080000000000000001 /* Assets.xcassets */; };
+		AA0000090000000000000001 /* ToolrollCompanionCore in Frameworks */ = {isa = PBXBuildFile; productRef = PP0000010000000000000001 /* ToolrollCompanionCore */; };
+		AA0000100000000000000001 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000100000000000000001 /* NotificationService.swift */; };
+		AA0000110000000000000001 /* ToolrollCompanionCore in Frameworks */ = {isa = PBXBuildFile; productRef = PP0000020000000000000001 /* ToolrollCompanionCore */; };
+		AA0000120000000000000001 /* NotificationServiceExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = BB0000210000000000000001 /* NotificationServiceExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		CC0000010000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 110000010000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = TT0000020000000000000001;
+			remoteInfo = NotificationServiceExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		DD0000010000000000000001 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				AA0000120000000000000001 /* NotificationServiceExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		BB0000010000000000000001 /* ToolrollCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolrollCompanionApp.swift; sourceTree = "<group>"; };
+		BB0000020000000000000001 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		BB0000030000000000000001 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		BB0000040000000000000001 /* WelcomePairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomePairingView.swift; sourceTree = "<group>"; };
+		BB0000050000000000000001 /* WorkInboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkInboxView.swift; sourceTree = "<group>"; };
+		BB0000060000000000000001 /* TaskDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskDetailView.swift; sourceTree = "<group>"; };
+		BB0000070000000000000001 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		BB0000080000000000000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		BB0000090000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		BB00000A0000000000000001 /* ToolrollCompanion.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ToolrollCompanion.entitlements; sourceTree = "<group>"; };
+		BB0000100000000000000001 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
+		BB0000110000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		BB0000120000000000000001 /* NotificationServiceExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NotificationServiceExtension.entitlements; sourceTree = "<group>"; };
+		BB0000200000000000000001 /* ToolrollCompanion.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ToolrollCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB0000210000000000000001 /* NotificationServiceExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NotificationServiceExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		FF0000010000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA0000090000000000000001 /* ToolrollCompanionCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FF0000020000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA0000110000000000000001 /* ToolrollCompanionCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		GG0000010000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				GG0000020000000000000001 /* ToolrollCompanion */,
+				GG0000030000000000000001 /* NotificationServiceExtension */,
+				GG0000040000000000000001 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		GG0000020000000000000001 /* ToolrollCompanion */ = {
+			isa = PBXGroup;
+			children = (
+				BB0000010000000000000001 /* ToolrollCompanionApp.swift */,
+				BB0000020000000000000001 /* AppState.swift */,
+				BB0000030000000000000001 /* Theme.swift */,
+				BB0000040000000000000001 /* WelcomePairingView.swift */,
+				BB0000050000000000000001 /* WorkInboxView.swift */,
+				BB0000060000000000000001 /* TaskDetailView.swift */,
+				BB0000070000000000000001 /* SettingsView.swift */,
+				BB0000080000000000000001 /* Assets.xcassets */,
+				BB0000090000000000000001 /* Info.plist */,
+				BB00000A0000000000000001 /* ToolrollCompanion.entitlements */,
+			);
+			path = ToolrollCompanion;
+			sourceTree = "<group>";
+		};
+		GG0000030000000000000001 /* NotificationServiceExtension */ = {
+			isa = PBXGroup;
+			children = (
+				BB0000100000000000000001 /* NotificationService.swift */,
+				BB0000110000000000000001 /* Info.plist */,
+				BB0000120000000000000001 /* NotificationServiceExtension.entitlements */,
+			);
+			path = NotificationServiceExtension;
+			sourceTree = "<group>";
+		};
+		GG0000040000000000000001 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				BB0000200000000000000001 /* ToolrollCompanion.app */,
+				BB0000210000000000000001 /* NotificationServiceExtension.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		TT0000010000000000000001 /* ToolrollCompanion */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CF0000020000000000000001 /* Build configuration list for PBXNativeTarget "ToolrollCompanion" */;
+			buildPhases = (
+				SS0000010000000000000001 /* Sources */,
+				FF0000010000000000000001 /* Frameworks */,
+				RR0000010000000000000001 /* Resources */,
+				DD0000010000000000000001 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				EE0000010000000000000001 /* PBXTargetDependency */,
+			);
+			name = ToolrollCompanion;
+			packageProductDependencies = (
+				PP0000010000000000000001 /* ToolrollCompanionCore */,
+			);
+			productName = ToolrollCompanion;
+			productReference = BB0000200000000000000001 /* ToolrollCompanion.app */;
+			productType = "com.apple.product-type.application";
+		};
+		TT0000020000000000000001 /* NotificationServiceExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CF0000030000000000000001 /* Build configuration list for PBXNativeTarget "NotificationServiceExtension" */;
+			buildPhases = (
+				SS0000020000000000000001 /* Sources */,
+				FF0000020000000000000001 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = NotificationServiceExtension;
+			packageProductDependencies = (
+				PP0000020000000000000001 /* ToolrollCompanionCore */,
+			);
+			productName = NotificationServiceExtension;
+			productReference = BB0000210000000000000001 /* NotificationServiceExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		110000010000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					TT0000010000000000000001 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					TT0000020000000000000001 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = CF0000010000000000000001 /* Build configuration list for PBXProject "ToolrollCompanion" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = GG0000010000000000000001;
+			packageReferences = (
+				PK0000010000000000000001 /* XCLocalSwiftPackageReference "Packages/ToolrollCompanionCore" */,
+			);
+			productRefGroup = GG0000040000000000000001 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				TT0000010000000000000001 /* ToolrollCompanion */,
+				TT0000020000000000000001 /* NotificationServiceExtension */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		RR0000010000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA0000080000000000000001 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		SS0000010000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA0000010000000000000001 /* ToolrollCompanionApp.swift in Sources */,
+				AA0000020000000000000001 /* AppState.swift in Sources */,
+				AA0000030000000000000001 /* Theme.swift in Sources */,
+				AA0000040000000000000001 /* WelcomePairingView.swift in Sources */,
+				AA0000050000000000000001 /* WorkInboxView.swift in Sources */,
+				AA0000060000000000000001 /* TaskDetailView.swift in Sources */,
+				AA0000070000000000000001 /* SettingsView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		SS0000020000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA0000100000000000000001 /* NotificationService.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		EE0000010000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = TT0000020000000000000001 /* NotificationServiceExtension */;
+			targetProxy = CC0000010000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		BC0000010000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = R2LSGQ532L;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		BC0000020000000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = R2LSGQ532L;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		BC0000030000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = ToolrollCompanion/ToolrollCompanion.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = R2LSGQ532L;
+				INFOPLIST_FILE = ToolrollCompanion/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.toolroll.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		BC0000040000000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = ToolrollCompanion/ToolrollCompanion.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = R2LSGQ532L;
+				INFOPLIST_FILE = ToolrollCompanion/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.toolroll.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		BC0000050000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = NotificationServiceExtension/NotificationServiceExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = R2LSGQ532L;
+				INFOPLIST_FILE = NotificationServiceExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.toolroll.ios.notification-service";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		BC0000060000000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = NotificationServiceExtension/NotificationServiceExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = R2LSGQ532L;
+				INFOPLIST_FILE = NotificationServiceExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.toolroll.ios.notification-service";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		CF0000010000000000000001 /* Build configuration list for PBXProject "ToolrollCompanion" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BC0000010000000000000001 /* Debug */,
+				BC0000020000000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		CF0000020000000000000001 /* Build configuration list for PBXNativeTarget "ToolrollCompanion" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BC0000030000000000000001 /* Debug */,
+				BC0000040000000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		CF0000030000000000000001 /* Build configuration list for PBXNativeTarget "NotificationServiceExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BC0000050000000000000001 /* Debug */,
+				BC0000060000000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		PK0000010000000000000001 /* XCLocalSwiftPackageReference "Packages/ToolrollCompanionCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/ToolrollCompanionCore;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		PP0000010000000000000001 /* ToolrollCompanionCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = PK0000010000000000000001 /* XCLocalSwiftPackageReference "Packages/ToolrollCompanionCore" */;
+			productName = ToolrollCompanionCore;
+		};
+		PP0000020000000000000001 /* ToolrollCompanionCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = PK0000010000000000000001 /* XCLocalSwiftPackageReference "Packages/ToolrollCompanionCore" */;
+			productName = ToolrollCompanionCore;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 110000010000000000000001 /* Project object */;
+}
