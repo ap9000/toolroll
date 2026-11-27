@@ -489,18 +489,6 @@ export class CompanionDaemonEngine {
     };
   }
 
-  /**
-   * @deprecated The Settings page before the perfect pass reads this; it maps PairingView onto that page's status names.
-   * Use pairingView.
-   */
-  getPairingStatus(pairSessionId: string, binding: string): { pairSessionId: string; status: "awaiting_scan" | "awaiting_confirm" | "confirming" | "confirmed" | "aborted_race" | "aborted_rejected" | "expired" | "failed"; confirmCode: string | null; deviceName: string | null; attached: boolean } | null {
-    const view = this.pairingView(pairSessionId, binding);
-    if (view === null) return null;
-    const status = view.status === "awaiting_ready" ? "awaiting_scan" : view.status === "finishing" || view.status === "paired" ? "confirmed"
-      : view.status === "contested" ? "aborted_race" : view.status === "cancelled" ? "aborted_rejected" : view.status;
-    return { pairSessionId, status, confirmCode: view.confirmCode, deviceName: view.deviceName, attached: this.pairings.get(pairSessionId)?.attachedKey != null };
-  }
-
   /** Step 5 of pairing: the owner confirms the code. Claimed synchronously before any await: a second confirm (a double
    * click, another tab) finds "confirming" and is refused. */
   async confirmPairing(pairSessionId: string, binding: string): Promise<{ ok: true; deviceId: string } | { ok: false; error: string }> {

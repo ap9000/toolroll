@@ -257,7 +257,7 @@ ${note("Keep the Toolroll app open until it says it's paired.")}</div>\
     const hostedChoice = access.hostedChoice();
     const hostedHost = hostedChoice.ok ? new URL(hostedChoice.url).host : null;
     const paths = service === null ? null : pathStates(service);
-    const direct = paths?.direct ?? null, hosted: HostedPathState = paths?.hosted ?? { state: "off" };
+    const direct = paths?.direct ?? null, hosted: HostedPathState = paths?.hosted ?? { state: "off", superseded: false };
     const directWorks = direct !== null && direct.state === "listening" && direct.addresses.length > 0;
     const hostedWorks = hosted.state === "connected";
     // Pair is offered only when a phone could reach this computer now (U7).
