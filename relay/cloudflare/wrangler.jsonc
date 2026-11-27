@@ -1,34 +1,53 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
+  "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "toolroll-companion-relay",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-01",
+  // Only the custom domain serves the relay: no *.workers.dev address and no preview URLs.
+  "workers_dev": false,
+  "preview_urls": false,
+  // Workers Logs: the relay prints one JSON line per refusal and close (never tokens, keys or full ids).
+  "observability": { "enabled": true },
   // The official relay's address (the QR's relayUrl is wss://relay.toolroll.dev/v1/connect). A self-hoster changes
-  // this and RELAY_PUBLIC_HOST together. CHALLENGE_SECRET is a secret: `wrangler secret put CHALLENGE_SECRET`.
+  // this and RELAY_PUBLIC_HOST together. CHALLENGE_SECRET (and CHALLENGE_SECRET_PREVIOUS while rotating) are secrets:
+  // `wrangler secret put CHALLENGE_SECRET`, at least 32 characters.
   "routes": [{ "pattern": "relay.toolroll.dev", "custom_domain": true }],
   "durable_objects": {
-    "bindings": [
-      {
-        "name": "MACHINE_ROOM",
-        "class_name": "MachineRoomDO"
-      }
-    ]
+    "bindings": [{ "name": "MACHINE_ROOM", "class_name": "MachineRoomDO" }]
   },
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["MachineRoomDO"]
-    }
-  ],
-  // Per client address, per minute (Workers Rate Limiting; period must be 10 or 60 seconds). The namespace ids are
-  // this account's own counters; a self-hoster picks any unused integers.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MachineRoomDO"] }],
+  // Per minute (Workers Rate Limiting; period must be 10 or 60 seconds): registrations and challenges per client
+  // address; connects and admission calls per client address across all machines (checked first, before any Durable
+  // Object) and per machine + client address. The namespace ids are this account's own counters; a self-hoster picks
+  // any unused integers.
   "ratelimits": [
     { "name": "RL_REGISTER", "namespace_id": "4199001", "simple": { "limit": 20, "period": 60 } },
-    { "name": "RL_CONNECT", "namespace_id": "4199002", "simple": { "limit": 120, "period": 60 } }
+    { "name": "RL_CONNECT", "namespace_id": "4199002", "simple": { "limit": 120, "period": 60 } },
+    { "name": "RL_CLIENT", "namespace_id": "4199003", "simple": { "limit": 600, "period": 60 } }
   ],
   "vars": {
-    "RELAY_PUBLIC_HOST": "relay.toolroll.dev",
-    "APNS_TOPIC": "dev.toolroll.ios",
-    "APNS_ENVIRONMENT": "production"
+    "RELAY_PUBLIC_HOST": "relay.toolroll.dev"
+  },
+  "env": {
+    // `npm run relay:deploy` deploys here first and smoke-tests it before production. Its own subdomain, its own rate
+    // limit counters and its own secrets (`wrangler secret put CHALLENGE_SECRET --env staging`).
+    "staging": {
+      "name": "toolroll-companion-relay-staging",
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": { "enabled": true },
+      "routes": [{ "pattern": "relay-staging.toolroll.dev", "custom_domain": true }],
+      "durable_objects": {
+        "bindings": [{ "name": "MACHINE_ROOM", "class_name": "MachineRoomDO" }]
+      },
+      "ratelimits": [
+        { "name": "RL_REGISTER", "namespace_id": "4199011", "simple": { "limit": 20, "period": 60 } },
+        { "name": "RL_CONNECT", "namespace_id": "4199012", "simple": { "limit": 120, "period": 60 } },
+        { "name": "RL_CLIENT", "namespace_id": "4199013", "simple": { "limit": 600, "period": 60 } }
+      ],
+      "vars": {
+        "RELAY_PUBLIC_HOST": "relay-staging.toolroll.dev"
+      }
+    }
   }
 }

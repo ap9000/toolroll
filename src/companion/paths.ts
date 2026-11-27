@@ -36,6 +36,11 @@ export function isTailnetIpv4(host: string): boolean {
 
 /** This Mac's LAN IPv4 addresses: up, not internal, private; Wi-Fi/Ethernet (en*) first; at most 3. */
 export function lanAddressesOf(interfaces: NodeJS.Dict<NetworkInterfaceInfo[]> = networkInterfaces()): string[] {
+  return lanInterfacesOf(interfaces).map(one => one.address);
+}
+
+/** The same addresses with the interface each is on (en0, …), for Settings' labels. */
+export function lanInterfacesOf(interfaces: NodeJS.Dict<NetworkInterfaceInfo[]> = networkInterfaces()): { address: string; interface: string }[] {
   const found: { name: string; address: string }[] = [];
   for (const [name, infos] of Object.entries(interfaces)) {
     for (const info of infos ?? []) {
@@ -43,7 +48,16 @@ export function lanAddressesOf(interfaces: NodeJS.Dict<NetworkInterfaceInfo[]> =
     }
   }
   found.sort((a, b) => Number(!a.name.startsWith("en")) - Number(!b.name.startsWith("en")) || a.name.localeCompare(b.name));
-  return [...new Set(found.map(f => f.address))].slice(0, 3);
+  const seen = new Set<string>();
+  return found.filter(f => !seen.has(f.address) && seen.add(f.address)).slice(0, 3).map(f => ({ address: f.address, interface: f.name }));
+}
+
+/** The interface that holds an IPv4 address on this computer (a Tailscale address sits on a utun), or null. */
+export function interfaceOf(address: string, interfaces: NodeJS.Dict<NetworkInterfaceInfo[]> = networkInterfaces()): string | null {
+  for (const [name, infos] of Object.entries(interfaces)) {
+    if ((infos ?? []).some(info => info.family === "IPv4" && info.address === address)) return name;
+  }
+  return null;
 }
 
 const OCTET = "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";

@@ -1,6 +1,6 @@
 # Companion Phone App — Noise `IKpsk2`, Portable Relay & E2EE Push Protocol Spec
 
-**Status:** Design spec (pre-build, revised after independent protocol review)  
+**Status:** Gate 1 built (2026-11-27 perfect pass). The frozen numbers are in `test/fixtures/companion-wire.json` (read by the Node and Swift tests) and the relay contract in `relay/PROTOCOL.md`; §4b lists where the code differs from the design text below.  
 **Scope:** Transport encryption, pairing handshake, bounded RPC framing, relay admission & multi-phone routing, portable reference relay, and end-to-end encrypted push notifications.
 
 ---
@@ -28,11 +28,13 @@ No specific Noise library is pre-selected or claimed Revision-34-compatible here
    - **Session reconnect mode:**
      `prologue = "toolroll-noise-v1\0session\0" || utf8(workspaceId) || "\0" || utf8(deviceId) || "\0" || utf8(recoveryGeneration)` *(where `recoveryGeneration` is Toolroll's 32-lowercase-hex-char `workspace_identity.recovery_generation`)*
    - Both sides pass identical `prologue` bytes to `Initialize("Noise_IKpsk2_25519_ChaChaPoly_SHA256", prologue, ...)`. Any mismatch in version, mode, workspace, device, or `recoveryGeneration` causes handshake authentication to fail cryptographically.
-2. **Never act on handshake message 1 (`-> e, es, s, ss`).** Noise `IK` message 1 is replayable before responder ephemeral entropy (`ee`, `se`, `psk`) enters in message 2. The daemon MUST NOT execute any RPC or mutate durable state from message 1; message 1 payload carries only `{ protocolVersion: 1, mode: "pair" | "session", deviceId?, deviceName? }`.
-3. **Key confirmation before RPCs.** A session enters `AUTHENTICATED` only after message 2 (`<- e, ee, se, psk`) completes AND the phone sends its first encrypted transport message (`device.hello`) verified under the initiator→responder transport cipher key.
+2. **Never act on handshake message 1 (`-> e, es, s, ss`).** Noise `IK` message 1 is replayable before responder ephemeral entropy (`ee`, `se`, `psk`) enters in message 2. The daemon MUST NOT execute any RPC or mutate durable state from message 1; message 1 payload carries only `{ protocolVersion: 1, mode: "pair", deviceRelayPub }` or `{ protocolVersion: 1, mode: "session", deviceId }`. The Mac remembers each message 1's ephemeral key for 15 minutes (64 per pairing or device id, 4,096 in all) and drops a repeat before any Noise work.
+3. **Key confirmation before RPCs.** A session enters `AUTHENTICATED` only after message 2 (`<- e, ee, se, psk`) completes AND the phone sends its first encrypted transport message (`device.hello`) verified under the initiator→responder transport cipher key. Before hello only a framing PING is answered; anything else ends the session.
+   - **Message 2 is padded:** every message 2 payload (pairing and session, every status) is JSON with a `pad` field making it exactly 160 bytes of plaintext, so the wire never tells an accepted phone from a refused one.
+   - **Authenticated refusal:** a phone whose row still exists with keys but is retired, or whose account no longer stands, completes the handshake and gets `{ status: "refused", reason: "device_revoked" | "account_revoked" }`; from outside it then ends exactly like an accepted connection that gets bytes it can't decrypt (any transport message closes it as `decrypt_failed`; silence closes it at the 10 s hello deadline, 4408, as for any unanswered hello). The real phone reads the refusal and closes on its own; someone replaying a captured message 1 can't tell a removed phone from a kept one. A live session that loses standing gets a stream-0 `ERROR { code: "device_revoked" | "account_revoked" }` and closes 4403.
 4. **Noise message size cap (65,535 bytes).** Per Noise Protocol Framework Revision 34 §3, every Noise transport message MUST be **≤ 65,535 bytes** total ciphertext (including the 16-byte Poly1305 tag), capping each Noise transport plaintext at **≤ 65,519 bytes**. Larger logical RPC requests or responses MUST be split into bounded frames (Section 3).
 5. **64-bit byte-encoded nonces & `2^64 - 1` refusal.** Transport nonces are strict monotonic `uint64` counters encoded as `0x00000000 || uint64_le(n)` using `BigInt` in TypeScript and `UInt64` in Swift (never JS `Number`). Per Noise §5.1, nonce **`2^64 - 1` (`0xFFFFFFFFFFFFFFFF`) is reserved** and MUST NEVER be used for encryption or decryption; reaching it (or any out-of-order/replayed counter) immediately terminates the session.
-6. **Rekey / session lifetime rule.** Either peer MUST close the transport and trigger a fresh 1-RTT `Noise_IKpsk2` re-handshake once **either** cipher direction reaches **`2^20` (1,048,576) messages** OR **24 hours** of session age, whichever comes first. This provides periodic ephemeral forward secrecy and keeps nonces 13 orders of magnitude away from `2^64 - 1`.
+6. **Rekey / session lifetime rule.** Either peer MUST close the transport and trigger a fresh 1-RTT `Noise_IKpsk2` re-handshake once **either** cipher direction reaches **`2^20` (1,048,576) messages** OR **24 hours** of session age, whichever comes first. This provides periodic ephemeral forward secrecy and keeps nonces 13 orders of magnitude away from `2^64 - 1`. The Mac ends a session in its last minute (or 16 messages before the cap) with a stream-0 `ERROR { code: "rekey" }` and close 1000; the phone reconnects without a word.
 7. **Same protocol everywhere & independent Mac key pinning.** Any future post-V1 local-network transport MUST run the exact same `Noise_IKpsk2` handshake (zero plaintext fallback). The phone pins `macStaticPub` per `workspaceId` independently of `relayUrl`.
 
 ---
@@ -40,28 +42,25 @@ No specific Noise library is pre-selected or claimed Revision-34-compatible here
 ## 2. Two-Step Pairing Ceremony & `devicePsk` Lifecycle
 
 1. **Mac (signed-in approver):** Clicks *Pair iPhone* (or `toolroll phone pair`).
-   - Generates ephemeral one-time `pairPsk = CSPRNG(32)` (TTL 5 min, single-use) and `pairSessionId = UUIDv4`.
+   - Generates ephemeral one-time `pairPsk = CSPRNG(32)` (TTL 5 min, single-use) and `pairSessionId = "pair_" + 16 hex`.
    - Signs a short-lived **`pairConnToken`** (`role=pair`, `machineId`, `pairSessionId`, `TTL 5 min`) with the Mac's Ed25519 `relayMachinePriv` (Section 4).
-   - Renders QR code: `{ v: 2, paths, machineId, workspaceId, macStaticPub, pairSessionId, pairPsk, pairConnToken? }` (§4a: `paths` lists direct addresses first and the hosted relay last; `pairConnToken` only when a hosted path exists). `pairPsk` is never transmitted over the network.
+   - Refuses when the Mac already has 32 phones (active and pending): "This Mac already has 32 phones. Remove one first."
+   - Renders QR code: `{ v: 2, paths, machineId, workspaceId, macStaticPub, pairSessionId, pairPsk, expiresAtMs, pairConnToken? }` (§4a: `paths` lists direct addresses first and the hosted relay last; `pairConnToken` only when a hosted path exists). `pairPsk` is never transmitted over the network.
 2. **iPhone:** Scans QR, generates its own X25519 static keypair (`phoneStaticPriv` stored in iOS Keychain `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`) and Ed25519 relay identity keypair (`deviceRelayPriv`, also `ThisDeviceOnly`). Connects over one path (§4a) — directly with no token, or to the hosted relay using `pairConnToken` — and runs `Noise_IKpsk2` with `psk = pairPsk` and the pairing prologue.
-3. **Second-handshake race abort (mandatory):**
-   - If a **second** pairing handshake arrives for the same `pairSessionId` before the owner confirms (e.g., a bystander photographed the QR and raced the owner), the Mac daemon **immediately aborts the entire pairing session**, deletes `pairPsk`, drops all pending pairing sockets for `pairSessionId`, and displays: *"Multiple devices tried to use this QR code — pairing cancelled. Generate a new QR code."*
-4. **Transcript confirmation code:**
-   - After message 2 completes, both sides derive a 6-character code from the 32-byte Noise handshake hash `h_pair`:
-     `code = base32_crockford(HKDF-SHA256(ikm = h_pair, salt = "", info = "toolroll-pair-confirm-v1", len = 8))[0..6]` (displayed as `7K4-M9P`).
-   - Both screens display `7K4-M9P`. Any self-reported `deviceName` (e.g., *"Work iPhone"*) is sanitized of control/bidi characters and shown strictly as **untrusted display text**, never a trust indicator.
-   - The Mac UI explicitly instructs the owner: **Click Confirm ONLY if your own phone is showing the exact same code.** (If someone else raced the QR first, the owner's phone shows no code at all.)
-   - **Device remains `pending` (zero RPCs permitted)** until the signed-in approver clicks **Confirm match** on the Mac.
-5. **Finalization & `devicePsk` derivation/storage:**
-   - Upon Mac confirmation, the Mac generates `deviceId = UUIDv4` and `pskEntropy = CSPRNG(32)`, sends `{ deviceId, recoveryGeneration, pskEntropy, pskVersion: 1 }` inside the encrypted pairing channel, and receives the phone's `deviceRelayPub`.
-   - The phone persists `recoveryGeneration` alongside `workspaceId`, `deviceId`, `machineId`, `macStaticPub`, and `devicePsk` so it can construct the exact reconnect prologue on every future session.
+3. **Key confirmation, then the code (`pair.ready`).** Message 2 (`{ status: "awaiting_ready" }`, padded) proves nothing about the phone: anyone who saw `pairSessionId` and holds `macStaticPub` can write a message 1. Within 10 s the phone sends one framed REQ on stream 1, `pair.ready { deviceName }` (≤48 characters, sanitized of control/bidi characters on the Mac). Decrypting it proves the phone holds `pairPsk`; the **first** such phone is *attached* and only then does the Mac show the code and the device name. A bare socket open or a message 1 never changes or aborts a pairing; a socket that fails to decrypt is dropped alone.
+4. **Contest rule (QR photo race).** A **second** socket that proves `pairPsk` while a phone is attached contests the pairing: both get `ERROR pairing_contested` on stream 1 and the pairing ends ("Another device used this code. Pair again."). After the keys went out (`finishing`, below) a contest retires the attached phone's row as `contested`, so that phone is refused. Anyone who can open a socket but doesn't hold the QR's PSK can't contest, evict or abort anything.
+5. **Transcript confirmation code:** both sides derive a 6-character code from the Noise handshake hash `h_pair`:
+   `code = base32_crockford(HKDF-SHA256(ikm = h_pair, salt = "", info = "toolroll-pair-confirm-v1", len = 8))[0..6]` (displayed as `7K4-M9P`). The owner confirms on the Mac only if their own phone shows the same code.
+6. **Outcome, acknowledgement and activation.**
+   - On confirm the Mac saves the phone's row **pending**, zeroizes `pairPsk`, and has every connected hosted relay admit `{ deviceId, deviceRelayPub }` (≤10 s each). It then re-checks that the pairing is still its own (not contested, cancelled or expired), the account still stands at the generation that started it, and the attached socket is still the same and open; any failure deletes the row, tells the relays to forget it, and ends the pairing `failed`.
+   - The RES to `pair.ready` is the outcome: `{ ok: true, result: { deviceId, recoveryGeneration, pskEntropy } }` (deviceId = `"dev_" + 16 hex`), or `ERROR` on stream 1 with `pairing_cancelled | pairing_expired | pairing_contested | pairing_failed`. Sending it is the linearization point (`finishing`). While waiting, the phone sends a framing PING every 20 s and the Mac answers PONG.
+   - The phone stores its keys and sends `pair.done { deviceId }` on stream 3; the Mac activates **that pairing's own** row atomically (pending, not retired, younger than 10 minutes, account and recovery generation unchanged, all in one transaction) and answers `{ ok: true, result: { ok: true } }`, close 1000. A lost `pair.done` is harmless: the phone's first session `device.hello` activates the row under the same conditions. A pending row nobody activates within 10 minutes is deleted.
    - Both sides independently derive the durable 32-byte **`devicePsk`**:
      `devicePsk = HKDF-SHA256(ikm = pskEntropy, salt = h_pair, info = "toolroll-device-psk-v1:" || utf8(workspaceId) || ":" || utf8(deviceId), len = 32)`.
-   - **Storage on Mac (plain truth):** Both peers need the raw 32-byte `devicePsk` for every `IKpsk2` handshake (a one-way hash cannot work). On the Mac, `device_psk` is stored **unencrypted in SQLite** (`paired_devices.device_psk`), and therefore appears in Workspace backups, protected at rest by OS file permissions (`0600`) and Toolroll's agent fence (`src/agent-fence.ts`, which denies Toolroll's own state folder and SQLite database to build/agent processes). This is why ADR 0001 unconditionally wipes `paired_devices` on backup restore.
+   - **Storage on Mac (plain truth):** Both peers need the raw 32-byte `devicePsk` for every `IKpsk2` handshake (a one-way hash cannot work). On the Mac, `device_psk` is stored **unencrypted in SQLite** (`companion_paired_device.device_psk`), and therefore appears in Workspace backups, protected at rest by OS file permissions (`0600`) and Toolroll's agent fence (`src/agent-fence.ts`, which denies Toolroll's own state folder and SQLite database to build/agent processes). This is why ADR 0001 unconditionally wipes `companion_paired_device` on backup restore. A retired phone's row keeps its keys for 30 days (with why: `removed | password_changed | access_changed | restored | migration | contested | pairing_failed`) so its next connection gets the authenticated refusal; then the row is deleted.
    - **Storage on iPhone:** Stored in iOS Keychain with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` (never synced to iCloud Keychain, never backed up).
-   - **Relay registration:** Daemon registers `{ deviceId, deviceRelayPub }` with the relay (`POST /v1/machines/:id/devices`, signed with `relayMachinePriv`) and wipes `pairPsk`.
-   - **Rotation:** Supported over an authenticated Noise session via two-phase commit (`device.psk.rotate` sends `newPskEntropy` + `pskVersion + 1`; daemon accepts both `current` and `next` PSK until the phone completes one `IKpsk2` handshake under `next`, then deletes `current`).
-   - **Restore wipe (ADR 0001):** Backup restore unconditionally deletes all `paired_devices` rows (including `device_psk` and `phoneStaticPub`) and increments `recoveryGeneration`.
+   - **Rotation:** not planned. A phone's PSK lives until the phone is removed (or its account's credentials change, which retires it); re-pairing is rotation.
+   - **Restore wipe (ADR 0001):** Backup restore unconditionally deletes all `companion_paired_device` rows (including `device_psk` and `phone_static_pub`) and this Mac's companion keys, and increments `recoveryGeneration`. Before the keys go, the hosted relay is asked (best effort) to forget the machine's room.
 
 ---
 
@@ -87,15 +86,15 @@ Every Noise transport message carries **exactly one** binary frame (total plaint
 
 ### Stream Bounds, Flow Control, Deadlines & Memory Caps
 - **Stream ID allocation (no reuse):** Phone allocates strictly monotonic odd `streamId` (`1, 3, 5, ...`). Reusing any previously seen `streamId` within a session is a protocol error (`ERROR(protocol_error)` + close). Approaching `2^32 - 1` triggers a clean session reconnect.
-- **Concurrency caps:** Max **8 concurrent open streams** per phone session (at most **2 live watch subscriptions** + **6 unary/diff streams**). Excess streams return `ERROR(too_many_streams)`.
+- **Concurrency caps:** Max **8 concurrent open streams** per phone session, at most **2** of them live watch subscriptions. Excess streams return `ERROR(too_many_streams)`.
 - **Deadlines:**
   - Multi-chunk `REQ_CHUNK` assembly deadline: **5 seconds** from chunk 0 to `END`.
-  - Unary RPC response deadline: **30 seconds** total. Because max unary response is **1 MiB** (~18 chunks) and the relay grants a **2 MiB burst / 4 MiB/min sustained** budget per phone, a maximum-size 1 MiB diff completes well inside the 30-second window.
+  - Unary RPC response deadline: **30 seconds** from when the response is ready to send (the read itself isn't timed): the phone must take it all within that. With the Mac's own downstream pacing (§4) a 1 MiB diff goes out in about 5 seconds.
   - Live subscription idle deadline (no `CREDIT` or `PING/PONG`): **60 seconds** → `ERROR(idle_timeout)`.
 - **Backpressure (distinct rules for unary responses vs. live watch streams):**
   - **Unary multi-part responses (e.g., `task.diff`):** Response `CHUNK` frames are **never dropped or coalesced**. If stream credit hits `0`, the daemon pauses emission and waits for `CREDIT` (up to the 30-second unary deadline, after which it sends `ERROR(deadline_exceeded)` and closes the stream).
   - **Live watch subscriptions (`run.watch.subscribe`):** When stream credit hits `0`, the daemon buffers at most **32 records OR 256 KiB** per stream, coalescing/truncating older live records with an explicit `{ k: "cut" }` marker.
-  - **Global memory caps:** Max **1 MiB total buffered bytes across all streams per phone session**, and max **4 MiB daemon-wide** across all connected paired phones.
+  - **Memory caps:** everything held for one phone — request assembly, unary responses until they have gone out, and live-watch buffers — counts against **1 MiB per phone session**, and against **64 MiB daemon-wide** (a backstop: phones are also capped per link, 8 per relay link and 32 direct sockets). A watch record the budget can't take is dropped and reported as a cut.
 - **iOS Background Suspension:** iOS suspends WebSockets within seconds of backgrounding. The app cleanly closes the socket on `scenePhase == .background` and runs a 1-RTT `Noise_IKpsk2` reconnect on foreground resume, marking cached views stale until `device.hello` succeeds.
 
 ---
@@ -116,7 +115,12 @@ Every Noise transport message carries **exactly one** binary frame (total plaint
 The daemon maintains **one** outbound WebSocket to the relay; up to **4 concurrent phone/pair sockets** connect to the same `machineId` room. The relay assigns each phone socket a 4-byte `connId` (`u32 BE`) and wraps frames on the **daemon** leg in a minimal 5-byte routing header:
 - `0x01 PEER_OPEN(connId, role: pair|device, id)` — notifies daemon a peer connected
 - `0x02 PEER_DATA(connId, rawNoiseMessageBytes)` — blind binary forward (≤ 65,535 B)
-- `0x03 PEER_CLOSE(connId, reasonCode)` — notifies daemon peer disconnected
+- `0x03 PEER_CLOSE(connId, {reason, code?})` — a peer disconnected (relay → daemon), or the daemon drops one (daemon → relay; `code` is the phone's close code, e.g. 4403)
+- `0x04 HEARTBEAT([8B BE ms])` daemon → relay every 20 s; `0x05 HEARTBEAT_ACK` relay → daemon echoes the 8 bytes. The Mac reconnects after 45 s without an ACK (a half-open socket after sleep or a network change).
+
+The Mac validates every PEER_OPEN (`role` ∈ pair|device, `id` /^[A-Za-z0-9_-]{1,128}$/) and carries at most 8 phones per relay link. It paces what it sends each phone (12 MiB/min, burst 3 MiB per connection; 48 MiB/min, burst 12 MiB per hosted link) on plaintext frames before encryption, in one ordered queue per connection, so the relay's own limits never drop a phone; control frames (PONG, ERROR, pairing outcomes) skip the buckets.
+
+**Machine lifecycle (Mac side).** The Mac keeps the relay's admitted set equal to its live and pending phones: a full PUT on every connect and every 10 minutes, POST on a confirmed pairing, DELETE on removal (in the background: Settings never waits on the relay). It registers only when a call answers 404 `machine_unknown`, maps refusals by their `Toolroll-Relay-Error` code (and honours `Retry-After`), backs off 30 s doubling to 10 minutes when another daemon with the same keys replaces it (4409, shown in Settings), and calls `DELETE /v1/machines/:id` when hosted access is turned off and before a restore retires its keys. Every token names the relay's host (`aud`); admission calls also name their method and exact path (`htm`, `htu`); see `relay/PROTOCOL.md` §3.3.
 
 Phone sockets send and receive raw Noise messages (≤ 65,535 B); the relay holds zero Noise keys and never inspects Noise bytes.
 
@@ -133,7 +137,7 @@ Phone sockets send and receive raw Noise messages (≤ 65,535 B); the relay hold
 - **Wire contract & conformance suite (`relay/PROTOCOL.md` + `relay/conformance/`):** Any relay implementation passing the conformance suite is drop-in compatible.
 - **Portable Reference Implementation (`relay/reference/`):** Small Node.js/Go server + `Dockerfile` for self-hosting via `TOOLROLL_RELAY_URL`.
 - **Cloudflare Durable Object Adapter (`relay/cloudflare/`):** One hosting adapter behind `wss://relay.toolroll.dev` (note: Cloudflare WS messages support up to 32 MiB; we enforce the 65,535-byte Noise cap explicitly).
-- **Honest migration story:** Moving relays is **not** a pure DNS flip because `machineId → relayMachinePub` and `deviceId → deviceRelayPub` registrations live in the relay's storage. Because `machineId` is deterministically derived from `relayMachinePub`, migrating `relay.toolroll.dev` off Cloudflare works cleanly via either (a) exporting/importing that small public-key registration table before DNS cutover, or (b) automatic daemon recovery on `401 unknown_machine` — the daemon re-registers `relayMachinePub` (reclaiming the **exact same `machineId`**) and re-syncs active `paired_devices`' `deviceRelayPub` entries from local SQLite, with zero phone re-pairing required because `machineId`, `macStaticPub`, and `devicePsk` do not change.
+- **Honest migration story:** Moving relays is **not** a pure DNS flip because `machineId → relayMachinePub` and `deviceId → deviceRelayPub` registrations live in the relay's storage. Because `machineId` is deterministically derived from `relayMachinePub`, migrating `relay.toolroll.dev` off Cloudflare works cleanly via either (a) exporting/importing that small public-key registration table before DNS cutover, or (b) automatic daemon recovery on `404 machine_unknown` — the daemon re-registers `relayMachinePub` (reclaiming the **exact same `machineId`**) and re-syncs its live and pending phones' `deviceRelayPub` entries from local SQLite, with zero phone re-pairing required because `machineId`, `macStaticPub`, and `devicePsk` do not change.
 
 ---
 
@@ -141,24 +145,30 @@ Phone sockets send and receive raw Noise messages (≤ 65,535 B); the relay hold
 
 The phone reaches the Mac **directly** when it can (same Wi-Fi, or the Mac's tailnet) and through the **hosted relay** otherwise. Both carry the identical Noise `IKpsk2` byte stream; only the transport differs.
 
-- **Direct endpoint** (on the Mac, port 4199 unless `TOOLROLL_PHONE_PORT`): `GET /v1/health` → `{ ok, machineId }` (credential-free reachability probe); WebSocket `GET /v1/direct?role=pair|device&id=…` with **no** Authorization header and no browser `Origin`. Binary messages are exactly what the relay carries as `PEER_DATA` payloads. The listener binds IPv4 and admits the raw TCP socket only from loopback, RFC 1918 and Tailscale (100.64/10) ranges, before HTTP sees it. It caps sockets globally and per address, rate-limits connections and upgrades per address, and enforces a 5 s header deadline.
+- **Direct endpoint** (on the Mac, port 4199 unless `TOOLROLL_PHONE_PORT`; if that is taken, 4200–4209 in order, and the bound port is kept in `companion_access.direct_port` and tried first next time; advertised over Bonjour as `_toolroll._tcp` with TXT `m=<machineId>` while it listens — `dns-sd` on macOS, `avahi-publish-service` on Linux when installed): `GET /v1/health` → `{ ok, machineId }` (credential-free reachability probe); WebSocket `GET /v1/direct?role=pair|device&id=…` with **no** Authorization header and no browser `Origin`. Binary messages are exactly what the relay carries as `PEER_DATA` payloads. The listener binds IPv4 and admits the raw TCP socket only from loopback, RFC 1918 and Tailscale (100.64/10) ranges, before HTTP sees it. It caps sockets globally and per address, rate-limits connections and upgrades per address, and enforces a 5 s header deadline.
 - **`paths`** (QR and every `device.hello` result): 1–5 entries; ≤4 `direct` (`ws://<private IPv4 literal>:<port>/v1/direct`, never a hostname), ≤1 `hosted` (`wss://…/v1/connect`), hosted last, no duplicates. The phone replaces its stored list only after a hello that passed its identity checks.
-- **Dialing:** probe every direct path's health in parallel (1.2 s); exactly one handshake on the first healthy one (4 s handshake+hello budget); any failure before Noise authenticates the Mac falls back once to hosted. "Not recognized" comes only from an authenticated refusal (an encrypted error after Noise, or the hosted relay's 401/403).
+- **Dialing:** probe every direct path's health in parallel (1.2 s); exactly one handshake on the first healthy one (4 s handshake+hello budget); any failure before Noise authenticates the Mac falls back once to hosted. "Removed" comes only from an authenticated refusal (a `refused` message 2 or a stream-0 ERROR after Noise) or the hosted relay's 403 `device_revoked`; every other refusal (401, 404, 429, 503) is retried.
 - **Engine:** every phone connection belongs to a link (the hosted relay socket, or one direct socket) and is keyed by link + connection id; one authenticated session per device (a newer one supersedes); a relay drop ends only that link's sessions.
 - **Hosted relay** is the operator's choice when turning phone access on (`TOOLROLL_RELAY_URL` names another; `off` removes it). Admission changes are serialized and a failed change is retried while connected.
 
-## 4b. Where the implementation differs from this spec (as of 2026-11-27)
+## 4b. Where the implementation differs from this spec (as of the 2026-11-27 perfect pass)
 
-These are deliberate or deferred, and recorded so nobody relies on the spec text alone:
+Recorded so nobody relies on the design text alone:
 
-- **PSK rotation is not implemented.** `pskVersion` and `next_device_psk` exist in the schema only; reconnect uses `devicePsk`. A paired phone keeps its PSK until it is removed or its account's credential generation changes (which retires it).
-- **`pair.confirmed` is sent as one raw transport message**, not inside a 13-byte frame. Every later message is framed.
-- **Pairing has no key confirmation from the phone before the code is shown.** IKpsk2 mixes the PSK at message 2, so a party who learned `pairSessionId` (visible to the relay, and in the direct URL on the local network) and `macStaticPub` can make the Mac show a code that no phone displays. The owner's code comparison is the guard: a code the phone doesn't show must not be confirmed. Even if it is confirmed, the party can't derive `devicePsk`. Follow-up: require one encrypted `pair.ready` from the phone before showing the code.
+- **No PSK rotation** (§2): not planned; re-pairing is rotation.
+- **Ids** are `pair_` / `dev_` + 16 hex characters, not UUIDv4. Tables are `companion_access`, `companion_host_keys` and `companion_paired_device` (v187 migration); there is no `device_push_tokens`, `device_idempotency` or `account_passkeys` yet (Gate 2).
 - **Host keys** (`noise_static_priv`, `relay_priv`) are stored in the workspace's SQLite database like other credentials. A restore deletes them, so a restored copy gets its own machine id and Noise key.
-- **Relay token `jti` is not tracked.** A captured token can be replayed within its TTL (≤300 s plus skew), which can only occupy socket slots on the relay; Noise still authenticates every session.
-- **Paired phones are derived authority.** Any change to the account's generation (password, rotation, access or role change, revocation) retires its phones in the same transaction.
+- **Restored workspace:** an old phone can't read the restored Mac's message 2 (the prologue binds `recoveryGeneration`), so no authenticated "restored" message is possible; the phone shows a hint ("Toolroll on your Mac was reset or restored. Pair again.") when a direct `/v1/health` answers a different machine id, while it keeps retrying.
+- **Paired phones are derived authority.** Any change to the account's generation (password, rotation, access or role change, revocation) retires its phones in the same transaction (`password_changed` for a credential rotation, `access_changed` otherwise).
+- **`device.hello`** returns `version, workspaceId, workspaceLabel, account, deviceId, toolroll`, plus `paths` (§4a) and `consoleUrl` (this console's address for Handoff, or null).
+- **`task.approval.read`** answers a fixed placeholder ("Approve on your Mac."): Gate 1 reads approval terms from the step cards.
+- **No CLI** for pairing or revoking (`toolroll phone pair`, `toolroll devices revoke`): Settings → Phone does both.
+- **The direct listener admits loopback, RFC 1918 and Tailscale (100.64/10) peers**, not link-local.
+- **Deadlines:** the Mac's message 1 deadline is 5 s from the socket opening; the pairing phone has 10 s from message 2 for `pair.ready`, the session phone 10 s for its hello.
 
 ## 5. End-to-End Encrypted Push Notifications
+
+> **Not implemented yet.** Push is blocked on the owner's APNs key. Nothing below is built: there is no `push.register` RPC (it was removed from the paired-device allowlist), no push-token table, and no Notification Service Extension in the app. This section is the design for when it is.
 
 Extending Toolroll's RFC 8291 `aes128gcm` push encryption (`src/push.ts:154` `encryptPushPayload`, which wraps the 5-argument `encryptWithMaterials` at `src/push.ts:119`):
 

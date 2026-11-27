@@ -1,0 +1,57 @@
+name: Relay
+
+# The companion relays (relay/PROTOCOL.md): the Cloudflare worker type-checked and run under Miniflare against the
+# shared conformance suite (relay/conformance/suite.ts) plus its Durable Object tests, and the reference relay against
+# the same suite. Nothing here talks to Cloudflare: Miniflare runs workerd locally; deploying is `npm run
+# relay:deploy`, by a person, never CI.
+#
+# Which runs: pull requests that touch the relays or their contract. Advisory: not one of REQUIRED_PR_CHECKS (the root
+# unit suite also runs the reference relay's conformance files). No secrets.
+
+on:
+  pull_request:
+    paths:
+      - "relay/**"
+      - "src/companion/relay-server.ts"
+      - "src/companion/relay-auth.ts"
+      - "src/companion/noise.ts"
+      - "src/companion/relay-conformance*.test.ts"
+      - "test/fixtures/companion-wire.json"
+      - "test/fixtures/companion-relay-contract.json"
+      - ".github/workflows/relay.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: relay-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  relay:
+    name: relay · worker + reference
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          check-latest: true
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            relay/cloudflare/package-lock.json
+      - run: npm ci
+      - name: Worker dependencies (pinned wrangler, workerd, workers-types)
+        run: npm run relay:install
+      - name: Typecheck (worker, reference entry)
+        run: npm run relay:typecheck
+      - name: Conformance (reference + worker under Miniflare) and Durable Object tests
+        timeout-minutes: 10
+        run: npm run relay:test

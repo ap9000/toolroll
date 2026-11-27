@@ -6,19 +6,26 @@ public enum CompanionConnectionState: Equatable, Sendable {
     case demo
     /// Paired; the first connection of this launch is being made.
     case connecting
-    case connected(workspaceLabel: String, since: Date)
-    /// A reconnect actually failed. Cached data stays on screen under a "Last updated" banner.
-    case unreachable(lastUpdated: Date?)
-    /// The Mac refused this iPhone (the relay refused its keys, or `device.hello` named it removed). The pairing is
-    /// kept; Retry or Pair again.
-    case notRecognized
+    /// `device.hello` passed on the current session.
+    case connected
+    /// A reconnect actually failed. Cached data stays on screen under a "Last updated" banner; the phone keeps
+    /// retrying, and `hint` says what the person can do.
+    case unreachable(hint: CompanionUnreachableHint)
+    /// The Mac removed this iPhone (an authenticated refusal, or the relay's 403 `device_revoked`). Terminal: no
+    /// retries; Pair again or Remove from this iPhone.
+    case refused(reason: String)
+    /// This iPhone's pairing data is unreadable or invalid. Terminal: Pair again or Remove from this iPhone.
+    case damaged
 }
 
 /// Where a pairing attempt stands (shown over everything else while it runs).
 public enum CompanionPairingPhase: Equatable, Sendable {
     case idle
     case contacting
+    /// msg2 arrived and `pair.ready` went out: the Mac shows the same code in a moment.
     case awaitingMacConfirm(code: String)
+    /// The owner confirmed: keys are stored, waiting for `pair.done` or the first hello.
+    case finishing
 }
 
 /// Which pairing attempt owns the pairing UI. Every scan starts a new attempt; a late callback from an older one
@@ -39,6 +46,14 @@ public struct CompanionPairingGate: Equatable, Sendable {
     /// True while `attempt` is the newest scan and hasn't ended or been cancelled.
     public func owns(_ attempt: UInt64) -> Bool {
         attempt == current && phase != .idle
+    }
+
+    /// `attempt`'s keys are stored; the final screen waits for `pair.done` or the first hello.
+    @discardableResult
+    public mutating func finishing(attempt: UInt64) -> Bool {
+        guard owns(attempt) else { return false }
+        phase = .finishing
+        return true
     }
 
     /// Shows `attempt`'s confirmation code, if it still owns the UI.
@@ -63,7 +78,7 @@ public struct CompanionPairingGate: Equatable, Sendable {
         phase = .idle
     }
 
-    /// True when `attempt` finished pairing (the Mac sent `pair.confirmed`) and no newer scan began since. Its keys
+    /// True when `attempt` finished pairing (the Mac answered `pair.ready`) and no newer scan began since. Its keys
     /// must be kept even after Cancel: the Mac already keeps this device.
     public func mayComplete(_ attempt: UInt64) -> Bool {
         attempt == current
@@ -83,11 +98,17 @@ public struct PairingQRPayload: Codable, Equatable, Sendable {
     public let pairPsk: String
     /// Present exactly when a hosted path is.
     public let pairConnToken: String?
+    /// When the Mac stops waiting for this pairing (Mac clock, ms). The phone waits at most until then.
+    public let expiresAtMs: Double?
+
+    /// How far past `expiresAtMs` (by this iPhone's clock) a code is still tried, and how far ahead it may lie.
+    static let expirySkewMs: Double = 60_000
+    static let maxLifetimeMs: Double = 3_600_000
 
     public var hostedPath: CompanionPath? { paths.first { $0.kind == .hosted } }
 
     /// Decodes and validates a scanned or pasted pairing code.
-    public static func parse(_ text: String) throws -> PairingQRPayload {
+    public static func parse(_ text: String, now: Date = Date()) throws -> PairingQRPayload {
         let data = Data(text.trimmingCharacters(in: .whitespacesAndNewlines).utf8)
         struct Version: Decodable { let v: Int }
         guard let version = try? JSONDecoder().decode(Version.self, from: data) else {
@@ -101,12 +122,14 @@ public struct PairingQRPayload: Codable, Equatable, Sendable {
         } catch {
             throw PairingPayloadError.invalid("missing or malformed fields")
         }
-        try payload.validate()
+        try payload.validate(now: now)
         return payload
     }
 
     /// The contract's rules: valid paths, a token iff there is a hosted path, ids present, 32-byte keys.
-    public func validate() throws {
+    /// `now` is this iPhone's clock: `expiresAtMs` (untrusted, from a scan or a paste) must be a finite time within
+    /// [now − 1 min, now + 1 h].
+    public func validate(now: Date = Date()) throws {
         guard v == Self.version else { throw PairingPayloadError.invalid("wrong version") }
         try CompanionPathRules.validate(paths)
         let hasHosted = hostedPath != nil
@@ -115,6 +138,13 @@ public struct PairingQRPayload: Codable, Equatable, Sendable {
         if !hasHosted, pairConnToken != nil { throw PairingPayloadError.invalid("pairConnToken without a hosted path") }
         guard !machineId.isEmpty, !workspaceId.isEmpty, !pairSessionId.isEmpty else {
             throw PairingPayloadError.invalid("missing id")
+        }
+        if let expiresAtMs {
+            guard expiresAtMs.isFinite else { throw PairingPayloadError.invalid("bad expiresAtMs") }
+            let nowMs = now.timeIntervalSince1970 * 1000
+            guard expiresAtMs >= nowMs - Self.expirySkewMs, expiresAtMs <= nowMs + Self.maxLifetimeMs else {
+                throw PairingPayloadError.expired
+            }
         }
         guard CompanionRelayAuth.base64UrlDecode(macStaticPub)?.count == 32,
               CompanionRelayAuth.base64UrlDecode(pairPsk)?.count == 32

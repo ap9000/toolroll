@@ -41,14 +41,16 @@ public struct DeviceHello: Codable, Equatable, Sendable {
     /// The Mac's current ways to reach it (same rules as the pairing QR). Nil when absent or malformed: a bad
     /// list never fails the hello, it just isn't stored.
     public let paths: [CompanionPath]?
+    /// The Mac's console origin (for Handoff to `/t/<task>`), or nil when unknown.
+    public let consoleUrl: String?
 
     private enum CodingKeys: String, CodingKey {
-        case version, workspaceId, workspaceLabel, account, deviceId, paths
+        case version, workspaceId, workspaceLabel, account, deviceId, paths, consoleUrl
     }
 
     public init(
         version: Int? = 1, workspaceId: String, workspaceLabel: String? = nil, account: String? = nil,
-        deviceId: String, paths: [CompanionPath]? = nil
+        deviceId: String, paths: [CompanionPath]? = nil, consoleUrl: String? = nil
     ) {
         self.version = version
         self.workspaceId = workspaceId
@@ -56,6 +58,7 @@ public struct DeviceHello: Codable, Equatable, Sendable {
         self.account = account
         self.deviceId = deviceId
         self.paths = paths
+        self.consoleUrl = consoleUrl
     }
 
     public init(from decoder: Decoder) throws {
@@ -66,6 +69,7 @@ public struct DeviceHello: Codable, Equatable, Sendable {
         account = try c.decodeIfPresent(String.self, forKey: .account)
         deviceId = try c.decode(String.self, forKey: .deviceId)
         paths = (try? c.decodeIfPresent([CompanionPath].self, forKey: .paths)) ?? nil
+        consoleUrl = (try? c.decodeIfPresent(String.self, forKey: .consoleUrl)) ?? nil
     }
 
     /// `paths` if present and valid under the pairing rules; otherwise nil.

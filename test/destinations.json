@@ -147,6 +147,7 @@
     "settings.learning": {"kind":"page","path":"/settings/learning"},
     "settings.telegram": {"kind":"page","path":"/settings/telegram"},
     "settings.phone": {"kind":"page","path":"/settings/phone"},
+    "settings.phone-pairing": {"kind":"data","path":"/settings/phone/pairings/pair_0123456789abcdef","what":"the session's own phone pairing in progress (JSON, for the page's poller)"},
     "settings.page": {"kind":"page","path":"/settings"},
     "settings.group-general": {"kind":"page","path":"/settings/general"},
     "settings.group-agents": {"kind":"page","path":"/settings/agents"},

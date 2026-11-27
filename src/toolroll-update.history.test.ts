@@ -199,7 +199,10 @@ const MOVED = flowOf(2, "nightly") + flowOf(3, "audit") + triggerOf(2, 2, 1, "ac
 const moves = (edit: string) => { const db = routined(); try { const before = historySnapshot(db); db.exec(edit); return changedHistory(db, before); } finally { db.close(); } };
 
 test("v115 retires exactly the removed features' tables and adds only the flows and triggers its routines became", () => {
-  expect([...RETIRED_TABLES].sort()).toEqual([...V115_DROPPED_TABLES].sort());
+  // v187 also retires two tables of the unreleased phone companion; every other retired table is v115's.
+  const V187_RETIRED = ["companion_idempotency", "companion_push_token"];
+  expect(RETIRED_TABLES.filter(one => V187_RETIRED.includes(one)).sort()).toEqual(V187_RETIRED);
+  expect(RETIRED_TABLES.filter(one => !V187_RETIRED.includes(one)).sort()).toEqual([...V115_DROPPED_TABLES].sort());
   expect(moves(MOVED + RETIRE)).toEqual([]);
   // An undeclared table dropped beside them, or the ledger changed, is still refused.
   expect(moves(MOVED + RETIRE + "DROP TABLE task;")).toEqual(["task"]);

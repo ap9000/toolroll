@@ -173,14 +173,6 @@ export class NoiseCipherState {
     return this.n;
   }
 
-  /** Advance nonce explicitly (used for testing high 64-bit nonces against vectors). */
-  setNonceForTest(n: bigint): void {
-    if (n < 0n || n > RESERVED_MAX_NONCE) {
-      throw new Error(`Invalid test nonce: ${n.toString()}`);
-    }
-    this.n = n;
-  }
-
   initializeKey(key: Buffer): void {
     assertLen(key, 32, "cipher key");
     this.key = Buffer.from(key);

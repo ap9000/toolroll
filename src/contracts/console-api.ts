@@ -214,6 +214,7 @@ export const CONSOLE_FORMS = {
   phonePair: formContract("POST /settings/phone/pair", ["password"]),
   phonePairing: formContract("POST /settings/phone/confirm, /settings/phone/cancel", ["pairing"]),
   phoneRemove: formContract("POST /settings/phone/remove", ["password", "device"]),
+  phoneRename: formContract("POST /settings/phone/rename", ["device", "name"]),
   teams: formContract("POST /settings/teams/connect|pair|unpair|disconnect|alerts", ["password", "app-id", "tenant", "secret"]),
   discord: formContract("POST /settings/discord/connect|pair|unpair|disconnect|alerts", ["password", "bot-token"]),
   messaging: formContract("POST /settings/messaging", ["primary"]),
@@ -422,10 +423,22 @@ export const flowViewSchema = z.looseObject({
   colors: z.array(z.string()),
 });
 
+/** `GET /settings/phone/pairings/<id>`: the session's own pairing in progress (contract §7 PairingView; no secrets). */
+export const phonePairingViewSchema = z.looseObject({
+  pairSessionId: z.string(),
+  status: z.enum(["awaiting_scan", "awaiting_ready", "awaiting_confirm", "confirming", "finishing", "paired", "cancelled", "expired", "contested", "failed"]),
+  expiresAtMs: z.number(),
+  confirmCode: z.string().nullable(),
+  deviceName: z.string().nullable(),
+  deviceId: z.string().nullable(),
+  error: z.string().nullable(),
+});
+
 export const CONSOLE_RESPONSES = {
   ledgerPage: { route: "GET /ledger?format=json", schema: ledgerPageSchema },
   evidencePack: { route: "GET /t/<task>/evidence?format=json", schema: evidencePackSchema },
   flowView: { route: "GET /flows/<id>?format=json", schema: flowViewSchema },
+  phonePairingView: { route: "GET /settings/phone/pairings/<id>", schema: phonePairingViewSchema },
 } as const;
 
 export type ConsoleResponseName = keyof typeof CONSOLE_RESPONSES;

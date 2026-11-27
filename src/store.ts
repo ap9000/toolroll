@@ -43,6 +43,7 @@ import { V177_STEPS, V177_SCHEMA, V177_OBJECTS, WORKSPACE_ID_PATTERN, RECOVERY_G
 import { V174_OBJECTS, V174_SCHEMA, V174_STEPS } from "./flexible-everyday-schema.js";
 import { V185_OBJECTS, V185_SCHEMA, V185_STEPS } from "./flexible-conversation-schema.js";
 import { V186_OBJECTS, V186_SCHEMA, V186_STEPS } from "./skill-library-schema.js";
+import { adoptLegacyCompanion, companionShapeProblem, V187_STEPS } from "./companion/schema.js";
 import { endThreadAuthorityFor } from "./flexible-authority-end.js";
 import { relayCancel } from "./flexible-relay-cancel.js";
 import { endLapsedFlexible } from "./flexible.js";
@@ -1294,7 +1295,11 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // table; flexible-conversation-schema.ts). V185_SCHEMA.
 // v186 adds, and changes no saved row: installation-wide skill library, per-project opt-out, pinned GitHub skill
 // bundles, and local computer sync (skill-library-schema.ts). V186_SCHEMA.
-export const SCHEMA_VERSION = 186;
+// v187 takes the phone companion's tables into the versioned schema (companion/schema.ts): companion_access,
+// companion_host_keys and companion_paired_device, made here and never at run time. Ad hoc tables from earlier builds
+// are adopted in their known shapes (host keys verbatim; phones activated as paired, a phone with no credential
+// generation retired); companion_push_token and companion_idempotency (never read) are dropped. V187_SCHEMA.
+export const SCHEMA_VERSION = 187;
 export const V179_STEPS = Object.freeze(["antigravity-provider"] as const);
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
@@ -1438,7 +1443,10 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
 // v180 adds only a new table (pending_agent_change); saved rows, IDs, identity and authority are unchanged.
 // v185 adds only a new table (flexible_turn_said); saved rows, IDs, identity and authority are unchanged.
 // v186 adds only four new skill-library tables; saved rows, IDs, identity and authority are unchanged.
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186]);
+// v187 adopts the unreleased phone companion's ad hoc tables: every saved row carried (rowids kept); only never-read
+// columns and tables go (toolroll-update's HISTORY_RULES names each), and a phone that can't be tied to its account's
+// credential generation is retired, never widened.
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1702,7 +1710,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number] | (typeof V163_STEPS)[number] | (typeof V164_STEPS)[number] | (typeof V165_STEPS)[number] | (typeof V166_STEPS)[number] | (typeof V167_STEPS)[number] | (typeof V168_STEPS)[number] | (typeof V169_STEPS)[number] | (typeof V170_STEPS)[number] | (typeof V171_STEPS)[number] | (typeof V172_STEPS)[number] | (typeof V173_STEPS)[number] | (typeof V174_STEPS)[number] | (typeof V175_STEPS)[number] | (typeof V176_STEPS)[number] | (typeof V177_STEPS)[number] | (typeof V178_STEPS)[number] | (typeof V179_STEPS)[number] | (typeof V180_STEPS)[number] | (typeof V181_STEPS)[number] | (typeof V182_STEPS)[number] | (typeof V183_STEPS)[number] | (typeof V184_STEPS)[number] | (typeof V185_STEPS)[number] | (typeof V186_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number] | (typeof V163_STEPS)[number] | (typeof V164_STEPS)[number] | (typeof V165_STEPS)[number] | (typeof V166_STEPS)[number] | (typeof V167_STEPS)[number] | (typeof V168_STEPS)[number] | (typeof V169_STEPS)[number] | (typeof V170_STEPS)[number] | (typeof V171_STEPS)[number] | (typeof V172_STEPS)[number] | (typeof V173_STEPS)[number] | (typeof V174_STEPS)[number] | (typeof V175_STEPS)[number] | (typeof V176_STEPS)[number] | (typeof V177_STEPS)[number] | (typeof V178_STEPS)[number] | (typeof V179_STEPS)[number] | (typeof V180_STEPS)[number] | (typeof V181_STEPS)[number] | (typeof V182_STEPS)[number] | (typeof V183_STEPS)[number] | (typeof V184_STEPS)[number] | (typeof V185_STEPS)[number] | (typeof V186_STEPS)[number] | (typeof V187_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -2112,7 +2120,7 @@ export { V156_STEPS };
 export { V157_STEPS };
 export { V158_STEPS };
 export { V159_STEPS };
-export { V160_STEPS, V161_STEPS, V162_STEPS, V163_STEPS, V164_STEPS, V165_STEPS, V166_STEPS, V167_STEPS, V168_STEPS, V169_STEPS, V170_STEPS, V171_STEPS, V172_STEPS, V173_STEPS, V174_STEPS, V175_STEPS, V176_STEPS, V177_STEPS, V178_STEPS, V180_STEPS, V181_STEPS, V182_STEPS, V183_STEPS, V184_STEPS, V185_STEPS, V186_STEPS };
+export { V160_STEPS, V161_STEPS, V162_STEPS, V163_STEPS, V164_STEPS, V165_STEPS, V166_STEPS, V167_STEPS, V168_STEPS, V169_STEPS, V170_STEPS, V171_STEPS, V172_STEPS, V173_STEPS, V174_STEPS, V175_STEPS, V176_STEPS, V177_STEPS, V178_STEPS, V180_STEPS, V181_STEPS, V182_STEPS, V183_STEPS, V184_STEPS, V185_STEPS, V186_STEPS, V187_STEPS };
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -6111,7 +6119,7 @@ function initializeStore(db: Database, file: string, options: OpenOptions = {}):
   // runs. Everything below runs once, on the way up from an older version (a fresh file is at v107 by now).
   // A file from the first v155 builds (finding.source without 'lead') takes the v155 steps again, as a resumed epoch does.
   if (preflight === SCHEMA_VERSION && !findingSourcesStale(db)) {
-    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db) ?? flexibleTermsShapeProblem(db) ?? flexibleThreadShapeProblem(db) ?? typedByPersonShapeProblem(db) ?? flexibleTurnsShapeProblem(db) ?? flexibleLaunchShapeProblem(db) ?? flexibleRelayShapeProblem(db) ?? flexibleAnswersShapeProblem(db) ?? flexibleShipShapeProblem(db) ?? taskSizingShapeProblem(db) ?? agentSaidShapeProblem(db) ?? flexibleSettingShapeProblem(db) ?? flexibleSignInShapeProblem(db) ?? planProblemsShapeProblem(db) ?? flexibleEverydayShapeProblem(db) ?? flexibleInteractiveShapeProblem(db) ?? subagentBackupShapeProblem(db) ?? workspaceIdentityShapeProblem(db) ?? pendingAgentChangeShapeProblem(db) ?? directChatShapeProblem(db) ?? directChatPhase1bShapeProblem(db) ?? directChatHardeningShapeProblem(db) ?? flexibleConversationShapeProblem(db) ?? skillLibraryShapeProblem(db);
+    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db) ?? flexibleTermsShapeProblem(db) ?? flexibleThreadShapeProblem(db) ?? typedByPersonShapeProblem(db) ?? flexibleTurnsShapeProblem(db) ?? flexibleLaunchShapeProblem(db) ?? flexibleRelayShapeProblem(db) ?? flexibleAnswersShapeProblem(db) ?? flexibleShipShapeProblem(db) ?? taskSizingShapeProblem(db) ?? agentSaidShapeProblem(db) ?? flexibleSettingShapeProblem(db) ?? flexibleSignInShapeProblem(db) ?? planProblemsShapeProblem(db) ?? flexibleEverydayShapeProblem(db) ?? flexibleInteractiveShapeProblem(db) ?? subagentBackupShapeProblem(db) ?? workspaceIdentityShapeProblem(db) ?? pendingAgentChangeShapeProblem(db) ?? directChatShapeProblem(db) ?? directChatPhase1bShapeProblem(db) ?? directChatHardeningShapeProblem(db) ?? flexibleConversationShapeProblem(db) ?? skillLibraryShapeProblem(db) ?? companionShapeProblem(db);
     if (missing !== null) throw new Error(`${file}: refusing to open — ${missing}, though the schema says v${SCHEMA_VERSION}`);
     db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     return new Store(db);
@@ -6685,6 +6693,20 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   const skillLibraryDamaged = skillLibraryShapeProblem(db);
   if (skillLibraryDamaged !== null) throw new Error(`${file}: refusing to open — ${skillLibraryDamaged}`);
   step("skill-library");
+  // v187: the phone companion's tables, adopted from the ad hoc shapes earlier builds made (companion/schema.ts). One
+  // transaction, the step's seam inside it: an interruption leaves the earlier shapes whole and the next open repeats it.
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    adoptLegacyCompanion(db, new Date());
+    const companionDamaged = companionShapeProblem(db);
+    if (companionDamaged !== null) throw new Error(`${file}: refusing to open — ${companionDamaged}`);
+    step("companion");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    if (error instanceof Error && !error.message.startsWith(`${file}:`) && /unknown shape/.test(error.message)) throw new Error(`${file}: refusing to open — ${error.message}`);
+    throw error;
+  }
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -10430,9 +10452,9 @@ export class Store {
     // Paired phones (the companion app) are derived authority: each of this person's ends with any change to their
     // account (every caller has just moved its generation). The engine also refuses them on every frame by generation;
     // this makes the record say so, so Settings stops listing them and the relay is told on its next reconcile.
-    if (this.db.prepare("SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = 'companion_paired_device'").get() !== undefined) {
-      this.db.prepare("UPDATE companion_paired_device SET revoked_at = ? WHERE account_name = ? AND revoked_at IS NULL").run(stamp, approver);
-    }
+    // Its row stays 30 days as a tombstone saying why, so the phone is told it was signed out rather than left retrying.
+    this.db.prepare("UPDATE companion_paired_device SET revoked_at = ?, revoked_reason = ? WHERE account_name = ? AND revoked_at IS NULL")
+      .run(stamp, by === "credential-rotation" ? "password_changed" : "access_changed", approver);
     // Push enrollments are derived authority too (arc 3 finding 6): the
     // rotation retires every live subscription of the old credential and
     // terminally settles its delivery pairs — claimed ones included, so an
