@@ -141,14 +141,15 @@ export class CompanionService {
     return this.paths().filter(path => path.kind === "direct").map(path => new URL(path.url).host);
   }
 
-  /** The ways a phone can reach this Mac now: direct addresses first, the hosted relay last (only while connected). */
+  /** The ways a phone can reach this Mac: direct addresses first, then the approved hosted relay — listed even while
+   * it's briefly unreachable, so a phone that saves this list (every hello) keeps its way back from elsewhere. */
   paths(): CompanionPath[] {
     void this.refreshTailnet();
     return buildPaths({
       port: this.directState.state === "listening" ? this.directState.port : null,
       lan: (this.opts.lanAddresses ?? lanAddressesOf)(),
       tailnet: this.tailnet.ip,
-      hosted: this.hostedState.state === "connected" && this.addresses !== null ? this.addresses.ws : null,
+      hosted: this.addresses?.ws ?? null,
     });
   }
 
@@ -190,6 +191,9 @@ export class CompanionService {
     this.reconcileTimer = null;
     this.closeSocket("stopping");
     this.engine.handleRelayDisconnected();
+    // Nothing queued for the relay runs after this (admit refuses once stopped), and a write already in flight settles
+    // before the caller starts a replacement service that owns the relay's admitted set.
+    await this.admission;
     if (this.directServer !== null) {
       const server = this.directServer;
       this.directServer = null;
@@ -220,7 +224,8 @@ export class CompanionService {
 
   /** Serializes one change to the relay's admitted set; the result (or failure) is the caller's. */
   private admit<T>(work: () => Promise<T>): Promise<T> {
-    const run = this.admission.then(work, work);
+    const fenced = () => this.stopped ? Promise.reject(new Error("phone access stopped")) : work();
+    const run = this.admission.then(fenced, fenced);
     this.admission = run.then(() => {}, () => {});
     return run;
   }

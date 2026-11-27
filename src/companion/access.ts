@@ -8,8 +8,9 @@
  * Two paths (service.ts): direct — a listener on this Mac's network for a phone on the same Wi-Fi or tailnet (port
  * 4199 unless `TOOLROLL_PHONE_RELAY_PORT` says otherwise) — and hosted, an end-to-end encrypted relay for a phone
  * anywhere else (wss://relay.toolroll.dev unless `TOOLROLL_RELAY_URL` names another; `TOOLROLL_RELAY_URL=off` removes
- * it). The hosted path is its own choice, saved beside the switch: turning phone access on asks for it explicitly, and
- * a saved choice that predates it reads as off — an earlier approval never widens to a new destination by itself.
+ * it). The hosted path is its own choice, saved beside the switch as the exact relay address that was approved:
+ * turning phone access on asks for it explicitly, and if the configured relay later changes, the new one isn't used
+ * until someone approves it — an approval never carries over to a different destination.
  */
 
 import { hostname } from "node:os";
@@ -37,25 +38,33 @@ function ensureAccessTable(db: Db): void {
     changed_at TEXT NOT NULL
   )`);
   const columns = db.prepare("PRAGMA table_info(companion_access)").all().map(row => String(row["name"]));
-  if (!columns.includes("hosted")) db.exec("ALTER TABLE companion_access ADD COLUMN hosted INTEGER NOT NULL DEFAULT 0 CHECK (hosted IN (0, 1))");
+  if (!columns.includes("hosted_relay")) db.exec("ALTER TABLE companion_access ADD COLUMN hosted_relay TEXT");
 }
 
-function savedAccess(db: Db): { enabled: boolean; hosted: boolean } {
+/** The saved switch and the hosted relay address it approved (its connect URL), if any. */
+function savedAccess(db: Db): { enabled: boolean; hostedRelay: string | null } {
   ensureAccessTable(db);
-  const row = db.prepare("SELECT enabled, hosted FROM companion_access WHERE singleton = 1").get();
-  return { enabled: row !== undefined && Number(row["enabled"]) === 1, hosted: row !== undefined && Number(row["hosted"]) === 1 };
+  const row = db.prepare("SELECT enabled, hosted_relay FROM companion_access WHERE singleton = 1").get();
+  const relay = row?.["hosted_relay"];
+  return { enabled: row !== undefined && Number(row["enabled"]) === 1, hostedRelay: typeof relay === "string" && relay.length > 0 ? relay : null };
 }
+
+/** A relay's identity for approval: its WebSocket connect URL (scheme, host and port). */
+const relayIdentityOf = (url: string): string => relayAddressesOf(url).ws;
 
 export function phoneAccessEnabled(db: Db): boolean {
   return savedAccess(db).enabled;
 }
 
-function savePhoneAccess(db: Db, enabled: boolean, hosted: boolean, by: string, now: Date): void {
+function savePhoneAccess(db: Db, enabled: boolean, hostedRelay: string | null, by: string, now: Date): void {
   ensureAccessTable(db);
-  db.prepare(`INSERT INTO companion_access (singleton, enabled, hosted, changed_by, changed_at) VALUES (1, ?, ?, ?, ?)
-    ON CONFLICT(singleton) DO UPDATE SET enabled = excluded.enabled, hosted = excluded.hosted, changed_by = excluded.changed_by, changed_at = excluded.changed_at`)
-    .run(enabled ? 1 : 0, hosted ? 1 : 0, by, now.toISOString());
+  db.prepare(`INSERT INTO companion_access (singleton, enabled, hosted_relay, changed_by, changed_at) VALUES (1, ?, ?, ?, ?)
+    ON CONFLICT(singleton) DO UPDATE SET enabled = excluded.enabled, hosted_relay = excluded.hosted_relay, changed_by = excluded.changed_by, changed_at = excluded.changed_at`)
+    .run(enabled ? 1 : 0, hostedRelay, by, now.toISOString());
 }
+
+/** A change to phone access: on (with or without the hosted relay), off, or only the hosted relay while on. */
+export type PhoneAccessChange = { act: "on"; hosted: boolean } | { act: "off" } | { act: "hosted-on" } | { act: "hosted-off" };
 
 export type HostedChoice = { ok: true; url: string } | { ok: false; off: true } | { ok: false; off: false; problem: string };
 
@@ -86,15 +95,17 @@ export interface PhoneAccess {
   /** The running service, or null while phone access is off. */
   service(): CompanionService | null;
   enabled(): boolean;
-  /** Whether the saved choice includes the hosted relay (meaningful while on). */
+  /** Whether the saved choice approves the hosted relay this console is configured with now. */
   hostedEnabled(): boolean;
+  /** The saved approval names a different relay than the one configured now (it isn't used until approved again). */
+  hostedApprovalStale(): boolean;
   /** The hosted relay this console would use (its URL), or that there is none / a bad setting. */
   hostedChoice(): HostedChoice;
   /** Configuration problems that stop a path (a bad port or relay setting), if any. */
   problems(): string[];
-  /** `allowed` is re-proved inside the serialized change (the switch's authority, checked at the moment it applies).
-   * `hosted` is the hosted relay choice that goes with turning it on (ignored when the environment has none). */
-  turn(on: boolean, hosted: boolean, by: string, now: Date, allowed?: () => boolean): Promise<void>;
+  /** Applied in order with every other change; `allowed` is re-proved at the moment it applies (the switch's
+   * authority). A hosted-only change while access is off is refused ("not_on"), never a way to turn it on. */
+  change(change: PhoneAccessChange, by: string, now: Date, allowed?: () => boolean): Promise<"ok" | "not_allowed" | "not_on">;
   /** Start it when the saved choice says so (the console's start). */
   resume(): Promise<void>;
   stop(): Promise<void>;
@@ -112,7 +123,8 @@ export function createPhoneAccess(opts: { store: Store; reads: CompanionReadHand
   const start = async (): Promise<void> => {
     if (running !== null) return;
     const port = directPortOf(env), hosted = hostedRelayOf(env);
-    const wantHosted = savedAccess(opts.store.handle).hosted && hosted.ok;
+    const approved = savedAccess(opts.store.handle).hostedRelay;
+    const wantHosted = hosted.ok && approved !== null && approved === relayIdentityOf(hosted.url);
     const service = new CompanionService({
       store: opts.store, reads: opts.reads,
       direct: port.ok ? { port: port.port } : null,
@@ -135,21 +147,41 @@ export function createPhoneAccess(opts: { store: Store; reads: CompanionReadHand
   return {
     service: () => running,
     enabled: () => phoneAccessEnabled(opts.store.handle),
-    hostedEnabled: () => savedAccess(opts.store.handle).hosted,
+    hostedEnabled: () => {
+      const hosted = hostedRelayOf(env), approved = savedAccess(opts.store.handle).hostedRelay;
+      return hosted.ok && approved !== null && approved === relayIdentityOf(hosted.url);
+    },
+    hostedApprovalStale: () => {
+      const hosted = hostedRelayOf(env), approved = savedAccess(opts.store.handle).hostedRelay;
+      return approved !== null && (!hosted.ok || approved !== relayIdentityOf(hosted.url));
+    },
     hostedChoice: () => hostedRelayOf(env),
     problems,
-    turn: (on, hosted, by, now, allowed) => serially(async () => {
-      if (allowed !== undefined && !allowed()) return;
-      savePhoneAccess(opts.store.handle, on, on && hosted && hostedRelayOf(env).ok, by, now);
-      // A change of paths restarts the service: sessions reconnect on their own.
-      await stop();
-      if (on) {
-        await start();
-        // Give the relay a moment, so the page the person returns to usually says Connected, not Starting.
-        const deadline = Date.now() + 3_000;
-        while (running !== null && running.status().hosted.state === "starting" && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
-      }
-    }),
+    change: (change, by, now, allowed) => {
+      let outcome: "ok" | "not_allowed" | "not_on" = "ok";
+      return serially(async () => {
+        if (allowed !== undefined && !allowed()) { outcome = "not_allowed"; return; }
+        const saved = savedAccess(opts.store.handle), hosted = hostedRelayOf(env);
+        const current = hosted.ok ? relayIdentityOf(hosted.url) : null;
+        let enabled: boolean, approved: string | null;
+        if (change.act === "on") { enabled = true; approved = change.hosted ? current : null; }
+        else if (change.act === "off") { enabled = false; approved = null; }
+        else {
+          // Read inside the queue: a hosted-only form posted before someone turned access off can't turn it back on.
+          if (!saved.enabled) { outcome = "not_on"; return; }
+          enabled = true; approved = change.act === "hosted-on" ? current : null;
+        }
+        savePhoneAccess(opts.store.handle, enabled, approved, by, now);
+        // A change of paths restarts the service: sessions reconnect on their own.
+        await stop();
+        if (enabled) {
+          await start();
+          // Give the relay a moment, so the page the person returns to usually says Connected, not Starting.
+          const deadline = Date.now() + 3_000;
+          while (running !== null && running.status().hosted.state === "starting" && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+        }
+      }).then(() => outcome);
+    },
     resume: () => serially(async () => { if (phoneAccessEnabled(opts.store.handle)) await start(); }),
     stop: () => serially(stop),
   };

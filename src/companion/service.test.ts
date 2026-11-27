@@ -537,7 +537,8 @@ describe("the direct path: a phone on this Mac's network, no relay", () => {
     await relay.close();
     await until(() => overRelay.socket.closed && service.status().hosted.state === "unreachable");
     expect(await bHome.call("work.rows")).toMatchObject({ ok: true });
-    expect(service.paths().map(path => path.kind)).toEqual(["direct", "direct"]);
+    // The relay stays listed while it's down: a phone saving this list keeps its way back from elsewhere.
+    expect(service.paths().map(path => path.kind)).toEqual(["direct", "direct", "hosted"]);
   });
 
   test("a removal the relay didn't take is retried while connected, not only on reconnect", async () => {
@@ -589,5 +590,51 @@ test("strangers holding unproven sockets for a phone's id can't lock the phone o
   const s = await PhoneSession.connect(phone, direct);
   expect(await s.call("device.hello")).toMatchObject({ ok: true });
   await until(() => squatters.some(one => one.closed));
+});
+
+test("the direct listener drops a socket that never finishes its request headers", async () => {
+  const store = testStore();
+  const { direct } = await startBoth(store);
+  const { connect } = await import("node:net");
+  const url = new URL(direct);
+  const socket = connect(Number(url.port), url.hostname);
+  let closed = false;
+  socket.on("close", () => { closed = true; });
+  socket.on("error", () => {});
+  socket.write("GET /v1/health HTTP/1.1\r\nHost: x\r\n"); // never finishes the headers
+  await until(() => closed, 8_000);
+});
+
+test("a hosted-only change can't turn phone access back on, and an approval doesn't follow a changed relay", async () => {
+  const { createPhoneAccess } = await import("./access.js");
+  const store = testStore();
+  relay = await startReferenceRelay({ host: "127.0.0.1", port: 0 });
+  const running = relay;
+  cleanups.push(() => running.close());
+  const env = { TOOLROLL_RELAY_URL: relay.wsUrl, TOOLROLL_PHONE_RELAY_PORT: "4389" };
+  const access = createPhoneAccess({ store, reads, env });
+  cleanups.push(() => access.stop());
+  const now = new Date();
+  expect(await access.change({ act: "on", hosted: true }, "owner", now)).toBe("ok");
+  expect(access.hostedEnabled()).toBe(true);
+  // Turned off, then a hosted-only form that was posted earlier arrives: refused, access stays off.
+  const off = access.change({ act: "off" }, "owner", now);
+  const stale = access.change({ act: "hosted-on" }, "owner", now);
+  expect(await off).toBe("ok");
+  expect(await stale).toBe("not_on");
+  expect(access.enabled()).toBe(false);
+  expect(access.service()).toBeNull();
+  // Approved for one relay; the configuration then names another: the new one isn't used until approved.
+  expect(await access.change({ act: "on", hosted: true }, "owner", now)).toBe("ok");
+  await access.stop();
+  const other = await startReferenceRelay({ host: "127.0.0.1", port: 0 });
+  cleanups.push(() => other.close());
+  const moved = createPhoneAccess({ store, reads, env: { ...env, TOOLROLL_RELAY_URL: other.wsUrl } });
+  cleanups.push(() => moved.stop());
+  await moved.resume();
+  expect(moved.hostedApprovalStale()).toBe(true);
+  expect(moved.hostedEnabled()).toBe(false);
+  expect(moved.service()?.status().hosted).toEqual({ state: "off" });
+  expect(moved.service()?.paths().some(path => path.kind === "hosted")).toBe(false);
 });
 

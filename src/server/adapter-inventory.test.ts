@@ -123,7 +123,8 @@ test("the WebSocket upgrade listeners in the server's source are exactly the kno
   expect(companion("service.ts")).not.toContain("startReferenceRelay(");
   expect(companion("access.ts")).not.toContain("startReferenceRelay(");
   const direct = companion("direct-server.ts");
-  expect(direct).toContain('server.on("connection", (socket: Socket) => {\n    const address = addressOf(socket);\n    if (!directPeerAllowed(address)');
+  expect(direct).toContain('createTcpServer({ pauseOnConnect: true }, (socket: Socket) => {\n    const address = addressOf(socket);\n    if (!directPeerAllowed(address)');
+  expect(direct).not.toMatch(/\bserver\.listen\(/); // HTTP only ever gets sockets the TCP server admitted
   expect(direct).toContain("req.headers.authorization !== undefined");
   expect(direct).toContain('url.pathname !== "/v1/direct"');
 });

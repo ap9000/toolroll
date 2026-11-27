@@ -152,7 +152,7 @@ export function relayEnvelopeLink(id: string, sendEnvelope: (envelope: Buffer) =
 
 const peerKeyOf = (link: PeerLink, connId: number): string => `${link.id}:${connId}`;
 
-/** Unproven sockets (no Noise message 1 yet) one device id may hold at once, across every link; a newer one evicts the oldest. */
+/** Unproven sockets (no completed hello yet) one device id may hold at once, across every link; a newer one evicts the oldest. */
 const MAX_PENDING_PER_PEER_ID = 2;
 
 interface ActivePeerConn {
@@ -494,9 +494,10 @@ export class CompanionDaemonEngine {
       }
       pairing.peerKey = key;
     } else {
-      // Sockets that claimed this device id but proved nothing yet (no Noise message 1): anyone who saw the id can open
-      // them, so a newcomer evicts the oldest rather than being refused — a stalled stranger can't lock the phone out.
-      const unproven = [...this.peers.values()].filter(peer => peer.role === "device" && peer.peerId === peerId && peer.state === "awaiting_msg1");
+      // Sockets that claimed this device id but haven't finished hello: anyone who saw the id can open them, and a
+      // message 1 seen on the network can be replayed (only hello proves the phone holds the session keys). A newcomer
+      // evicts the oldest rather than being refused, so strangers can't lock the phone out; a live session is untouched.
+      const unproven = [...this.peers.values()].filter(peer => peer.role === "device" && peer.peerId === peerId && (peer.state === "awaiting_msg1" || peer.state === "awaiting_hello"));
       for (const stale of unproven.slice(0, Math.max(0, unproven.length - MAX_PENDING_PER_PEER_ID + 1))) this.dropPeer(stale, "superseded_handshake");
     }
 

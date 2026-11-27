@@ -356,8 +356,15 @@ export class MachineRoomDO {
 
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
-      // Ids from the sockets themselves (they survive hibernation; an in-memory counter wouldn't).
-      const connId = claims.role === "daemon" ? 0 : Math.max(0, ...activeSockets.map(s => attachmentOf(s)?.connId ?? 0)) + 1;
+      // Phone ids are never reused while the room exists: a counter in durable storage (it survives hibernation, where
+      // an in-memory one wouldn't). Taking max(active)+1 could hand a closed phone's id to a new one before the closed
+      // one's PEER_CLOSE reached the Mac, which would then drop the newcomer.
+      let connId = 0;
+      if (claims.role !== "daemon") {
+        const last = (await this.state.storage.get<number>("nextConnId")) ?? Math.max(0, ...activeSockets.map(s => attachmentOf(s)?.connId ?? 0));
+        connId = last >= 0xffff_fff0 ? 1 : last + 1;
+        await this.state.storage.put("nextConnId", connId);
+      }
       if (claims.role === "daemon") {
         // A new daemon replaces the old (it proved the machine key); the old one's phones go with it.
         for (const s of activeSockets) s.close(1000, attachmentOf(s)?.role === "daemon" ? "replaced_by_new_daemon" : "daemon_replaced");

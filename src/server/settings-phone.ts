@@ -96,6 +96,9 @@ export function createPhoneSettingsHandlers(runtime: Pick<ServerRuntime, "store"
         : "Let the Toolroll iPhone app see your work. Nothing is shared until you pair a phone.",
       body: joinHtml([
         ...access.problems().map(text => notice(text)),
+        on && access.hostedApprovalStale() ? notice(hostedHost === null
+          ? "Connecting from anywhere is off on this computer now (TOOLROLL_RELAY_URL=off)."
+          : html`This Toolroll's relay setting changed to ${codeLine(hostedHost)}. Phones connect only on this Mac's network until you approve the new relay below.`) : "",
         on ? joinHtml([directLine, hostedLine]) : "",
         !operator ? note(on ? "Whoever runs this Toolroll turned phone access on." : "Ask whoever runs this Toolroll to turn on phone access.")
           : on ? joinHtml([
@@ -188,11 +191,12 @@ export function createPhoneSettingsHandlers(runtime: Pick<ServerRuntime, "store"
     // An installation-wide switch: an instance operator's, proved again here (the route's role gate drew the form).
     if (!store.isInstanceOperator(who.name)) return show(ctx.response, 403, page(who, { problem: "An instance operator turns phone access on or off." }).body);
     if (!passwordHolds(who, body.get("password") ?? "")) return show(ctx.response, 403, page(who, { problem: passwordProblem(who) }).body);
-    if ((act === "hosted-on" || act === "hosted-off") && !deps.access.enabled()) return show(ctx.response, 409, page(who, { problem: "Turn on phone access first." }).body);
-    // "on" carries the hosted choice from its checkbox; hosted-on/off change only that, keeping access on.
-    const on = act !== "off";
-    const hosted = act === "on" ? body.get("hosted") === "1" : act === "hosted-on";
-    await deps.access.turn(on, hosted, who.name, runtime.clock(), () => store.isInstanceOperator(who.name));
+    // "on" carries the hosted choice from its checkbox; hosted-on/off change only that, and only while access is on
+    // (decided inside the access queue, after any change posted before this one).
+    const change = act === "on" ? { act, hosted: body.get("hosted") === "1" } as const : { act } as const;
+    const applied = await deps.access.change(change, who.name, runtime.clock(), () => store.isInstanceOperator(who.name) && store.accountOf(who.name)?.generation === who.session.generation);
+    if (applied === "not_on") return show(ctx.response, 409, page(who, { problem: "Phone access is off now. Turn it on first." }).body);
+    if (applied === "not_allowed") return show(ctx.response, 403, page(who, { problem: "An instance operator turns phone access on or off." }).body);
     return redirect(ctx.response, "/settings/phone");
   }
 

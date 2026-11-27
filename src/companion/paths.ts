@@ -46,18 +46,25 @@ export function lanAddressesOf(interfaces: NodeJS.Dict<NetworkInterfaceInfo[]> =
   return [...new Set(found.map(f => f.address))].slice(0, 3);
 }
 
-/** One path's own rules (see the file comment). */
+const OCTET = "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
+const PORT = "(?:[1-9]\\d{0,4})";
+const DIRECT = new RegExp(`^ws://(${OCTET}\\.${OCTET}\\.${OCTET}\\.${OCTET}):(${PORT})/v1/direct$`);
+const HOSTED = new RegExp(`^wss://([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*)(?::(${PORT}))?/v1/connect$`);
+const HOSTED_LOCAL = new RegExp(`^ws://(?:127\\.0\\.0\\.1|localhost):(${PORT})/v1/connect$`);
+
+const portOk = (port: string | undefined): boolean => port === undefined || Number(port) <= 65_535;
+
+/** One path's own rules, on the raw string — one canonical grammar, the same table the phone runs
+ * (test/fixtures/companion-paths.json): no URL normalization, so both sides accept exactly the same text. */
 export function pathAllowed(path: CompanionPath): boolean {
-  if (typeof path.url !== "string" || path.url.length > MAX_URL) return false;
-  let url: URL;
-  try { url = new URL(path.url); } catch { return false; }
-  if (url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") return false;
+  if (path === null || typeof path !== "object" || typeof path.url !== "string" || path.url.length > MAX_URL) return false;
   if (path.kind === "direct") {
-    return url.protocol === "ws:" && url.port !== "" && url.pathname === "/v1/direct" && (isLanIpv4(url.hostname) || isTailnetIpv4(url.hostname));
+    const m = DIRECT.exec(path.url);
+    return m !== null && portOk(m[2]) && (isLanIpv4(m[1]!) || isTailnetIpv4(m[1]!));
   }
   if (path.kind === "hosted") {
-    const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost";
-    return url.pathname === "/v1/connect" && (url.protocol === "wss:" || (url.protocol === "ws:" && loopback));
+    const m = HOSTED.exec(path.url) ?? HOSTED_LOCAL.exec(path.url);
+    return m !== null && portOk(m[m.length - 1]);
   }
   return false;
 }

@@ -5,15 +5,16 @@
  * the Mac in the QR.
  *
  * Exposure is narrow on purpose:
- * - the kernel's peer address is classified before any HTTP is parsed: loopback, LAN (RFC 1918), link-local and
- *   Tailscale (100.64/10, fd7a:115c:a1e0::/48) only — anything else is dropped on connect;
+ * - the kernel's peer address is classified on the raw TCP socket, before it is handed to HTTP at all: loopback, LAN
+ *   (RFC 1918), IPv6 link-local and Tailscale (100.64/10, fd7a:115c:a1e0::/48) only — anything else is dropped;
  * - two routes: `GET /v1/health` (this Mac's machine id, so a phone can skip an address a different machine now holds)
  *   and the WebSocket upgrade `GET /v1/direct?role=pair|device&id=…`;
- * - sockets are capped globally and per address, upgrades are rate limited per address (bounded state), headers have a
- *   deadline, and the engine's own handshake deadline drops a socket that never completes Noise.
+ * - sockets are capped globally and per address, upgrades are rate limited per address (bounded state), a socket that
+ *   hasn't finished its request headers in 5 s is destroyed, and the engine's own handshake deadline drops a socket
+ *   that never completes Noise.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { Socket } from "node:net";
+import { createServer as createTcpServer, type Socket } from "node:net";
 import { WebSocketServer, WebSocket } from "ws";
 import type { CompanionDaemonEngine, PeerLink } from "./daemon.js";
 
@@ -30,6 +31,7 @@ export interface DirectLimits {
 
 const DEFAULT_LIMITS: DirectLimits = { sockets: 32, socketsPerAddress: 8, upgradesPerMinute: 30 };
 const RATE_ENTRIES = 512;
+const HEADER_DEADLINE_MS = 5_000;
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 function ipv4Of(address: string): number[] | null {
@@ -46,8 +48,7 @@ export function directPeerAllowed(address: string | undefined): boolean {
   const v4 = ipv4Of(bare);
   if (v4 !== null) {
     const [a, b] = v4 as [number, number, number, number];
-    return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
-      || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127);
+    return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
   }
   if (bare === "::1") return true;
   if (/^fe[89ab][0-9a-f]:/.test(bare)) return true; // fe80::/10 link-local
@@ -105,13 +106,17 @@ export function startDirectServer(opts: DirectServerOptions): Promise<RunningDir
     res.end(JSON.stringify({ error: "not_found" }));
   };
 
+  // HTTP never listens itself: the TCP server below admits a socket first and only then hands it over.
   const server: Server = createServer(handleHttp);
-  server.headersTimeout = 5_000;
+  server.headersTimeout = HEADER_DEADLINE_MS;
   server.requestTimeout = 10_000;
   server.keepAliveTimeout = 2_000;
   const wss = new WebSocketServer({ noServer: true, maxPayload: DIRECT_MAX_PAYLOAD });
+  const headerDeadlines = new WeakMap<Socket, ReturnType<typeof setTimeout>>();
+  const headersDone = (socket: Socket) => { const timer = headerDeadlines.get(socket); if (timer !== undefined) clearTimeout(timer); headerDeadlines.delete(socket); };
+  server.on("request", (req: IncomingMessage) => headersDone(req.socket));
 
-  server.on("connection", (socket: Socket) => {
+  const tcp = createTcpServer({ pauseOnConnect: true }, (socket: Socket) => {
     const address = addressOf(socket);
     if (!directPeerAllowed(address) || open >= limits.sockets || (perAddress.get(address!) ?? 0) >= limits.socketsPerAddress) {
       socket.destroy();
@@ -119,11 +124,17 @@ export function startDirectServer(opts: DirectServerOptions): Promise<RunningDir
     }
     open += 1;
     perAddress.set(address!, (perAddress.get(address!) ?? 0) + 1);
+    const deadline = setTimeout(() => socket.destroy(), HEADER_DEADLINE_MS);
+    deadline.unref?.();
+    headerDeadlines.set(socket, deadline);
     socket.once("close", () => {
+      headersDone(socket);
       open -= 1;
       const left = (perAddress.get(address!) ?? 1) - 1;
       if (left <= 0) perAddress.delete(address!); else perAddress.set(address!, left);
     });
+    server.emit("connection", socket);
+    socket.resume();
   });
 
   const attach = (ws: WebSocket, role: "pair" | "device", id: string): void => {
@@ -155,6 +166,7 @@ export function startDirectServer(opts: DirectServerOptions): Promise<RunningDir
   };
 
   server.on("upgrade", (req: IncomingMessage, socket: Socket, head: Buffer) => {
+    headersDone(socket);
     try {
       const address = addressOf(socket);
       if (!directPeerAllowed(address) || !allowUpgrade(address!)) { socket.destroy(); return; }
@@ -172,18 +184,18 @@ export function startDirectServer(opts: DirectServerOptions): Promise<RunningDir
   server.on("clientError", (_error, socket) => { socket.destroy(); });
 
   return new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(opts.port, opts.host ?? "0.0.0.0", () => {
-      server.off("error", reject);
-      server.on("error", error => log(`phone access: direct listener error: ${error.message}`));
-      const bound = server.address();
+    tcp.once("error", reject);
+    tcp.listen(opts.port, opts.host ?? "0.0.0.0", () => {
+      tcp.off("error", reject);
+      tcp.on("error", error => log(`phone access: direct listener error: ${error.message}`));
+      const bound = tcp.address();
       resolve({
         port: typeof bound === "object" && bound !== null ? bound.port : opts.port,
         close: () => new Promise<void>(done => {
           for (const client of wss.clients) client.terminate();
           wss.close();
-          server.close(() => done());
           server.closeAllConnections();
+          tcp.close(() => done());
         }),
       });
     });
