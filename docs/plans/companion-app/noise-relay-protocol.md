@@ -15,10 +15,10 @@ Both daemon (Node.js) and iOS client (Swift) implement the standard **Noise Prot
   - Cipher: `ChaChaPoly` (RFC 8439 ChaCha20-Poly1305)
   - Hash: `SHA256`
 
-### Implementation Selection (Gate 1 Spike — Honest Library Status)
-No claim of prior third-party audit is made until a specific dependency and commit SHA are selected and reviewed in Gate 1:
-- **Daemon (Node.js):** Evaluate `noise-c.wasm` (WASM build of the C `noise-c` reference implementation, which directly supports `Noise_IKpsk2_25519_ChaChaPoly_SHA256`) or a Rust N-API binding over `snow` (reusing the repository's existing Rust toolchain in `tui/`). *(Note: `@chainsafe/libp2p-noise` supports only `XX`, not `IKpsk2`, and is not eligible.)*
-- **iOS (Swift):** Evaluate `OuterCorner/Noise` (SPM wrapper around `noise-c`) or `swift-libp2p/swift-noise` (verifying `IKpsk2` + `SHA256` support). If neither cleanly supports `IKpsk2` + `SHA256` on iOS 17+, a minimal Noise `IKpsk2` state machine (~150 lines) built over Apple `CryptoKit` primitives (`Curve25519.KeyAgreement`, `ChaChaPoly`, `SHA256`) is acceptable **only** when independently code-reviewed and passing 100% of cross-language reference vectors. *(Note: `CryptoKit` provides cryptographic primitives, not a Noise implementation.)*
+### Implementation Selection (Gate 1 Spike — Deferred Until Tested)
+No specific Noise library is pre-selected or claimed Revision-34-compatible here; library choice is gated on empirical verification during the Gate 1 spike:
+- **Requirement:** Any chosen Node.js and Swift implementations (for example, a Rust `snow` binding via N-API / UniFFI, a verified Revision 34 library, or — if no maintained Revision 34 Swift library exists — a minimal Revision 34 `IKpsk2` state machine over `node:crypto` and Apple `CryptoKit` primitives) MUST pass 100% of canonical Revision 34 `Noise_IKpsk2_25519_ChaChaPoly_SHA256` test vectors and undergo independent code review before Gate 1 merges.
+- No prior third-party audit is claimed unless an actual published audit of the exact pinned dependency and version is cited.
 
 ### Exact Handshake Specification
 
@@ -50,12 +50,14 @@ No claim of prior third-party audit is made until a specific dependency and comm
    - After message 2 completes, both sides derive a 6-character code from the 32-byte Noise handshake hash `h_pair`:
      `code = base32_crockford(HKDF-SHA256(ikm = h_pair, salt = "", info = "toolroll-pair-confirm-v1", len = 8))[0..6]` (displayed as `7K4-M9P`).
    - Both screens display `7K4-M9P`. Any self-reported `deviceName` (e.g., *"Work iPhone"*) is sanitized of control/bidi characters and shown strictly as **untrusted display text**, never a trust indicator.
+   - The Mac UI explicitly instructs the owner: **Click Confirm ONLY if your own phone is showing the exact same code.** (If someone else raced the QR first, the owner's phone shows no code at all.)
    - **Device remains `pending` (zero RPCs permitted)** until the signed-in approver clicks **Confirm match** on the Mac.
 5. **Finalization & `devicePsk` derivation/storage:**
-   - Upon Mac confirmation, the Mac generates `deviceId = UUIDv4` and `pskEntropy = CSPRNG(32)`, sends `{ deviceId, pskEntropy, pskVersion: 1 }` inside the encrypted pairing channel, and receives the phone's `deviceRelayPub`.
+   - Upon Mac confirmation, the Mac generates `deviceId = UUIDv4` and `pskEntropy = CSPRNG(32)`, sends `{ deviceId, recoveryGeneration, pskEntropy, pskVersion: 1 }` inside the encrypted pairing channel, and receives the phone's `deviceRelayPub`.
+   - The phone persists `recoveryGeneration` alongside `workspaceId`, `deviceId`, `machineId`, `macStaticPub`, and `devicePsk` so it can construct the exact reconnect prologue on every future session.
    - Both sides independently derive the durable 32-byte **`devicePsk`**:
      `devicePsk = HKDF-SHA256(ikm = pskEntropy, salt = h_pair, info = "toolroll-device-psk-v1:" || utf8(workspaceId) || ":" || utf8(deviceId), len = 32)`.
-   - **Storage on Mac:** Both peers need the raw 32-byte `devicePsk` for every `IKpsk2` handshake (a one-way hash cannot work). On the Mac, `device_psk` is stored in SQLite (`paired_devices`, protected storage per `src/protected-storage.ts`, mode `0600`, sealed with the local workspace secret key when present, strictly outside agent fences).
+   - **Storage on Mac (plain truth):** Both peers need the raw 32-byte `devicePsk` for every `IKpsk2` handshake (a one-way hash cannot work). On the Mac, `device_psk` is stored **unencrypted in SQLite** (`paired_devices.device_psk`), and therefore appears in Workspace backups, protected at rest by OS file permissions (`0600`) and Toolroll's agent sandbox deny-list (`src/protected-storage.ts`, which blocks build/agent processes from reading Toolroll's storage directory). This is why ADR 0001 unconditionally wipes `paired_devices` on backup restore.
    - **Storage on iPhone:** Stored in iOS Keychain with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` (never synced to iCloud Keychain, never backed up).
    - **Relay registration:** Daemon registers `{ deviceId, deviceRelayPub }` with the relay (`POST /v1/machines/:id/devices`, signed with `relayMachinePriv`) and wipes `pairPsk`.
    - **Rotation:** Supported over an authenticated Noise session via two-phase commit (`device.psk.rotate` sends `newPskEntropy` + `pskVersion + 1`; daemon accepts both `current` and `next` PSK until the phone completes one `IKpsk2` handshake under `next`, then deletes `current`).
@@ -65,7 +67,7 @@ No claim of prior third-party audit is made until a specific dependency and comm
 
 ## 3. Bounded RPC-over-Noise Framing (Not Raw HTTP)
 
-Every Noise transport message carries **exactly one** binary frame (total plaintext ≤ 65,519 bytes; frame header = 13 bytes; max frame payload = **60,000 bytes** / `60 KB` per frame to leave comfortable headroom under the 65,535-byte Noise ciphertext ceiling):
+Every Noise transport message carries **exactly one** binary frame (total plaintext ≤ 65,519 bytes; frame header = 13 bytes; max frame payload = **60,000 bytes** per frame to stay cleanly under the 65,535-byte Noise ciphertext ceiling):
 
 ```text
 [1B frameType][4B streamId (u32 BE)][4B seq (u32 BE)][4B payloadLen (u32 BE)][payload bytes (<= 60,000 B)]
@@ -76,33 +78,37 @@ Every Noise transport message carries **exactly one** binary frame (total plaint
 | `0x01 REQ` | Phone → Mac | Complete single-frame RPC request `{ method, params, idempotencyKey? }` (≤ 60,000 B). |
 | `0x0A REQ_CHUNK` | Phone → Mac | Ordered chunk (`seq = 0, 1, ...`) of a multi-frame RPC request (max **256 KiB** logical request, max 5 chunks; terminated by `0x08 END`). |
 | `0x02 RES` | Mac → Phone | Complete single-frame RPC response `{ ok, result?, error? }` (≤ 60,000 B). |
-| `0x03 CHUNK` | Mac → Phone | Ordered chunk (`seq = 0, 1, ...`) of a multi-part response or live subscription (≤ 60,000 B per chunk; max **4 MiB** logical unary response). |
+| `0x03 CHUNK` | Mac → Phone | Ordered chunk (`seq = 0, 1, ...`) of a multi-part unary response (max **1 MiB** logical response, ~18 chunks) or live watch subscription (≤ 60,000 B per chunk). |
 | `0x08 END` | Both | Clean end-of-stream marker for multi-chunk request (`REQ_CHUNK`) or response/subscription (`CHUNK`). |
 | `0x09 ERROR` | Both | Terminal per-stream error `{ code, message }`; immediately closes `streamId`. |
 | `0x04 CREDIT` | Phone → Mac | Flow-control credit grant (`+N` `CHUNK` frames allowed on `streamId`; initial window = 16 frames). |
 | `0x05 CANCEL` | Phone → Mac | Cancels observation of `streamId` (**stops watching only**; never stops the underlying agent run). |
 | `0x06 PING` / `0x07 PONG` | Both | Liveness heartbeat on `streamId = 0` (every 25s while foregrounded; 10s timeout → UI switches to `Unavailable`). |
 
-### Stream Bounds, Deadlines & Memory Caps
+### Stream Bounds, Flow Control, Deadlines & Memory Caps
 - **Stream ID allocation (no reuse):** Phone allocates strictly monotonic odd `streamId` (`1, 3, 5, ...`). Reusing any previously seen `streamId` within a session is a protocol error (`ERROR(protocol_error)` + close). Approaching `2^32 - 1` triggers a clean session reconnect.
 - **Concurrency caps:** Max **8 concurrent open streams** per phone session (at most **2 live watch subscriptions** + **6 unary/diff streams**). Excess streams return `ERROR(too_many_streams)`.
 - **Deadlines:**
   - Multi-chunk `REQ_CHUNK` assembly deadline: **5 seconds** from chunk 0 to `END`.
-  - Unary RPC execution deadline: **30 seconds**.
+  - Unary RPC response deadline: **30 seconds** total. Because max unary response is **1 MiB** (~18 chunks) and the relay grants a **2 MiB burst / 4 MiB/min sustained** budget per phone, a maximum-size 1 MiB diff completes well inside the 30-second window.
   - Live subscription idle deadline (no `CREDIT` or `PING/PONG`): **60 seconds** → `ERROR(idle_timeout)`.
-- **Memory caps & backpressure:**
-  - Per-stream buffer cap: **32 records OR 256 KiB** (whichever hits first); older live records coalesce/truncate with an explicit `{ k: "cut" }` marker.
-  - **Per-phone session total buffered bytes cap: 1 MiB** across all open streams.
-  - **Daemon-wide total buffered bytes cap: 4 MiB** across all connected paired phones.
+- **Backpressure (distinct rules for unary responses vs. live watch streams):**
+  - **Unary multi-part responses (e.g., `task.diff`):** Response `CHUNK` frames are **never dropped or coalesced**. If stream credit hits `0`, the daemon pauses emission and waits for `CREDIT` (up to the 30-second unary deadline, after which it sends `ERROR(deadline_exceeded)` and closes the stream).
+  - **Live watch subscriptions (`run.watch.subscribe`):** When stream credit hits `0`, the daemon buffers at most **32 records OR 256 KiB** per stream, coalescing/truncating older live records with an explicit `{ k: "cut" }` marker.
+  - **Global memory caps:** Max **1 MiB total buffered bytes across all streams per phone session**, and max **4 MiB daemon-wide** across all connected paired phones.
 - **iOS Background Suspension:** iOS suspends WebSockets within seconds of backgrounding. The app cleanly closes the socket on `scenePhase == .background` and runs a 1-RTT `Noise_IKpsk2` reconnect on foreground resume, marking cached views stale until `device.hello` succeeds.
 
 ---
 
 ## 4. Relay Admission, Multi-Phone Routing & Portable Hosting
 
-### Pre-Upgrade Admission & Role Ownership (Zero Plaintext Trust)
-1. **Machine registration (`POST /v1/machines/register`):** On first setup, the Mac generates an Ed25519 `relayMachineKey` (separate from its Noise X25519 key) and registers `relayMachinePub` (gated by proof-of-work on the public relay or invite token on private relays). The relay assigns `machineId` permanently bound to `relayMachinePub`.
-2. **Daemon role ownership:** Only a `role=daemon` JWT/token **signed by `relayMachinePriv`** (`TTL 5 min`, `jti`, `machineId`, `exp`) can claim the daemon WebSocket slot (`wss://<host>/v1/connect`). Nobody else can impersonate or evict the daemon.
+### Pre-Upgrade Admission, Deterministic `machineId` & Role Ownership
+1. **Deterministic `machineId` & registration (`POST /v1/machines/register`):**
+   - On first relay setup, the Mac generates an Ed25519 `relayMachineKey` (separate from its Noise X25519 key).
+   - `machineId` is derived **deterministically from `relayMachinePub`** (never randomly assigned by the relay):
+     `machineId = base32_lower(SHA-256("toolroll-machine-id-v1\0" || relayMachinePub))[0..26]` (130 bits, URL-safe).
+   - To register (or reclaim `machineId` on a fresh/migrated relay), the daemon submits `relayMachinePub` + a fresh Ed25519 proof-of-possession signature over `("register\0" || relayHost || "\0" || relayChallenge)` (plus PoW on the public relay or an invite token on private relays). The relay computes `machineId` from `relayMachinePub` and binds `machineId → relayMachinePub`.
+2. **Daemon role ownership:** Only a `role=daemon` token **signed by `relayMachinePriv`** (`TTL 5 min`, `jti`, `machineId`, `exp`) can claim the daemon WebSocket slot (`wss://<host>/v1/connect`). Nobody else can impersonate or evict the daemon.
 3. **Pairing bootstrap (`role=pair`):** The Mac signs a 5-minute `pairConnToken` (`role=pair`, `machineId`, `pairSessionId`, `exp`) with `relayMachinePriv` and embeds it in the QR code. The relay verifies the signature against `relayMachinePub` before WebSocket upgrade.
 4. **Steady-state phone reconnect (`role=device`):** Upon pairing confirmation, the Mac registers `{ deviceId, deviceRelayPub }` on the relay (`POST /v1/machines/:id/devices`, authenticated by `relayMachinePriv`). Thereafter, the iPhone locally mints its own 5-minute `role=device` connection tokens signed by `deviceRelayPriv` (renewing on each foreground reconnect with zero round-trip to the Mac). On device revocation, the Mac calls `DELETE /v1/machines/:id/devices/:deviceId` so the relay blocks the phone pre-upgrade (and the Mac rejects it locally regardless).
 
@@ -112,12 +118,14 @@ The daemon maintains **one** outbound WebSocket to the relay; up to **4 concurre
 - `0x02 PEER_DATA(connId, rawNoiseMessageBytes)` — blind binary forward (≤ 65,535 B)
 - `0x03 PEER_CLOSE(connId, reasonCode)` — notifies daemon peer disconnected
 
-Phone sockets send and receive raw Noise messages (≤ 65,535 B); the relay never inspects Noise bytes.
+Phone sockets send and receive raw Noise messages (≤ 65,535 B); the relay holds zero Noise keys and never inspects Noise bytes.
 
-### Rate Limits & Abuse Controls
-- **Handshake deadline:** 5 seconds from WebSocket open to first valid Noise exchange (relay drops idle sockets).
+### Deadlines, Rate Limits & Abuse Controls
+- **Separated connection deadlines (relay has no Noise keys):**
+  - **Relay enforces:** a **5-second first-frame deadline** (newly upgraded peer socket must send its first binary frame within 5s) and a **60-second idle timeout** (no frame in either direction).
+  - **Mac daemon enforces:** a **5-second Noise handshake completion deadline** from `PEER_OPEN` until `Noise_IKpsk2` completes AND `device.hello` is verified; on timeout, the daemon sends `PEER_CLOSE(connId)` to drop the peer.
 - **Max binary WebSocket frame:** 65,535 bytes (phone leg) / 65,540 bytes (daemon leg including 5-byte routing header).
-- **Per-phone sustained rate:** **600 frames/min (10 frames/sec)** with **120-frame burst** and **4 MiB/min** byte cap (sufficient for live run windows + diffs + heartbeats while bounding abuse).
+- **Per-phone rate & byte limits:** **600 frames/min sustained (10 frames/sec)** with **120-frame burst**, and **4 MiB/min sustained** with **2 MiB burst** (accommodating a max 1 MiB diff well inside the 30-second response deadline).
 - **Per-machine aggregate cap:** Max **4 concurrent phone sockets**, **2,400 frames/min**, **16 MiB/min**.
 - **Global circuit breaker:** Hard spending/request budget cap on hosted deployments.
 
@@ -125,18 +133,18 @@ Phone sockets send and receive raw Noise messages (≤ 65,535 B); the relay neve
 - **Wire contract & conformance suite (`relay/PROTOCOL.md` + `relay/conformance/`):** Any relay implementation passing the conformance suite is drop-in compatible.
 - **Portable Reference Implementation (`relay/reference/`):** Small Node.js/Go server + `Dockerfile` for self-hosting via `TOOLROLL_RELAY_URL`.
 - **Cloudflare Durable Object Adapter (`relay/cloudflare/`):** One hosting adapter behind `wss://relay.toolroll.dev` (note: Cloudflare WS messages support up to 32 MiB; we enforce the 65,535-byte Noise cap explicitly).
-- **Honest migration story:** Moving relays is **not** a pure DNS flip because `machineId → relayMachinePub` and `deviceId → deviceRelayPub` registrations live in the relay's storage. Migrating `relay.toolroll.dev` off Cloudflare requires either (a) exporting/importing that small public-key registration table before DNS cutover, or (b) automatic daemon recovery on `401 unknown_machine` (the daemon re-registers `relayMachinePub` and re-syncs active `paired_devices`' `deviceRelayPub` entries from local SQLite — zero phone re-pairing required because `macStaticPub` and `devicePsk` do not change).
+- **Honest migration story:** Moving relays is **not** a pure DNS flip because `machineId → relayMachinePub` and `deviceId → deviceRelayPub` registrations live in the relay's storage. Because `machineId` is deterministically derived from `relayMachinePub`, migrating `relay.toolroll.dev` off Cloudflare works cleanly via either (a) exporting/importing that small public-key registration table before DNS cutover, or (b) automatic daemon recovery on `401 unknown_machine` — the daemon re-registers `relayMachinePub` (reclaiming the **exact same `machineId`**) and re-syncs active `paired_devices`' `deviceRelayPub` entries from local SQLite, with zero phone re-pairing required because `machineId`, `macStaticPub`, and `devicePsk` do not change.
 
 ---
 
 ## 5. End-to-End Encrypted Push Notifications
 
-Extending Toolroll's RFC 8291 `aes128gcm` push encryption (`src/push.ts:119`):
+Extending Toolroll's RFC 8291 `aes128gcm` push encryption (`src/push.ts:154` `encryptPushPayload`, which wraps the 5-argument `encryptWithMaterials` at `src/push.ts:119`):
 
 1. **Key registration (`push.register`):** The iOS app generates a dedicated P-256 push keypair (`p256dh`, 65-byte uncompressed point) AND a **16-byte random `authSecret`**, storing the private key + `authSecret` in the shared **App Group Keychain** (`group.dev.toolroll.ios`, `ThisDeviceOnly`) accessible to both the main app and the **Notification Service Extension**, and sends `{ apnsToken, p256dh, authSecret }` to the Mac.
 2. **Privacy default (matches `src/push.ts:8-11`):** By default (`phone.push.includeTitles: false`), even the encrypted payload contains **only** the fixed notification class phrase and opaque `taskId` — task titles, branch names, and repository names stay on the Mac. Rich titles/summaries inside E2EE push require an **explicit opt-in setting** on the Mac.
 3. **Encryption & APNs envelope (≤ 4,096 bytes total):**
-   - Mac encrypts compact JSON plaintext (strictly capped at **≤ 2,400 bytes** so base64url + RFC 8291 header + `aps` wrapper stays well under APNs's 4,096-byte hard limit) via `encryptWithMaterials(p256dh, authSecret, ...)`.
+   - Mac encrypts compact JSON plaintext (strictly capped at **≤ 2,400 bytes** so base64url + RFC 8291 header + `aps` wrapper stays ~3.5 KB, safely under APNs's 4,096-byte hard limit) via `encryptPushPayload(p256dh, authSecret, plaintext)` (`src/push.ts:154`).
    - Mac posts `{ apnsToken, ciphertextB64, badge, collapseId, opaqueMachineTag }` to `POST /v1/push` (authenticated with `relayMachinePriv`).
    - Hosted push forwarder delivers to APNs (`apns-push-type: alert`, `apns-collapse-id: <collapseId>`):
      ```json
@@ -158,6 +166,6 @@ Extending Toolroll's RFC 8291 `aes128gcm` push encryption (`src/push.ts:119`):
 
 ## 6. Cross-Language Test Vectors *(First Deliverable of Gate 1)*
 
-To be generated from a canonical Noise reference implementation (`snow` or `noise-c`) and checked into `test/fixtures/companion-noise/vectors.json` **before** writing Gate 1 transport code:
+To be generated from a canonical Noise Revision 34 reference implementation and checked into `test/fixtures/companion-noise/vectors.json` **before** writing Gate 1 transport code:
 - Fixed ephemeral/static/PSK test keys and exact pairing + session prologues producing byte-exact Noise `IKpsk2` message 1, message 2, handshake hash `h`, 6-char confirmation code, derived `devicePsk`, and transport ciphertexts for nonces `0`, `1`, and `2^32 + 7` (verifying 64-bit `BigInt` / `UInt64` encoding) plus rejection vectors for `2^64 - 1`, prologue mismatch, and oversized (>65,535 B) messages.
 - Both `vitest` (Node daemon) and `swift test` (iOS/Core) MUST pass identical assertions in CI.
