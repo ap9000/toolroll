@@ -5,6 +5,7 @@ import ToolrollCompanionCore
 struct WelcomePairingView: View {
     @Bindable var appState: CompanionAppState
     @State private var scanner: ScannerMode?
+    @State private var showSecurity = false
 
     enum ScannerMode: String, Identifiable {
         case scan
@@ -33,19 +34,43 @@ struct WelcomePairingView: View {
                         Text("To pair")
                             .font(.footnote.weight(.semibold))
                             .foregroundStyle(ToolrollTheme.muted)
-                        Text("On your Mac, open Toolroll → Settings → Phone → **Pair an iPhone**, then scan the code it shows.")
+                        Text("On your Mac, open Toolroll → Settings → Phone and choose **Pair an iPhone**. Then scan the code it shows.")
                             .font(.body)
                             .foregroundStyle(ToolrollTheme.ink)
                             .fixedSize(horizontal: false, vertical: true)
+                        Button("Is this safe?") { showSecurity = true }
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(ToolrollTheme.ink)
+                            .underline()
+                            .frame(minHeight: 44)
                     }
                     .padding(16)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .card()
 
-                    if let message = appState.pairingError ?? appState.notice {
+                    if let error = appState.pairingError {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(appState.pairingErrorTitle)
+                                .font(.headline)
+                                .foregroundStyle(ToolrollTheme.danger)
+                            Text(error)
+                                .font(.callout)
+                                .foregroundStyle(ToolrollTheme.ink)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if error == CompanionAppState.localNetworkMessage {
+                                Button("Open Settings") {
+                                    if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                                }
+                                .font(.callout.weight(.semibold))
+                                .foregroundStyle(ToolrollTheme.ink)
+                                .frame(minHeight: 44)
+                            }
+                        }
+                        .accessibilityElement(children: .contain)
+                    } else if let message = appState.notice {
                         Text(message)
                             .font(.callout)
-                            .foregroundStyle(appState.pairingError != nil ? ToolrollTheme.danger : ToolrollTheme.ink)
+                            .foregroundStyle(ToolrollTheme.ink)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -59,6 +84,8 @@ struct WelcomePairingView: View {
             VStack(spacing: 12) {
                 Button {
                     appState.notice = nil
+                    // Ask for Local Network now, before the camera: a prompt mid-pairing would stall the direct path.
+                    LocalNetworkAccess.requestPrompt()
                     scanner = .scan
                 } label: {
                     Label("Pair with your Mac", systemImage: "qrcode.viewfinder")
@@ -74,6 +101,24 @@ struct WelcomePairingView: View {
             .padding(.top, 12)
             .padding(.bottom, 12)
             .background(ToolrollTheme.paper)
+        }
+        .sheet(isPresented: $showSecurity) {
+            NavigationStack {
+                ScrollView {
+                    HowItsSecured()
+                        .padding(24)
+                }
+                .background(ToolrollTheme.paper.ignoresSafeArea())
+                .navigationTitle("How it's secured")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { showSecurity = false }
+                            .foregroundStyle(ToolrollTheme.ink)
+                    }
+                }
+            }
+            .presentationDetents([.medium, .large])
         }
         .sheet(item: $scanner) { mode in
             PairingScannerSheet(startOnPaste: mode == .paste) { payload in
@@ -207,6 +252,8 @@ private struct PastePairingCodeView: View {
 /// Shown while a pairing runs: contacting the Mac, then the code to compare.
 struct PairingProgressView: View {
     let appState: CompanionAppState
+    /// Contacting has taken over five seconds.
+    @State private var slow = false
 
     var body: some View {
         ZStack {
@@ -237,12 +284,24 @@ struct PairingProgressView: View {
                     Text("Contacting your Mac…")
                         .font(.headline)
                         .foregroundStyle(ToolrollTheme.ink)
+                    if slow {
+                        Text("Still trying — make sure Toolroll is open on your Mac.")
+                            .font(.body)
+                            .foregroundStyle(ToolrollTheme.muted)
+                            .multilineTextAlignment(.center)
+                            .transition(.opacity)
+                    }
                 }
                 Spacer()
                 Button("Cancel pairing") { appState.cancelPairing() }
                     .buttonStyle(OutlineButtonStyle())
             }
             .padding(24)
+            .animation(.easeOut(duration: 0.2), value: slow)
+        }
+        .task {
+            try? await Task.sleep(for: .seconds(5))
+            if !Task.isCancelled { slow = true }
         }
     }
 }

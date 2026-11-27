@@ -11,9 +11,10 @@ struct ToolrollCompanionApp: App {
             RootView(appState: appState)
                 .tint(ToolrollTheme.ink)
                 .overlay {
-                    // Cover the app as soon as it stops being active, so the app switcher never keeps
-                    // a snapshot of a diff, a pairing code or a pasted payload.
-                    if scenePhase != .active {
+                    // Cover the app when it goes to the background, so the app switcher never keeps a snapshot of a
+                    // diff, a pairing code or a pasted payload. Not while merely inactive: that would also hide the
+                    // camera and Local Network prompts and the pairing screen behind them.
+                    if scenePhase == .background {
                         PrivacyCover()
                     }
                 }
@@ -45,6 +46,7 @@ private struct RootView: View {
             }
         }
         .animation(.snappy(duration: 0.25), value: appState.pairing)
+        .sensoryFeedback(.success, trigger: appState.pairedCount)
     }
 }
 

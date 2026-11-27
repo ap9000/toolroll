@@ -33,24 +33,9 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Text("Notifications are coming soon. For now, open the app to see what needs you.")
-                        .foregroundStyle(ToolrollTheme.ink)
-                } header: {
-                    Text("Notifications")
-                }
-
-                Section {
                     DisclosureGroup("How it's secured") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Everything between this iPhone and your Mac is end-to-end encrypted, whether it goes straight over your network or through the relay. The relay can't read it and can't act for you.")
-                            Text("This iPhone can only read. Approving and accepting still happen on your Mac.")
-                            Text("Keys stay in this iPhone's keychain and are never backed up to iCloud.")
-                            Text("Technical details: Noise_IKpsk2_25519_ChaChaPoly_SHA256 with a per-device pre-shared key from pairing, a six-character transcript code to confirm the pairing, and Ed25519-signed relay tokens. The relay sees IP addresses, timing and message sizes only.")
-                                .foregroundStyle(ToolrollTheme.muted)
-                        }
-                        .font(.subheadline)
-                        .foregroundStyle(ToolrollTheme.ink)
-                        .padding(.vertical, 4)
+                        HowItsSecured()
+                            .padding(.vertical, 4)
                     }
                     .foregroundStyle(ToolrollTheme.ink)
 
@@ -68,6 +53,8 @@ struct SettingsView: View {
                     }
                 } header: {
                     Text("Privacy")
+                } footer: {
+                    Text("Notifications aren't available yet. Open the app to see what needs you.")
                 }
 
                 if !appState.isDemoMode && appState.pairedRecord != nil {
@@ -144,5 +131,21 @@ struct SettingsView: View {
                 .textSelection(.enabled)
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// What protects the connection, in plain words first (Settings and Welcome's "Is this safe?").
+struct HowItsSecured: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Everything between this iPhone and your Mac is end-to-end encrypted, whether it goes straight over your network or through the relay. The relay can't read it and can't act for you.")
+            Text("This iPhone can only read. Approving and accepting still happen on your Mac.")
+            Text("Keys stay in this iPhone's keychain and are never backed up to iCloud.")
+            Text("Technical details: Noise_IKpsk2_25519_ChaChaPoly_SHA256 with a per-device pre-shared key from pairing, a six-character transcript code to confirm the pairing, and Ed25519-signed relay tokens. The relay sees IP addresses, timing and message sizes only.")
+                .foregroundStyle(ToolrollTheme.muted)
+        }
+        .font(.subheadline)
+        .foregroundStyle(ToolrollTheme.ink)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
