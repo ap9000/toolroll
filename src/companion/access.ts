@@ -130,7 +130,7 @@ export function createPhoneAccess(opts: { store: Store; reads: CompanionReadHand
   };
 }
 
-/** This Mac's name for the phone's header ("Alex's MacBook Pro" style hostnames read plainly). */
+/** This Mac's name for the phone's header: a "Studio-Mac.local" hostname reads as "Studio Mac". */
 export function workspaceLabelOf(): string {
   const name = hostname().replace(/\.local$/i, "").replace(/-/g, " ").trim();
   return name.length === 0 ? "Your Mac" : name.slice(0, 64);

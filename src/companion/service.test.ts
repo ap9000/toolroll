@@ -82,7 +82,7 @@ async function until(check: () => boolean, ms = 5_000): Promise<void> {
   const deadline = Date.now() + ms;
   while (!check()) {
     if (Date.now() > deadline) throw new Error("timed out");
-    await new Promise(resolve => setTimeout(resolve, 10));
+    await new Promise(resolve => setTimeout(resolve, 10)); // guard: bound poll interval while waiting on the fact check() names
   }
 }
 
@@ -117,7 +117,7 @@ class PhoneSocket {
     if (queued !== undefined) return Promise.resolve(queued);
     if (this.closed) return Promise.resolve(null);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.waiter = null; reject(new Error("no message")); }, ms);
+      const timer = setTimeout(() => { this.waiter = null; reject(new Error("no message")); }, ms); // guard: bound deadline for a message that must arrive, not a wait
       this.waiter = b => { clearTimeout(timer); resolve(b); };
     });
   }

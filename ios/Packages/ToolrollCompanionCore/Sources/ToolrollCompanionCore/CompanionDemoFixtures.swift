@@ -120,7 +120,7 @@ public enum CompanionDemoFixtures {
         "t-auth-refresh": #"""
         {
           "version": 1,
-          "task": {"id": "t-auth-refresh", "root": "t-auth-refresh", "title": "Make the refresh cookie strict", "state": "queued", "project": "/Users/demo/api-gateway"},
+          "task": {"id": "t-auth-refresh", "root": "t-auth-refresh", "title": "Make the refresh cookie strict", "state": "queued", "project": "/Users/someone/api-gateway"},
           "chain": "plan-first", "headline": "Needs you", "liveRun": null, "latestRun": 36, "models": null,
           "cards": [
             {"key": "plan", "label": "Plan", "state": "done", "mark": "done",
@@ -168,7 +168,7 @@ public enum CompanionDemoFixtures {
         "t-frame-limits": #"""
         {
           "version": 1,
-          "task": {"id": "t-frame-limits", "root": "t-frame-limits", "title": "Cap message size and pace large replies", "state": "done", "project": "/Users/demo/toolroll"},
+          "task": {"id": "t-frame-limits", "root": "t-frame-limits", "title": "Cap message size and pace large replies", "state": "done", "project": "/Users/someone/toolroll"},
           "chain": "plan-first", "headline": "Needs you", "liveRun": null, "latestRun": 38, "models": null,
           "cards": [
             {"key": "plan", "label": "Plan", "state": "done", "mark": "done", "sentence": "Plan written by Claude",
@@ -204,7 +204,7 @@ public enum CompanionDemoFixtures {
         "t-live-watch": #"""
         {
           "version": 1,
-          "task": {"id": "t-live-watch", "root": "t-live-watch", "title": "Show live output for a running build", "state": "running", "project": "/Users/demo/toolroll"},
+          "task": {"id": "t-live-watch", "root": "t-live-watch", "title": "Show live output for a running build", "state": "running", "project": "/Users/someone/toolroll"},
           "chain": "plan-first", "headline": "Building", "liveRun": 41, "latestRun": 41, "models": null,
           "cards": [
             {"key": "plan", "label": "Plan", "state": "done", "mark": "done", "sentence": "Plan written by Claude",
@@ -236,7 +236,7 @@ public enum CompanionDemoFixtures {
         "t-restore-wipe": #"""
         {
           "version": 1,
-          "task": {"id": "t-restore-wipe", "root": "t-restore-wipe", "title": "Remove paired phones after a backup restore", "state": "done", "project": "/Users/demo/toolroll"},
+          "task": {"id": "t-restore-wipe", "root": "t-restore-wipe", "title": "Remove paired phones after a backup restore", "state": "done", "project": "/Users/someone/toolroll"},
           "chain": "plan-first", "headline": "Done", "liveRun": null, "latestRun": 33, "models": null,
           "cards": [
             {"key": "plan", "label": "Plan", "state": "done", "mark": "done", "sentence": "Plan written by Claude",
