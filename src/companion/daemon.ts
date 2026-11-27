@@ -1057,9 +1057,9 @@ export class CompanionDaemonEngine {
   }
 
   /** A live session's standing, re-read at most every 250 ms: null while it stands, else the stream-0 ERROR code. */
-  private standingOf(peer: ActivePeerConn, fresh = false): StandingCode | null {
+  private standingOf(peer: ActivePeerConn, skipCache = false): StandingCode | null {
     const now = this.nowMs();
-    if (!fresh && now - peer.cache.standingAt < STANDING_CACHE_MS) return peer.cache.standing;
+    if (!skipCache && now - peer.cache.standingAt < STANDING_CACHE_MS) return peer.cache.standing;
     const principal = peer.principal;
     let code: StandingCode | null;
     if (principal === null) code = "device_revoked";
