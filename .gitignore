@@ -43,3 +43,6 @@ ios/**/.build/
 ios/build/
 ios/DerivedData/
 *.xcuserstate
+
+# Wrangler's local state (wrangler dev / deploy)
+relay/cloudflare/.wrangler/
