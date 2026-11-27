@@ -255,9 +255,9 @@ export class CompanionService {
       if (!current()) return;
       const socket = await this.openSocket();
       if (!current()) { socket.close(1000, "stopping"); return; }
-      // The relay socket carries every phone: past 8 MiB unsent, whichever phone is being written to is dropped.
-      const link = relayEnvelopeLink(`hosted#${generation}`, envelope => { if (socket.readyState === WebSocket.OPEN) socket.send(envelope, { binary: true }); },
-        { bytes: () => socket.bufferedAmount, limit: 8 * 1024 * 1024 });
+      // No backlog limit here: the relay socket carries every phone, so its queue says nothing about any one of them.
+      // What each phone gets is bounded by its own credit and its 1 MiB of held responses.
+      const link = relayEnvelopeLink(`hosted#${generation}`, envelope => { if (socket.readyState === WebSocket.OPEN) socket.send(envelope, { binary: true }); });
       this.socket = socket;
       this.link = link;
       this.attempt = 0;

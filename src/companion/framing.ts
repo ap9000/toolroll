@@ -303,9 +303,11 @@ export class CompanionStreamGuard {
     return { ok: true };
   }
 
-  /** Charge a unary response's bytes to this phone's and the daemon's budgets until the stream closes. */
+  /** Charge a unary response's bytes to this phone's own budget until the stream closes. Not the daemon-wide one: a
+   * few phones holding responses must not starve every other phone (each is reaped at its 30 s deadline anyway). */
   reserveResponse(streamId: number, bytes: number): boolean {
-    if (!this.reserveBytes(bytes)) return false;
+    if (this.sessionBufferedBytes + bytes > MAX_SESSION_BUFFERED_BYTES) return false;
+    this.sessionBufferedBytes += bytes;
     this.responseBytes.set(streamId, (this.responseBytes.get(streamId) ?? 0) + bytes);
     return true;
   }
@@ -328,7 +330,7 @@ export class CompanionStreamGuard {
     }
     const held = this.responseBytes.get(streamId);
     if (held !== undefined) {
-      this.releaseBytes(held);
+      this.sessionBufferedBytes = Math.max(0, this.sessionBufferedBytes - held);
       this.responseBytes.delete(streamId);
     }
     this.openUnaryStreams.delete(streamId);
@@ -340,7 +342,7 @@ export class CompanionStreamGuard {
       this.releaseBytes(asm.totalBytes);
     }
     this.assemblies.clear();
-    for (const held of this.responseBytes.values()) this.releaseBytes(held);
+    for (const held of this.responseBytes.values()) this.sessionBufferedBytes = Math.max(0, this.sessionBufferedBytes - held);
     this.responseBytes.clear();
     this.openUnaryStreams.clear();
     this.openWatchStreams.clear();

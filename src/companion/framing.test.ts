@@ -3,15 +3,14 @@
 import { expect, test } from "vitest";
 import { CompanionStreamGuard, encodeFrame, FrameType, GlobalBufferBudget, LiveWatchBuffer, MAX_SESSION_BUFFERED_BYTES, REQUEST_ASSEMBLY_DEADLINE_MS, decodeFrame } from "./framing.js";
 
-test("a unary response's bytes are charged until its stream closes", () => {
+test("a unary response's bytes are charged to the phone's own budget until its stream closes", () => {
   const budget = new GlobalBufferBudget();
   const guard = new CompanionStreamGuard(budget);
   expect(guard.ingestRequestFrame({ type: FrameType.REQ, streamId: 1, seq: 0, payload: Buffer.from("{}") }).ok).toBe(true);
   expect(guard.reserveResponse(1, MAX_SESSION_BUFFERED_BYTES - 10)).toBe(true);
   expect(guard.reserveResponse(1, 100)).toBe(false); // the phone's 1 MiB is spoken for
-  expect(budget.used).toBe(MAX_SESSION_BUFFERED_BYTES - 10);
+  expect(budget.used).toBe(0); // other phones' share is untouched
   guard.closeStream(1);
-  expect(budget.used).toBe(0);
   expect(guard.bufferedBytes).toBe(0);
 });
 
