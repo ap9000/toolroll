@@ -12,6 +12,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { ChatCore } from "./chat-core.js";
+import { retireCompanionOnRestore } from "./companion/store.js";
 import { CHAT_PROVIDERS } from "./contracts/chat-tables.js";
 import { revokeCoordinator } from "./coordinator.js";
 import { autoPublishHeld, holdAutoPublish, PUBLISH_ALLOWED_ACTION, PUBLISH_HELD_ACTION } from "./release-auto.js";
@@ -173,6 +174,10 @@ export function retireRestoredAuthority(
   for (const table of CHAT_ACTION_TABLES) store.handle.prepare(`UPDATE ${table} SET consumed = ? WHERE consumed IS NULL`).run(stamp);
   for (const table of CHAT_DECIDE_TABLES) store.handle.prepare(`UPDATE ${table} SET consumed_at = ? WHERE consumed_at IS NULL`).run(stamp);
   store.handle.prepare("UPDATE chat_note_draft SET state = 'discarded' WHERE state IN ('pending', 'armed')").run();
+
+  // 9b. ADR 0001: Unconditionally retire all companion paired devices (including device_psk),
+  //     push tokens, passkey registrations, pending challenges, and idempotency rows.
+  retireCompanionOnRestore(store.handle);
 
   // 10. Strict postcondition verification before commit.
   const afterIdentity = store.workspaceIdentity();
