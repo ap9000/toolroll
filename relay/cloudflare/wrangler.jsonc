@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "toolroll-companion-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "MACHINE_ROOM",
+        "class_name": "MachineRoomDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["MachineRoomDO"]
+    }
+  ],
+  "vars": {
+    "RELAY_PUBLIC_HOST": "relay.toolroll.dev",
+    "APNS_TOPIC": "dev.toolroll.ios",
+    "APNS_ENVIRONMENT": "production"
+  }
+}
