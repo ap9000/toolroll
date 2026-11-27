@@ -152,7 +152,7 @@ export function relayEnvelopeLink(id: string, sendEnvelope: (envelope: Buffer) =
 
 const peerKeyOf = (link: PeerLink, connId: number): string => `${link.id}:${connId}`;
 
-/** In-handshake sockets one device (or one pairing) may hold at once, across every link. */
+/** Unproven sockets (no Noise message 1 yet) one device id may hold at once, across every link; a newer one evicts the oldest. */
 const MAX_PENDING_PER_PEER_ID = 2;
 
 interface ActivePeerConn {
@@ -494,14 +494,10 @@ export class CompanionDaemonEngine {
       }
       pairing.peerKey = key;
     } else {
-      let pending = 0;
-      for (const peer of this.peers.values()) {
-        if (peer.role === "device" && peer.peerId === peerId && peer.state !== "authenticated") pending += 1;
-      }
-      if (pending >= MAX_PENDING_PER_PEER_ID) {
-        reject("too_many_handshakes");
-        return;
-      }
+      // Sockets that claimed this device id but proved nothing yet (no Noise message 1): anyone who saw the id can open
+      // them, so a newcomer evicts the oldest rather than being refused — a stalled stranger can't lock the phone out.
+      const unproven = [...this.peers.values()].filter(peer => peer.role === "device" && peer.peerId === peerId && peer.state === "awaiting_msg1");
+      for (const stale of unproven.slice(0, Math.max(0, unproven.length - MAX_PENDING_PER_PEER_ID + 1))) this.dropPeer(stale, "superseded_handshake");
     }
 
     const handshakeTimer = setTimeout(() => {

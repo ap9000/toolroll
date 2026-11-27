@@ -580,3 +580,14 @@ describe("the direct path: a phone on this Mac's network, no relay", () => {
   });
 });
 
+test("strangers holding unproven sockets for a phone's id can't lock the phone out", async () => {
+  const store = testStore();
+  const { service, direct } = await startBoth(store);
+  const phone = await pairPhone(service, "owner:A", direct);
+  // Two sockets that name the phone's id and never send a handshake (the id is in the URL on the network).
+  const squatters = await Promise.all([1, 2].map(() => PhoneSocket.open(`${direct}?role=device&id=${phone.deviceId}`, null)));
+  const s = await PhoneSession.connect(phone, direct);
+  expect(await s.call("device.hello")).toMatchObject({ ok: true });
+  await until(() => squatters.some(one => one.closed));
+});
+
