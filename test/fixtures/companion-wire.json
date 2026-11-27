@@ -5,67 +5,195 @@
     "paddedPlaintextBytes": 160,
     "padField": "pad",
     "statuses": {
-      "pair": ["awaiting_ready"],
-      "session": ["awaiting_hello", "refused"]
+      "pair": [
+        "awaiting_ready"
+      ],
+      "session": [
+        "awaiting_hello",
+        "refused"
+      ]
     },
-    "refusedReasons": ["device_revoked", "account_revoked"]
+    "refusedReasons": [
+      "device_revoked",
+      "account_revoked"
+    ]
   },
   "pairing": {
     "readyDeadlineMs": 10000,
     "keepalivePingMs": 20000,
-    "ready": { "stream": 1, "method": "pair.ready", "params": { "deviceName": "string<=48" } },
-    "readyResult": { "deviceId": "string", "recoveryGeneration": "string", "pskEntropy": "base64url(32B)" },
-    "readyErrors": ["pairing_cancelled", "pairing_expired", "pairing_contested", "pairing_failed"],
-    "done": { "stream": 3, "method": "pair.done", "params": { "deviceId": "string" } },
-    "doneResult": { "ok": true },
+    "ready": {
+      "stream": 1,
+      "method": "pair.ready",
+      "params": {
+        "deviceName": "string<=48"
+      }
+    },
+    "readyResult": {
+      "deviceId": "string",
+      "recoveryGeneration": "string",
+      "pskEntropy": "base64url(32B)"
+    },
+    "readyErrors": [
+      "pairing_cancelled",
+      "pairing_expired",
+      "pairing_contested",
+      "pairing_failed"
+    ],
+    "done": {
+      "stream": 3,
+      "method": "pair.done",
+      "params": {
+        "deviceId": "string"
+      }
+    },
+    "doneResult": {
+      "ok": true
+    },
     "pendingActivationWindowMs": 600000
   },
   "session": {
-    "stream0Errors": ["device_revoked", "account_revoked", "rekey"],
-    "closeCodes": { "revoked": 4403, "rekey": 1000 }
+    "stream0Errors": [
+      "device_revoked",
+      "account_revoked",
+      "rekey"
+    ],
+    "closeCodes": {
+      "revoked": 4403,
+      "rekey": 1000
+    }
   },
   "relay": {
     "errorHeader": "Toolroll-Relay-Error",
     "refusals": [
-      { "status": 400, "code": "bad_request" },
-      { "status": 401, "code": "token_invalid" },
-      { "status": 401, "code": "token_expired" },
-      { "status": 401, "code": "token_not_yet_valid" },
-      { "status": 403, "code": "device_revoked" },
-      { "status": 404, "code": "machine_unknown" },
-      { "status": 404, "code": "device_unknown" },
-      { "status": 429, "code": "rate_limited" },
-      { "status": 429, "code": "too_many_peers" },
-      { "status": 429, "code": "replay_cache_full" },
-      { "status": 503, "code": "daemon_unavailable" }
+      {
+        "status": 400,
+        "code": "bad_request"
+      },
+      {
+        "status": 401,
+        "code": "token_invalid"
+      },
+      {
+        "status": 401,
+        "code": "token_expired"
+      },
+      {
+        "status": 401,
+        "code": "token_not_yet_valid"
+      },
+      {
+        "status": 403,
+        "code": "device_revoked"
+      },
+      {
+        "status": 404,
+        "code": "machine_unknown"
+      },
+      {
+        "status": 404,
+        "code": "device_unknown"
+      },
+      {
+        "status": 429,
+        "code": "rate_limited"
+      },
+      {
+        "status": 429,
+        "code": "too_many_peers"
+      },
+      {
+        "status": 429,
+        "code": "replay_cache_full"
+      },
+      {
+        "status": 503,
+        "code": "daemon_unavailable"
+      }
     ],
-    "phoneTerminalCodes": ["device_revoked"],
-    "closeCodes": { "protocol": 4400, "revoked": 4403, "timeout": 4408, "superseded": 4409, "rateLimited": 4429, "daemonGone": 4503 },
-    "envelope": { "PEER_OPEN": 1, "PEER_DATA": 2, "PEER_CLOSE": 3, "HEARTBEAT": 4, "HEARTBEAT_ACK": 5 },
-    "heartbeat": { "intervalMs": 20000, "macTimeoutMs": 45000, "relayTimeoutMs": 60000, "payloadBytes": 12 },
+    "phoneTerminalCodes": [
+      "device_revoked"
+    ],
+    "closeCodes": {
+      "protocol": 4400,
+      "revoked": 4403,
+      "timeout": 4408,
+      "superseded": 4409,
+      "rateLimited": 4429,
+      "daemonGone": 4503
+    },
+    "envelope": {
+      "PEER_OPEN": 1,
+      "PEER_DATA": 2,
+      "PEER_CLOSE": 3,
+      "HEARTBEAT": 4,
+      "HEARTBEAT_ACK": 5
+    },
+    "heartbeat": {
+      "intervalMs": 20000,
+      "macTimeoutMs": 45000,
+      "relayTimeoutMs": 60000,
+      "payloadBytes": 12
+    },
     "token": {
-      "claims": ["v", "role", "machineId", "aud", "jti", "iat", "exp", "deviceId", "pairSessionId", "htm", "htu"],
+      "claims": [
+        "v",
+        "role",
+        "machineId",
+        "aud",
+        "jti",
+        "iat",
+        "exp",
+        "deviceId",
+        "pairSessionId",
+        "htm",
+        "htu"
+      ],
       "maxTtlSec": 300,
       "skewSec": 30,
       "jtiPattern": "^[A-Za-z0-9_-]{16,64}$",
       "idPattern": "^[A-Za-z0-9_-]{1,128}$",
       "machineIdPattern": "^[a-z2-7]{26}$",
       "pairTokenMaxUses": 3,
-      "replayCacheRowsPerMachine": 2048
+      "replayBudgets": {
+        "$comment": "Per principal, per machine room; the full table is in companion-relay-contract.json",
+        "daemon": 512,
+        "perDevice": 64,
+        "perPairSession": 16
+      }
     },
     "limits": {
       "phoneFirstFrameMs": 10000,
       "phoneIdleMs": 90000,
       "socketsPerMachine": 4,
       "devicesPerMachine": 32,
-      "phoneUp": { "framesPerMin": 600, "framesBurst": 120, "bytesPerMin": 4194304, "bytesBurst": 1048576 },
-      "phoneDown": { "bytesPerMin": 16777216, "bytesBurst": 4194304 },
-      "machineUp": { "bytesPerMin": 33554432, "bytesBurst": 8388608 },
-      "machineDown": { "bytesPerMin": 67108864, "bytesBurst": 16777216 }
+      "phoneUp": {
+        "framesPerMin": 600,
+        "framesBurst": 120,
+        "bytesPerMin": 4194304,
+        "bytesBurst": 1048576
+      },
+      "phoneDown": {
+        "bytesPerMin": 16777216,
+        "bytesBurst": 4194304
+      },
+      "machineUp": {
+        "bytesPerMin": 33554432,
+        "bytesBurst": 8388608
+      },
+      "machineDown": {
+        "bytesPerMin": 67108864,
+        "bytesBurst": 16777216
+      }
     },
     "macPacing": {
-      "perConnection": { "bytesPerMin": 12582912, "bytesBurst": 3145728 },
-      "perHostedLink": { "bytesPerMin": 50331648, "bytesBurst": 12582912 }
+      "perConnection": {
+        "bytesPerMin": 12582912,
+        "bytesBurst": 3145728
+      },
+      "perHostedLink": {
+        "bytesPerMin": 50331648,
+        "bytesBurst": 12582912
+      }
     },
     "tombstoneDays": 30,
     "roomIdleDeleteDays": 90
@@ -76,7 +204,11 @@
     "msg1ReplayPerId": 64,
     "msg1ReplayTotal": 4096,
     "phonesPerMac": 32,
-    "directPorts": { "default": 4199, "fallbackFirst": 4200, "fallbackLast": 4209 },
+    "directPorts": {
+      "default": 4199,
+      "fallbackFirst": 4200,
+      "fallbackLast": 4209
+    },
     "bonjourService": "_toolroll._tcp",
     "bonjourMachineIdTxtKey": "m"
   }

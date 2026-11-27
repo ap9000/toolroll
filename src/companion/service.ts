@@ -464,7 +464,12 @@ export class CompanionService {
       // Liveness (protocol §3.5): a HEARTBEAT every 20 s; 45 s without its ACK means the socket is dead (a half-open TCP
       // connection after sleep or a network change) — it is torn down and the close handler reconnects.
       let lastAckAt = connectedAt;
-      let lastBeatAt = -Infinity;
+      // The first heartbeat goes out at once: a Cloudflare relay can't send a close frame to a hibernated socket that
+      // has never delivered a message (relay/PROTOCOL.md), so the daemon speaks first.
+      const firstStamp = Buffer.alloc(8);
+      firstStamp.writeBigUInt64BE(BigInt(Math.max(0, Math.floor(connectedAt))));
+      send(encodeRelayEnvelope({ op: RelayOp.HEARTBEAT, connId: 0, payload: firstStamp }));
+      let lastBeatAt = connectedAt;
       let lastRepushAt = connectedAt;
       let lastAdmissionCheckAt = connectedAt;
       let admitted = JSON.stringify(this.engine.admittedDevices());

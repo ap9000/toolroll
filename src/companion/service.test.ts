@@ -16,7 +16,7 @@ import { openStore, type Store } from "../store.js";
 import type { CompanionReadHandlers, PairingQrPayload } from "./daemon.js";
 import { startReferenceRelay, type RunningReferenceRelay } from "./relay-server.js";
 import { encodeFrame, FrameType } from "./framing.js";
-import { decodeRelayEnvelope, parseRelayTokenUnverified, RelayOp } from "./relay-auth.js";
+import { decodeRelayEnvelope, parseRelayToken, RelayOp } from "./relay-auth.js";
 import { CompanionService, describeRelayCode } from "./service.js";
 import { bonjourCommand, startBonjour } from "./bonjour.js";
 import { getPairedDevice, livePairedDevices, retireCompanionOnRestore } from "./store.js";
@@ -178,7 +178,7 @@ describe("phone access over a relay", () => {
     const realFetch = globalThis.fetch;
     globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
       const auth = (init?.headers as Record<string, string> | undefined)?.["authorization"];
-      if (auth !== undefined) seen.push({ method: String(init?.method), path: new URL(String(input)).pathname, claims: parseRelayTokenUnverified(auth.slice(7))!.claims as unknown as Record<string, unknown> });
+      if (auth !== undefined) seen.push({ method: String(init?.method), path: new URL(String(input)).pathname, claims: parseRelayToken(auth.slice(7))!.raw });
       return realFetch(input, init);
     }) as typeof fetch;
     cleanups.push(() => { globalThis.fetch = realFetch; });
@@ -191,7 +191,7 @@ describe("phone access over a relay", () => {
     for (const one of seen) expect(one.claims).toMatchObject({ role: "daemon", aud: host, htm: one.method, htu: one.path });
     const started = service.startPairing("owner", "owner:A", generationOf(store));
     if (!started.ok) throw new Error(started.error);
-    const pairClaims = parseRelayTokenUnverified(started.qr.pairConnToken!)!.claims;
+    const pairClaims = parseRelayToken(started.qr.pairConnToken!)!.raw;
     expect(pairClaims).toMatchObject({ role: "pair", aud: host, pairSessionId: started.qr.pairSessionId });
     expect(pairClaims.htm).toBeUndefined();
     expect(started.qr.expiresAtMs).toBe(started.expiresAtMs);
@@ -596,7 +596,7 @@ test("a hosted-only change can't turn phone access back on, and an approval does
   const deletes: { path: string; claims: Record<string, unknown> }[] = [];
   globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const auth = (init?.headers as Record<string, string> | undefined)?.["authorization"];
-    if (init?.method === "DELETE" && auth !== undefined) deletes.push({ path: new URL(String(input)).pathname, claims: parseRelayTokenUnverified(auth.slice(7))!.claims as unknown as Record<string, unknown> });
+    if (init?.method === "DELETE" && auth !== undefined) deletes.push({ path: new URL(String(input)).pathname, claims: parseRelayToken(auth.slice(7))!.raw });
     return realFetch(input, init);
   }) as typeof fetch;
   cleanups.push(() => { globalThis.fetch = realFetch; });
