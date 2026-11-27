@@ -12,6 +12,21 @@ const RELAY_ENVELOPE_HEADER_BYTES = 5;
 const MAX_DAEMON_WS_FRAME_BYTES = MAX_NOISE_MESSAGE_BYTES + RELAY_ENVELOPE_HEADER_BYTES;
 const MAX_RELAY_TOKEN_TTL_SEC = 300;
 const MAX_PHONES_PER_MACHINE = 4;
+/** Paired phones one machine may admit (the Mac's live paired devices). */
+const MAX_DEVICES_PER_MACHINE = 32;
+const MAX_ID_LENGTH = 128;
+/** Per phone socket, per minute (PROTOCOL.md data-plane limits). */
+const PHONE_FRAMES_PER_MIN = 600;
+const PHONE_BYTES_PER_MIN = 4 * 1024 * 1024;
+/** Per machine, per minute, phones → daemon together: over it, the sending phone is closed (never the daemon). */
+const MACHINE_BYTES_PER_MIN = 32 * 1024 * 1024;
+/** Per phone, per minute: what the daemon may send that phone (diffs and live output are bigger than what phones send). */
+const PHONE_DOWN_BYTES_PER_MIN = 16 * 1024 * 1024;
+/** A phone socket that has sent nothing for this long is closed (the app pings well within it). */
+const PHONE_IDLE_MS = 90_000;
+/** A phone socket must send its first message (Noise message 1) within this. */
+const PHONE_FIRST_FRAME_MS = 10_000;
+const SWEEP_MS = 15_000;
 const RFC4648_LOWER = "abcdefghijklmnopqrstuvwxyz234567";
 
 const OP_PEER_OPEN = 0x01;
@@ -103,11 +118,17 @@ function parseToken(token: string): { claims: RelayTokenClaims; input: Uint8Arra
   if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
   try {
     const claims = JSON.parse(new TextDecoder().decode(fromB64Url(parts[0]))) as Partial<RelayTokenClaims>;
+    const id = (value: unknown): boolean => typeof value === "string" && value.length > 0 && value.length <= MAX_ID_LENGTH;
     if (
       claims.v !== 1
       || (claims.role !== "daemon" && claims.role !== "pair" && claims.role !== "device")
       || typeof claims.machineId !== "string" || !/^[a-z2-7]{26}$/.test(claims.machineId)
       || typeof claims.iat !== "number" || typeof claims.exp !== "number"
+      || !id(claims.jti)
+      || (claims.deviceId !== undefined && !id(claims.deviceId))
+      || (claims.pairSessionId !== undefined && !id(claims.pairSessionId))
+      || (claims.role === "device" && claims.deviceId === undefined)
+      || (claims.role === "pair" && claims.pairSessionId === undefined)
     ) return null;
     return {
       claims: claims as RelayTokenClaims,
@@ -169,6 +190,38 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
+/** The rate-limit key for a client address: an IPv6 client is keyed by its /64 (one subscriber's whole prefix). */
+function rateKeyOf(ip: string | null): string {
+  if (ip === null || ip.length === 0) return "no-ip";
+  if (!ip.includes(":")) return ip;
+  const [head, tail = ""] = ip.toLowerCase().split("::");
+  const left = head!.split(":").filter(Boolean);
+  const right = tail.split(":").filter(Boolean);
+  const full = [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill("0"), ...right];
+  return `${full.slice(0, 4).join(":")}::/64`;
+}
+
+/** Decodes base64url, or null for anything that isn't. */
+function b64OrNull(s: unknown): Uint8Array | null {
+  if (typeof s !== "string") return null;
+  try { return fromB64Url(s); } catch { return null; }
+}
+
+/** A sliding one-minute token bucket (in memory: it resets only when the room hibernates, i.e. when it's idle). */
+class MinuteBucket {
+  private tokens: number;
+  private at = Date.now();
+  constructor(private readonly perMinute: number) { this.tokens = perMinute; }
+  take(n: number): boolean {
+    const now = Date.now();
+    this.tokens = Math.min(this.perMinute, this.tokens + ((now - this.at) / 60_000) * this.perMinute);
+    this.at = now;
+    if (this.tokens < n) return false;
+    this.tokens -= n;
+    return true;
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -177,7 +230,7 @@ export default {
     }
     // Everything past health is rate limited per client address before any work (a made-up machine id still wakes a
     // room). Without the bindings (local dev, self-hosters who skip them) nothing is limited.
-    const client = request.headers.get("cf-connecting-ip") ?? "unknown";
+    const client = rateKeyOf(request.headers.get("cf-connecting-ip"));
     const limiter = url.pathname === "/v1/challenge" || url.pathname === "/v1/machines/register" ? env.RL_REGISTER : env.RL_CONNECT;
     if (limiter !== undefined && !(await limiter.limit({ key: client })).success) {
       return jsonResponse(429, { error: "rate_limited" });
@@ -187,6 +240,7 @@ export default {
       return jsonResponse(200, { challenge: await mintChallenge(env.CHALLENGE_SECRET, Date.now()), expiresInSec: 60 });
     }
     if (request.method === "POST" && url.pathname === "/v1/machines/register") {
+      if (Number(request.headers.get("content-length") ?? "0") > 4096) return jsonResponse(413, { error: "too_large" });
       const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
       if (!body || typeof body["relayMachinePub"] !== "string" || typeof body["challenge"] !== "string" || typeof body["signature"] !== "string") {
         return jsonResponse(400, { error: "invalid_body" });
@@ -236,6 +290,8 @@ interface SocketAttachment {
   role: "daemon" | "pair" | "device";
   connId: number;
   peerId: string;
+  /** When the socket opened (ms), for the first-message deadline. */
+  openedAt?: number;
 }
 
 /** A socket's attachment, or null for a socket that has none (never a thrown error). */
@@ -250,9 +306,45 @@ function sendQuietly(ws: WebSocket, data: Uint8Array): void {
 
 export class MachineRoomDO {
   private readonly state: DurableObjectState;
+  /** Per phone socket: its frame and byte buckets and when it last sent anything (in memory, reset on hibernation). */
+  private readonly phones = new Map<WebSocket, { frames: MinuteBucket; bytes: MinuteBucket; down: MinuteBucket; lastAt: number }>();
+  /** Phones → daemon, all phones of this machine together. */
+  private readonly machineBytes = new MinuteBucket(MACHINE_BYTES_PER_MIN);
+  /** Daemon → all phones together (reconnecting a phone doesn't refill it). */
+  private readonly daemonBytes = new MinuteBucket(PHONE_DOWN_BYTES_PER_MIN * MAX_PHONES_PER_MACHINE);
+
 
   constructor(state: DurableObjectState) {
     this.state = state;
+  }
+
+  private phoneOf(ws: WebSocket) {
+    let entry = this.phones.get(ws);
+    if (entry === undefined) {
+      entry = { frames: new MinuteBucket(PHONE_FRAMES_PER_MIN), bytes: new MinuteBucket(PHONE_BYTES_PER_MIN), down: new MinuteBucket(PHONE_DOWN_BYTES_PER_MIN), lastAt: Date.now() };
+      this.phones.set(ws, entry);
+    }
+    return entry;
+  }
+
+  private async ensureSweep(): Promise<void> {
+    if ((await this.state.storage.getAlarm()) === null) await this.state.storage.setAlarm(Date.now() + SWEEP_MS);
+  }
+
+  /** Closes phone sockets that never sent a first message, or went quiet; re-arms while any phone is connected. */
+  async alarm(): Promise<void> {
+    const now = Date.now();
+    let phones = 0;
+    for (const ws of this.state.getWebSockets()) {
+      const att = attachmentOf(ws);
+      if (att === null || att.role === "daemon") continue;
+      const seen = this.phones.get(ws);
+      const quietSince = seen?.lastAt ?? att.openedAt ?? now;
+      const limit = seen === undefined ? PHONE_FIRST_FRAME_MS : PHONE_IDLE_MS;
+      if (now - quietSince > limit) { try { ws.close(1000, seen === undefined ? "first_frame_timeout" : "idle_timeout"); } catch { /* closing */ } continue; }
+      phones += 1;
+    }
+    if (phones > 0) await this.state.storage.setAlarm(now + SWEEP_MS);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -260,8 +352,10 @@ export class MachineRoomDO {
 
     if (url.pathname === "/register" && request.method === "POST") {
       const { machineId, relayMachinePub } = (await request.json()) as { machineId: string; relayMachinePub: string };
-      await this.state.storage.put("machineId", machineId);
-      await this.state.storage.put("relayMachinePub", relayMachinePub);
+      // The id is derived from the key, so a stored key never changes: write only the first time.
+      if ((await this.state.storage.get<string>("relayMachinePub")) !== relayMachinePub) {
+        await this.state.storage.put({ machineId, relayMachinePub });
+      }
       return jsonResponse(200, { machineId });
     }
 
@@ -278,30 +372,38 @@ export class MachineRoomDO {
         return jsonResponse(401, { error: "unauthorized" });
       }
       if (request.method === "POST" && !devMatch[2]) {
-        const body = (await request.json().catch(() => null)) as { deviceId?: string; deviceRelayPub?: string } | null;
-        if (!body?.deviceId || !body.deviceRelayPub || fromB64Url(body.deviceRelayPub).length !== 32) {
+        const body = (await request.json().catch(() => null)) as { deviceId?: unknown; deviceRelayPub?: unknown } | null;
+        if (typeof body?.deviceId !== "string" || body.deviceId.length === 0 || body.deviceId.length > MAX_ID_LENGTH
+          || typeof body.deviceRelayPub !== "string" || b64OrNull(body.deviceRelayPub)?.length !== 32) {
           return jsonResponse(400, { error: "invalid_body" });
         }
-        await this.state.storage.put(`dev:${body.deviceId}`, body.deviceRelayPub);
+        const key = `dev:${body.deviceId}`, current = await this.state.storage.get<string>(key);
+        if (current === undefined && (await this.state.storage.list({ prefix: "dev:" })).size >= MAX_DEVICES_PER_MACHINE) {
+          return jsonResponse(409, { error: "too_many_devices" });
+        }
+        if (current !== body.deviceRelayPub) await this.state.storage.put(key, body.deviceRelayPub);
         return jsonResponse(200, { ok: true, deviceId: body.deviceId });
       }
       // Replace the whole admitted set (the daemon reconciles after every connect); a phone that left it is closed.
       if (request.method === "PUT" && !devMatch[2]) {
         const body = (await request.json().catch(() => null)) as { devices?: unknown } | null;
         const list = Array.isArray(body?.devices) ? (body!.devices as unknown[]) : null;
-        if (list === null || list.length > 64) return jsonResponse(400, { error: "invalid_body" });
+        if (list === null || list.length > MAX_DEVICES_PER_MACHINE) return jsonResponse(400, { error: "invalid_body" });
         const next = new Map<string, string>();
         for (const item of list) {
           const entry = item !== null && typeof item === "object" ? (item as { deviceId?: unknown; deviceRelayPub?: unknown }) : null;
-          if (typeof entry?.deviceId !== "string" || entry.deviceId.length === 0 || entry.deviceId.length > 128
-            || typeof entry.deviceRelayPub !== "string" || fromB64Url(entry.deviceRelayPub).length !== 32) {
+          if (typeof entry?.deviceId !== "string" || entry.deviceId.length === 0 || entry.deviceId.length > MAX_ID_LENGTH
+            || typeof entry.deviceRelayPub !== "string" || b64OrNull(entry.deviceRelayPub)?.length !== 32) {
             return jsonResponse(400, { error: "invalid_body" });
           }
           next.set(entry.deviceId, entry.deviceRelayPub);
         }
+        // Only what changed is written (the Mac sends the full set on every connect).
         const existing = await this.state.storage.list<string>({ prefix: "dev:" });
-        for (const key of existing.keys()) if (!next.has(key.slice(4))) await this.state.storage.delete(key);
-        for (const [deviceId, pub] of next) await this.state.storage.put(`dev:${deviceId}`, pub);
+        const gone = [...existing.keys()].filter(key => !next.has(key.slice(4)));
+        const changed = Object.fromEntries([...next].filter(([deviceId, pub]) => existing.get(`dev:${deviceId}`) !== pub).map(([deviceId, pub]) => [`dev:${deviceId}`, pub]));
+        if (gone.length > 0) await this.state.storage.delete(gone);
+        if (Object.keys(changed).length > 0) await this.state.storage.put(changed);
         for (const ws of this.state.getWebSockets()) {
           const att = ws.deserializeAttachment() as SocketAttachment | null;
           if (att?.role === "device" && !next.has(att.peerId)) ws.close(1000, "device_revoked");
@@ -329,9 +431,6 @@ export class MachineRoomDO {
       const parsed = parseToken(token);
       if (!parsed) return jsonResponse(401, { error: "malformed_token" });
 
-      if ((parsed.claims.role === "pair" && !parsed.claims.pairSessionId) || (parsed.claims.role === "device" && !parsed.claims.deviceId)) {
-        return jsonResponse(401, { error: "malformed_token" });
-      }
       let verifyKey: Uint8Array | null = null;
       if (parsed.claims.role === "daemon" || parsed.claims.role === "pair") {
         verifyKey = machinePub;
@@ -342,6 +441,10 @@ export class MachineRoomDO {
       if (!verifyKey) return jsonResponse(403, { error: "unknown_or_revoked_device" });
       const claims = await verifyToken(token, verifyKey);
       if (!claims) return jsonResponse(401, { error: "invalid_token" });
+      // The signature check awaited: a removal may have landed meanwhile, so the device must still be admitted now.
+      if (claims.role === "device" && (await this.state.storage.get<string>(`dev:${claims.deviceId}`)) === undefined) {
+        return jsonResponse(403, { error: "unknown_or_revoked_device" });
+      }
 
       const activeSockets = this.state.getWebSockets();
       const daemonNow = activeSockets.find(s => attachmentOf(s)?.role === "daemon");
@@ -373,9 +476,11 @@ export class MachineRoomDO {
         role: claims.role,
         connId,
         peerId: claims.deviceId ?? claims.pairSessionId ?? "daemon",
+        openedAt: Date.now(),
       };
       this.state.acceptWebSocket(server);
       server.serializeAttachment(attachment);
+      if (claims.role !== "daemon") await this.ensureSweep();
 
       if (claims.role !== "daemon" && daemonNow !== undefined) {
         sendQuietly(daemonNow, encodeEnvelope(OP_PEER_OPEN, connId, new TextEncoder().encode(JSON.stringify({ role: claims.role, id: attachment.peerId }))));
@@ -410,6 +515,12 @@ export class MachineRoomDO {
       if (op === OP_PEER_CLOSE) {
         target?.close(1000, "closed_by_daemon");
       } else if (op === OP_PEER_DATA && target) {
+        // Each phone has its own budget for what the daemon sends it: over it, that phone alone is closed (the frame isn't
+        // sent); the daemon and the other phones are untouched. At most 4 phones, so the total stays bounded.
+        if (!this.phoneOf(target).down.take(bytes.length)) { this.phones.delete(target); target.close(1008, "rate_limited"); return; }
+        // The machine's total (reconnecting a phone doesn't refill it), four phones' worth: over it, this frame's phone
+        // is closed (an unsent frame would break its Noise stream anyway) — never the daemon.
+        if (!this.daemonBytes.take(bytes.length)) { this.phones.delete(target); target.close(1008, "rate_limited"); return; }
         sendQuietly(target, bytes.subarray(RELAY_ENVELOPE_HEADER_BYTES));
       }
       return;
@@ -417,6 +528,12 @@ export class MachineRoomDO {
 
     if (bytes.length > MAX_NOISE_MESSAGE_BYTES) {
       ws.close(1009, "frame_too_large");
+      return;
+    }
+    const phone = this.phoneOf(ws);
+    phone.lastAt = Date.now();
+    if (!phone.frames.take(1) || !phone.bytes.take(bytes.length) || !this.machineBytes.take(bytes.length)) {
+      ws.close(1008, "rate_limited");
       return;
     }
     const daemon = sockets.find(s => attachmentOf(s)?.role === "daemon");
@@ -428,6 +545,7 @@ export class MachineRoomDO {
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
+    this.phones.delete(ws);
     const att = attachmentOf(ws);
     if (!att) return;
     const sockets = this.state.getWebSockets().filter(s => s !== ws);

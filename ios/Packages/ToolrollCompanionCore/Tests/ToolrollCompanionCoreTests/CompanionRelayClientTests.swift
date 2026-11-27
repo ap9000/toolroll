@@ -33,6 +33,43 @@ private actor Mailbox {
     }
 }
 
+/// Waits until `condition` holds, polling, and fails the test if it doesn't within `timeout`. Every wait in these
+/// tests waits on a fact (a frame the fake Mac saw, a flag the client set), never on a fixed sleep.
+private func waitUntil(
+    _ what: String,
+    timeout: Duration = .seconds(5),
+    _ condition: @Sendable () async -> Bool
+) async throws {
+    let deadline = ContinuousClock.now + timeout
+    while !(await condition()) {
+        guard ContinuousClock.now < deadline else {
+            Issue.record("Timed out waiting for: \(what)")
+            throw CancellationError()
+        }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+}
+
+/// A one-shot signal one side awaits and the other fires (also used as a gate the test opens).
+private actor Signal {
+    private var fired = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    var isFired: Bool { fired }
+
+    func fire() {
+        guard !fired else { return }
+        fired = true
+        waiters.forEach { $0.resume() }
+        waiters = []
+    }
+
+    func wait() async {
+        if fired { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+}
+
 /// How a fake socket behaves on its way to the Mac.
 private enum SocketMode: Sendable {
     case normal
@@ -115,7 +152,8 @@ private enum Behavior: Sendable {
     case chunked(String, chunkBytes: Int)
     case error(code: String, message: String)
     case silent
-    case delayed(String, Duration)
+    /// Answers only once the test opens the gate.
+    case gated(String, Signal)
     case watch([String])
 }
 
@@ -128,6 +166,10 @@ private actor FakeMac {
     var helloPaths: String?
     /// The Mac refuses this device at hello.
     var helloError: (code: String, message: String)?
+    /// The next hello this many sockets send goes unanswered.
+    var helloHolds = 0
+    /// Fired when a held hello arrives.
+    let helloHeld = Signal()
     var answerPings = true
     var behaviors: [String: Behavior] = [:]
 
@@ -147,6 +189,7 @@ private actor FakeMac {
     func setHelloDeviceId(_ id: String) { helloDeviceId = id }
     func setHelloPaths(_ json: String?) { helloPaths = json }
     func setHelloError(code: String, message: String) { helloError = (code, message) }
+    func holdNextHello() { helloHolds += 1 }
 
     func receive(_ data: Data, socket: PipeSocket) async throws {
         let key = ObjectIdentifier(socket)
@@ -172,6 +215,11 @@ private actor FakeMac {
             let method = req["method"] as! String
             methods.append(method)
             if method == "device.hello" {
+                if helloHolds > 0 {
+                    helloHolds -= 1
+                    await helloHeld.fire()
+                    return
+                }
                 if let helloError {
                     await respond(.error(code: helloError.code, message: helloError.message), streamId: frame.streamId, socket: socket)
                     return
@@ -206,9 +254,9 @@ private actor FakeMac {
             await push(CompanionFrame(type: .error, streamId: streamId, seq: 0, payload: Data(#"{"code":"\#(code)","message":"\#(message)"}"#.utf8)), socket)
         case .silent:
             break
-        case .delayed(let json, let delay):
+        case .gated(let json, let gate):
             Task {
-                try? await Task.sleep(for: delay)
+                await gate.wait()
                 await self.respond(.result(json), streamId: streamId, socket: socket)
             }
         case .watch(let records):
@@ -219,7 +267,13 @@ private actor FakeMac {
     }
 
     func push(_ frame: CompanionFrame, _ socket: PipeSocket) async {
-        guard let session = sessions[ObjectIdentifier(socket)], let ct = try? session.encrypt(try frame.encode()) else { return }
+        guard let ct = try? frame.encode() else { return }
+        await pushRaw(ct, socket)
+    }
+
+    /// Encrypts any plaintext (a frame this build may not know) and sends it to the phone.
+    func pushRaw(_ plaintext: Data, _ socket: PipeSocket) async {
+        guard let session = sessions[ObjectIdentifier(socket)], let ct = try? session.encrypt(plaintext) else { return }
         await socket.toPhone.put(ct)
     }
 
@@ -329,13 +383,17 @@ func helloIdentityMismatch() async throws {
 func concurrentCallsDispatchByStream() async throws {
     let h = try Harness()
     _ = try await h.connect()
-    await h.mac.set("slow", .delayed(#"{"name":"slow"}"#, .milliseconds(80)))
+    let gate = Signal()
+    await h.mac.set("slow", .gated(#"{"name":"slow"}"#, gate))
     await h.mac.set("fast", .result(#"{"name":"fast"}"#))
-    async let slow = h.client.call("slow", params: TaskParams(task: "a"), as: Small.self)
-    async let fast = h.client.call("fast", params: TaskParams(task: "b"), as: Small.self)
-    let (s, f) = try await (slow, fast)
-    #expect(s.name == "slow")
-    #expect(f.name == "fast")
+    let client = h.client
+    let slow = Task { try await client.call("slow", params: TaskParams(task: "a"), as: Small.self) }
+    try await waitUntil("the slow call reached the Mac") { await h.mac.methods.contains("slow") }
+    // The fast call is answered while the slow one is still held on the Mac.
+    let fast = try await client.call("fast", params: TaskParams(task: "b"), as: Small.self)
+    #expect(fast.name == "fast")
+    await gate.fire()
+    #expect(try await slow.value.name == "slow")
 }
 
 @Test("Chunked replies are reassembled in order with one CREDIT per chunk")
@@ -346,9 +404,8 @@ func chunkReassembly() async throws {
     await h.mac.set("big", .chunked(#"{"name":"\#(big)"}"#, chunkBytes: 50_000))
     let result = try await h.client.call("big", params: TaskParams(task: "t"), as: Small.self)
     #expect(result.name.count == 150_000)
-    try await Task.sleep(for: .milliseconds(50))
-    let credits = await h.mac.credits
-    #expect(credits[3] == 4) // stream 1 was hello; 150 KB + envelope = 4 chunks
+    // stream 1 was hello; 150 KB + envelope = 4 chunks
+    try await waitUntil("four credits for stream 3") { await h.mac.credits[3] == 4 }
 }
 
 @Test("An ERROR frame becomes a typed CompanionRPCError")
@@ -368,7 +425,7 @@ func disconnectFailsPending() async throws {
     await h.mac.set("never", .silent)
     let client = h.client
     let pending = Task { try await client.call("never", params: TaskParams(task: "t"), as: Small.self) }
-    try await Task.sleep(for: .milliseconds(30))
+    try await waitUntil("the call reached the Mac") { await h.mac.methods.contains("never") }
     await client.disconnect()
     await #expect(throws: CompanionConnectionError.closed) { _ = try await pending.value }
     #expect(await client.isConnected == false)
@@ -383,11 +440,10 @@ func socketClosedReportsLoss() async throws {
     await h.client.setConnectionLostHandler { _ in lost.set() }
     let client = h.client
     let pending = Task { try await client.call("never", params: TaskParams(task: "t"), as: Small.self) }
-    try await Task.sleep(for: .milliseconds(30))
+    try await waitUntil("the call reached the Mac") { await h.mac.methods.contains("never") }
     h.box.socket?.close()
     await #expect(throws: CompanionConnectionError.closed) { _ = try await pending.value }
-    try await Task.sleep(for: .milliseconds(30))
-    #expect(lost.value)
+    try await waitUntil("the loss was reported") { lost.value }
 }
 
 @Test("A call with no answer times out and is cancelled on the Mac")
@@ -395,11 +451,10 @@ func callDeadline() async throws {
     let h = try Harness(timing: .init(connect: .seconds(2), call: .milliseconds(100), ping: .seconds(60)))
     _ = try await h.connect()
     await h.mac.set("never", .silent)
-    await #expect(throws: CompanionRPCError(code: "deadline_exceeded", message: "No answer within 30 seconds")) {
+    await #expect(throws: CompanionRPCError(code: "deadline_exceeded", message: "No answer within 1 second")) {
         _ = try await h.client.call("never", params: TaskParams(task: "t"), as: Small.self)
     }
-    try await Task.sleep(for: .milliseconds(30))
-    #expect(await h.mac.cancels == [3])
+    try await waitUntil("the Mac saw CANCEL for stream 3") { await h.mac.cancels == [3] }
 }
 
 @Test("A watch yields each CHUNK, credits it, and sends CANCEL when the consumer stops")
@@ -424,9 +479,8 @@ func watchCancelsOnTermination() async throws {
     }
     let seen = try await consumer.value
     #expect(seen == ["one", "two"])
-    try await Task.sleep(for: .milliseconds(80))
-    #expect(await h.mac.cancels == [3])
-    #expect((await h.mac.credits[3] ?? 0) >= 2)
+    try await waitUntil("the Mac saw CANCEL for stream 3") { await h.mac.cancels == [3] }
+    #expect((await h.mac.credits[3] ?? 0) == 2)
     #expect(await h.client.isConnected)
 }
 
@@ -437,8 +491,7 @@ func missedPongsDisconnect() async throws {
     await h.mac.setAnswerPings(false)
     let lost = LossFlag()
     await h.client.setConnectionLostHandler { _ in lost.set() }
-    try await Task.sleep(for: .milliseconds(300))
-    #expect(lost.value)
+    try await waitUntil("the loss was reported") { lost.value }
     #expect(await h.client.isConnected == false)
     #expect(await h.mac.pings >= 2)
 }
@@ -446,10 +499,12 @@ func missedPongsDisconnect() async throws {
 @Test("Answered pings keep the connection up")
 func answeredPingsKeepAlive() async throws {
     let h = try Harness(timing: .init(connect: .seconds(2), call: .seconds(5), ping: .milliseconds(30)))
+    let lost = LossFlag()
+    await h.client.setConnectionLostHandler { _ in lost.set() }
     _ = try await h.connect()
-    try await Task.sleep(for: .milliseconds(250))
+    try await waitUntil("three pings answered") { await h.mac.pings >= 3 }
     #expect(await h.client.isConnected)
-    #expect(await h.mac.pings >= 3)
+    #expect(!lost.value)
 }
 
 private final class LossFlag: @unchecked Sendable {
@@ -567,8 +622,10 @@ fileprivate func dialUnauthenticatedDirectFailureFallsBack(_ mode: SocketModeArg
     #expect(requests.count == 2)
     #expect(requests.first?.url?.path == "/v1/direct")
     #expect(requests.last?.value(forHTTPHeaderField: "Authorization")?.hasPrefix("Bearer ") == true)
-    // The stalled direct session must not come back to life and tear down the hosted one.
-    try await Task.sleep(for: .milliseconds(250))
+    // The stalled direct session must not come back to life and tear down the hosted one: a round trip on the hosted
+    // session still works.
+    await h.mac.set("ping.me", .result(#"{"name":"still here"}"#))
+    #expect(try await h.client.call("ping.me", params: TaskParams(task: "t"), as: Small.self).name == "still here")
     #expect(await h.client.isConnected)
 }
 
@@ -708,6 +765,158 @@ func slowProbeTimesOut() async throws {
     )
     #expect(result.path == hostedRelay)
     #expect(ContinuousClock.now - started < .seconds(5))
+}
+
+// MARK: - Hello outcomes, re-entry, unknown frames, watch credit
+
+fileprivate struct HelloCase: Sendable, CustomTestStringConvertible {
+    let code: String
+    let refused: Bool
+    var testDescription: String { code }
+}
+
+@Test("Only a hello refusing this device's standing is \"not recognized\"; any other hello error is unreachable", arguments: [
+    HelloCase(code: "standing_revoked", refused: true),
+    HelloCase(code: "not_found", refused: true),
+    HelloCase(code: "device_revoked", refused: true),
+    HelloCase(code: "deadline_exceeded", refused: false),
+    HelloCase(code: "handler_error", refused: false),
+    HelloCase(code: "invalid_response", refused: false),
+    HelloCase(code: "memory_limit", refused: false),
+])
+fileprivate func helloErrorMapping(_ c: HelloCase) async throws {
+    let h = try Harness()
+    await h.mac.setHelloError(code: c.code, message: "no")
+    do {
+        _ = try await h.connectResult(paths: [hostedRelay])
+        Issue.record("expected a failure")
+    } catch let error as CompanionConnectionError {
+        switch error {
+        case .handshakeFailed(let code): #expect(c.refused && code == c.code)
+        case .unreachable: #expect(!c.refused)
+        case .closed: Issue.record("expected a verdict, got closed")
+        }
+    }
+    #expect(await h.client.isConnected == false)
+}
+
+@Test("A hello the Mac never answers runs out on its own deadline as unreachable")
+func helloOwnDeadline() async throws {
+    let h = try Harness(timing: .init(connect: .seconds(5), call: .seconds(30), hello: .milliseconds(100)))
+    await h.mac.holdNextHello()
+    let started = ContinuousClock.now
+    await #expect(throws: CompanionConnectionError.unreachable("hello failed: deadline_exceeded")) {
+        _ = try await h.connectResult(paths: [hostedRelay])
+    }
+    #expect(ContinuousClock.now - started < .seconds(5))
+    #expect(await h.client.isConnected == false)
+}
+
+@Test("A connect started while an older one waits on its hello wins; the older one ends as closed")
+func connectReenteredDuringHello() async throws {
+    let h = try Harness()
+    await h.mac.holdNextHello()
+    let first = Task { try await h.connectResult(paths: [hostedRelay]) }
+    await h.mac.helloHeld.wait()
+    let second = try await h.connectResult(paths: [hostedRelay])
+    #expect(second.hello.deviceId == "dev-1")
+    await #expect(throws: CompanionConnectionError.closed) { _ = try await first.value }
+    #expect(await h.client.isConnected)
+    #expect(h.box.requests.count == 2)
+    // The winner's session still carries calls.
+    await h.mac.set("ping.me", .result(#"{"name":"ok"}"#))
+    #expect(try await h.client.call("ping.me", params: TaskParams(task: "t"), as: Small.self).name == "ok")
+}
+
+@Test("Disconnect while the direct paths are being probed ends the connect with no socket opened")
+func disconnectDuringProbing() async throws {
+    let mac = try FakeMac()
+    let box = SocketBox()
+    let probing = Signal()
+    let release = Signal()
+    let client = CompanionRelayClient(
+        timing: .init(probe: .seconds(30)),
+        healthProbe: { _, _ in
+            await probing.fire()
+            await release.wait()
+            return "m-1"
+        },
+        socketFactory: { box.open($0, mac: mac) }
+    )
+    let record = await mac.record()
+    let psk = mac.devicePsk
+    let connecting = Task {
+        try await client.connect(
+            record: record, devicePsk: psk,
+            phoneNoisePriv: X25519KeyPair.generate().privateKey,
+            deviceRelayPriv: Curve25519.Signing.PrivateKey().rawRepresentation
+        )
+    }
+    await probing.wait()
+    await client.disconnect()
+    await release.fire()
+    await #expect(throws: CompanionConnectionError.closed) { _ = try await connecting.value }
+    #expect(box.requests.isEmpty)
+    #expect(await client.isConnected == false)
+}
+
+@Test("A frame of a type this build doesn't know is skipped; the session carries on")
+func unknownFrameTypeIgnored() async throws {
+    let h = try Harness()
+    _ = try await h.connect()
+    let lost = LossFlag()
+    await h.client.setConnectionLostHandler { _ in lost.set() }
+    guard let socket = h.box.socket else { Issue.record("no socket"); return }
+    var unknown = Data([0x7f])
+    unknown.append(contentsOf: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2])
+    unknown.append(contentsOf: [0xAB, 0xCD])
+    await h.mac.pushRaw(unknown, socket)
+    await h.mac.set("ping.me", .result(#"{"name":"ok"}"#))
+    #expect(try await h.client.call("ping.me", params: TaskParams(task: "t"), as: Small.self).name == "ok")
+    #expect(await h.client.isConnected)
+    #expect(!lost.value)
+}
+
+@Test("A watch grants CREDIT only as its consumer takes each chunk, not as chunks arrive")
+func watchCreditsOnConsumption() async throws {
+    let h = try Harness()
+    _ = try await h.connect()
+    await h.mac.set("run.watch.subscribe", .watch([
+        #"{"k":"say","at":"t","t":["one"]}"#,
+        #"{"k":"say","at":"t","t":["two"]}"#,
+        #"{"k":"say","at":"t","t":["three"]}"#,
+    ]))
+    await h.mac.set("flush", .result(#"{"name":"flushed"}"#))
+    struct RunParams: Encodable, Sendable { let run: String }
+    let stream = try await h.client.watch(method: "run.watch.subscribe", params: RunParams(run: "41"))
+    // Two round trips: the first lands after all three chunks (same socket, in order); the second carries anything
+    // the phone queued on their arrival to the Mac ahead of it.
+    _ = try await h.client.call("flush", params: TaskParams(task: "a"), as: Small.self)
+    _ = try await h.client.call("flush", params: TaskParams(task: "b"), as: Small.self)
+    #expect((await h.mac.credits[3] ?? 0) == 0)
+
+    var iterator = stream.makeAsyncIterator()
+    #expect(try await iterator.next() != nil)
+    _ = try await h.client.call("flush", params: TaskParams(task: "c"), as: Small.self)
+    #expect(await h.mac.credits[3] == 1)
+
+    #expect(try await iterator.next() != nil)
+    #expect(try await iterator.next() != nil)
+    _ = try await h.client.call("flush", params: TaskParams(task: "d"), as: Small.self)
+    #expect(await h.mac.credits[3] == 3)
+}
+
+@Test("A pairing the Mac confirmed may still complete after Cancel; a newer scan replaces it")
+func confirmedPairingSurvivesCancel() {
+    var gate = CompanionPairingGate()
+    let a = gate.begin()
+    gate.cancel()
+    #expect(gate.phase == .idle)
+    #expect(!gate.owns(a))
+    #expect(gate.mayComplete(a))
+    let b = gate.begin()
+    #expect(!gate.mayComplete(a))
+    #expect(gate.mayComplete(b))
 }
 
 fileprivate enum SocketModeArg: String, CaseIterable, Sendable, CustomTestStringConvertible {

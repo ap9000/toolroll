@@ -30,9 +30,10 @@ enum ToolrollTheme {
 
     static let danger = dynamic(light: hex(0xC4320A), dark: hex(0xFF977D))
     static let dangerSoft = dynamic(light: hex(0xFEEBE7), dark: hex(0xFF977D, alpha: 0.14))
-    static let success = dynamic(light: hex(0x218358), dark: hex(0x3DD68C))
+    // Light status hues hold ≥ 4.5:1 on their soft fills at caption size (info 5.3:1, success 5.4:1).
+    static let success = dynamic(light: hex(0x1B7049), dark: hex(0x3DD68C))
     static let successSoft = dynamic(light: hex(0xE6F6EB), dark: hex(0x3DD68C, alpha: 0.14))
-    static let info = dynamic(light: hex(0x0D74CE), dark: hex(0x70B8FF))
+    static let info = dynamic(light: hex(0x0B65B8), dark: hex(0x70B8FF))
     static let infoSoft = dynamic(light: hex(0xE6F4FE), dark: hex(0x70B8FF, alpha: 0.14))
 }
 
@@ -73,9 +74,16 @@ enum StateTone {
     }
 }
 
+extension EnvironmentValues {
+    /// What's on screen is cached from an earlier visit (the Mac can't be reached). Borders and state chips fade;
+    /// text keeps full contrast, and a "Last updated" banner says how old it is.
+    @Entry var showsStaleData = false
+}
+
 struct StateChip: View {
     let word: String
     let tone: StateTone
+    @Environment(\.showsStaleData) private var stale
 
     var body: some View {
         Text(word)
@@ -84,6 +92,7 @@ struct StateChip: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(tone.background, in: Capsule())
+            .opacity(stale ? 0.6 : 1)
     }
 }
 
@@ -91,6 +100,7 @@ struct StateChip: View {
 struct CardBackground: ViewModifier {
     var needsYou = false
     var radius: CGFloat = 14
+    @Environment(\.showsStaleData) private var stale
 
     func body(content: Content) -> some View {
         content
@@ -98,7 +108,30 @@ struct CardBackground: ViewModifier {
             .overlay(
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
                     .strokeBorder(needsYou ? ToolrollTheme.ink : ToolrollTheme.hairline, lineWidth: 1)
+                    .opacity(stale ? 0.4 : 1)
             )
+    }
+}
+
+/// Over cached data while the Mac can't be reached: how old it is, kept current by the minute.
+struct StaleDataBanner: View {
+    let lastUpdated: Date?
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            Label {
+                Text(lastUpdated.map { "Last updated \(RelativeTime.ago($0, now: context.date))" } ?? "Showing what was here last time")
+            } icon: {
+                Image(systemName: "clock")
+            }
+            .font(.footnote)
+            .foregroundStyle(ToolrollTheme.ink)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(ToolrollTheme.neutralSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -178,17 +211,26 @@ extension View {
 }
 
 enum RelativeTime {
+    // Made once: these formatters are costly to build and are thread-safe once configured (never mutated after).
+    nonisolated(unsafe) private static let fractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    nonisolated(unsafe) private static let whole = ISO8601DateFormatter()
+    nonisolated(unsafe) private static let relative: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
+
     static func date(_ string: String?) -> Date? {
         guard let string else { return nil }
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return fractional.date(from: string) ?? ISO8601DateFormatter().date(from: string)
+        return fractional.date(from: string) ?? whole.date(from: string)
     }
 
     static func ago(_ date: Date, now: Date = Date()) -> String {
         if now.timeIntervalSince(date) < 60 { return "just now" }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        return formatter.localizedString(for: date, relativeTo: now)
+        return relative.localizedString(for: date, relativeTo: now)
     }
 }

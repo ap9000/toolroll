@@ -49,7 +49,7 @@ describe("paths", () => {
 
 test.each([
   ["127.0.0.1", true], ["::1", true], ["::ffff:192.168.1.9", true], ["10.9.8.7", true], ["172.31.0.1", true], ["172.32.0.1", false],
-  ["169.254.10.1", false], ["100.64.0.1", true], ["100.128.0.1", false], ["fe80::1", true], ["fd7a:115c:a1e0::5", true],
+  ["169.254.10.1", false], ["100.64.0.1", true], ["100.128.0.1", false], ["fe80::1", false], ["fd7a:115c:a1e0::5", false],
   ["fd00::1", false], ["203.0.113.9", false], ["2001:db8::1", false], ["::ffff:8.8.8.8", false], [undefined, false],
 ] as const)("directPeerAllowed(%s) is %s", (address, ok) => {
   expect(directPeerAllowed(address)).toBe(ok);

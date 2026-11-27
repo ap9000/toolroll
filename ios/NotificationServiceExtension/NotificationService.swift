@@ -1,4 +1,5 @@
 import CryptoKit
+import Foundation
 import ToolrollCompanionCore
 import UserNotifications
 
@@ -7,19 +8,34 @@ import UserNotifications
 /// Decrypts RFC 8291 `aes128gcm` push payloads locally in <50ms using the P-256 private key
 /// and 16-byte `authSecret` stored in the shared App Group Keychain (`group.dev.toolroll.ios`).
 /// Zero outbound network calls. Falls back gracefully to the generic `aps.alert` on any failure.
-final class NotificationService: UNNotificationServiceExtension {
+/// The content handler is called exactly once: by `didReceive`, or by `serviceExtensionTimeWillExpire` if that comes
+/// first (the system may call it from another thread).
+final class NotificationService: UNNotificationServiceExtension, @unchecked Sendable {
+    private let lock = NSLock()
     private var contentHandler: ((UNNotificationContent) -> Void)?
     private var bestAttemptContent: UNMutableNotificationContent?
+
+    /// Hands `content` to the pending handler, if no one has yet.
+    private func deliver(_ content: UNNotificationContent?) {
+        let handler: ((UNNotificationContent) -> Void)? = lock.withLock {
+            defer { contentHandler = nil }
+            return contentHandler
+        }
+        guard let handler, let content else { return }
+        handler(content)
+    }
 
     override func didReceive(
         _ request: UNNotificationRequest,
         withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void
     ) {
-        self.contentHandler = contentHandler
         let mutable = (request.content.mutableCopy() as? UNMutableNotificationContent) ?? UNMutableNotificationContent()
-        self.bestAttemptContent = mutable
+        lock.withLock {
+            self.contentHandler = contentHandler
+            self.bestAttemptContent = mutable
+        }
 
-        defer { contentHandler(mutable) }
+        defer { deliver(mutable) }
 
         guard let tr = request.content.userInfo["tr"] as? [String: Any],
               let cipherB64 = tr["c"] as? String,
@@ -58,8 +74,6 @@ final class NotificationService: UNNotificationServiceExtension {
     }
 
     override func serviceExtensionTimeWillExpire() {
-        if let handler = contentHandler, let content = bestAttemptContent {
-            handler(content)
-        }
+        deliver(lock.withLock { bestAttemptContent })
     }
 }

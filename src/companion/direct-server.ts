@@ -6,7 +6,7 @@
  *
  * Exposure is narrow on purpose:
  * - the kernel's peer address is classified on the raw TCP socket, before it is handed to HTTP at all: loopback, LAN
- *   (RFC 1918), IPv6 link-local and Tailscale (100.64/10, fd7a:115c:a1e0::/48) only — anything else is dropped;
+ *   (RFC 1918) and Tailscale (100.64/10) only — anything else is dropped;
  * - two routes: `GET /v1/health` (this Mac's machine id, so a phone can skip an address a different machine now holds)
  *   and the WebSocket upgrade `GET /v1/direct?role=pair|device&id=…`;
  * - sockets are capped globally and per address, upgrades are rate limited per address (bounded state), a socket that
@@ -27,11 +27,15 @@ export interface DirectLimits {
   socketsPerAddress: number;
   /** WebSocket upgrades one address may attempt per minute. */
   upgradesPerMinute: number;
+  /** TCP connections one address may open per minute (each can hold a slot for the 5 s header deadline). */
+  connectsPerMinute: number;
 }
 
-const DEFAULT_LIMITS: DirectLimits = { sockets: 32, socketsPerAddress: 8, upgradesPerMinute: 30 };
+const DEFAULT_LIMITS: DirectLimits = { sockets: 32, socketsPerAddress: 8, upgradesPerMinute: 30, connectsPerMinute: 120 };
 const RATE_ENTRIES = 512;
 const HEADER_DEADLINE_MS = 5_000;
+/** Bytes queued for one phone that isn't reading before it's dropped (its session budget is 1 MiB). */
+const DIRECT_BACKLOG_LIMIT = 1024 * 1024;
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 function ipv4Of(address: string): number[] | null {
@@ -50,10 +54,8 @@ export function directPeerAllowed(address: string | undefined): boolean {
     const [a, b] = v4 as [number, number, number, number];
     return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
   }
-  if (bare === "::1") return true;
-  if (/^fe[89ab][0-9a-f]:/.test(bare)) return true; // fe80::/10 link-local
-  if (/^fd7a:115c:a1e0:/.test(bare)) return true; // Tailscale's IPv6 range
-  return false;
+  // The listener binds IPv4 only (paths are IPv4 literals); IPv6 loopback is the one IPv6 peer that can appear.
+  return bare === "::1";
 }
 
 export interface RunningDirectServer {
@@ -77,21 +79,24 @@ export function startDirectServer(opts: DirectServerOptions): Promise<RunningDir
   const addressOf = opts.peerAddressOf ?? ((socket: Socket) => socket.remoteAddress);
   const perAddress = new Map<string, number>();
   const upgrades = new Map<string, { windowStart: number; count: number }>();
+  const connects = new Map<string, { windowStart: number; count: number }>();
   let open = 0;
   let linkSeq = 0;
 
-  const allowUpgrade = (address: string): boolean => {
+  /** A per-address count in one-minute windows, in a bounded map (oldest address forgotten first). */
+  const withinRate = (table: Map<string, { windowStart: number; count: number }>, address: string, perMinute: number): boolean => {
     const now = Date.now();
-    const entry = upgrades.get(address);
+    const entry = table.get(address);
     if (entry === undefined || now - entry.windowStart >= 60_000) {
-      upgrades.delete(address);
-      if (upgrades.size >= RATE_ENTRIES) upgrades.delete(upgrades.keys().next().value!);
-      upgrades.set(address, { windowStart: now, count: 1 });
+      table.delete(address);
+      if (table.size >= RATE_ENTRIES) table.delete(table.keys().next().value!);
+      table.set(address, { windowStart: now, count: 1 });
       return true;
     }
     entry.count += 1;
-    return entry.count <= limits.upgradesPerMinute;
+    return entry.count <= perMinute;
   };
+  const allowUpgrade = (address: string): boolean => withinRate(upgrades, address, limits.upgradesPerMinute);
 
   const handleHttp = (req: IncomingMessage, res: ServerResponse): void => {
     let pathname = "";
@@ -118,7 +123,8 @@ export function startDirectServer(opts: DirectServerOptions): Promise<RunningDir
 
   const tcp = createTcpServer({ pauseOnConnect: true }, (socket: Socket) => {
     const address = addressOf(socket);
-    if (!directPeerAllowed(address) || open >= limits.sockets || (perAddress.get(address!) ?? 0) >= limits.socketsPerAddress) {
+    if (!directPeerAllowed(address) || open >= limits.sockets || (perAddress.get(address!) ?? 0) >= limits.socketsPerAddress
+      || !withinRate(connects, address!, limits.connectsPerMinute)) {
       socket.destroy();
       return;
     }
@@ -143,6 +149,8 @@ export function startDirectServer(opts: DirectServerOptions): Promise<RunningDir
       id: `direct#${linkSeq}`,
       send: (_connId, payload) => { if (ws.readyState === WebSocket.OPEN) ws.send(payload, { binary: true }); },
       close: (_connId, reason) => { if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close(4000, reason.slice(0, 100)); },
+      backlog: () => ws.bufferedAmount,
+      backlogLimit: DIRECT_BACKLOG_LIMIT,
     };
     let alive = true;
     const liveness = setInterval(() => {
@@ -172,7 +180,9 @@ export function startDirectServer(opts: DirectServerOptions): Promise<RunningDir
       if (!directPeerAllowed(address) || !allowUpgrade(address!)) { socket.destroy(); return; }
       const url = new URL(req.url ?? "/", "http://direct.invalid");
       const role = url.searchParams.get("role"), id = url.searchParams.get("id");
-      if (url.pathname !== "/v1/direct" || (role !== "pair" && role !== "device") || id === null || !ID.test(id) || req.headers.authorization !== undefined) {
+      // No bearer token (the phone never sends one here) and no browser Origin: a web page on the network can't open it.
+      if (url.pathname !== "/v1/direct" || (role !== "pair" && role !== "device") || id === null || !ID.test(id)
+        || req.headers.authorization !== undefined || req.headers.origin !== undefined) {
         socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
         return;
       }

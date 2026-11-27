@@ -145,7 +145,7 @@ export function loadOrCreateCompanionHostKeys(
   const relay = generateEd25519KeyPair();
   const machineId = deriveMachineId(relay.publicKey);
   db.prepare(`
-    INSERT INTO companion_host_keys (singleton, noise_static_priv, noise_static_pub, relay_priv, relay_pub, machine_id, relay_url, created_at)
+    INSERT OR IGNORE INTO companion_host_keys (singleton, noise_static_priv, noise_static_pub, relay_priv, relay_pub, machine_id, relay_url, created_at)
     VALUES (1, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     noise.privateKey.toString("base64url"),
@@ -156,15 +156,10 @@ export function loadOrCreateCompanionHostKeys(
     defaultRelayUrl,
     now.toISOString(),
   );
-  return {
-    noiseStaticPriv: noise.privateKey,
-    noiseStaticPub: noise.publicKey,
-    relayPriv: relay.privateKey,
-    relayPub: relay.publicKey,
-    machineId,
-    relayUrl: defaultRelayUrl,
-  };
+  // Two processes starting at once: whichever row landed first is everyone's.
+  return loadOrCreateCompanionHostKeys(db, defaultRelayUrl, now);
 }
+
 
 export function savePairedDevice(db: CompanionDb, row: Omit<PairedDeviceRow, "nextDevicePsk" | "lastSeenAt" | "revokedAt" | "accountGeneration"> & { accountGeneration?: number | null }): void {
   ensureCompanionTables(db);
@@ -221,6 +216,15 @@ export function touchPairedDeviceLastSeen(db: CompanionDb, deviceId: string, now
 
 /** The paired device still answers to its account as paired: active, and at the credential generation it was paired
  * under (a device paired before generations were kept stands on the account alone). */
+/** This workspace's phones that can still connect: not removed, paired under the current restore generation, and their
+ * account still standing at the generation it paired under. What Settings lists and the relay admits. */
+export function livePairedDevices(store: { handle: CompanionDb; workspaceIdentity(): { recoveryGeneration: string }; accountOf(name: string): { revokedAt: unknown; generation: number } | null }): PairedDeviceRow[] {
+  // A read: on a workspace that never turned phone access on, the tables don't exist yet and aren't made here.
+  if (store.handle.prepare("SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = 'companion_paired_device'").get() === undefined) return [];
+  const generation = store.workspaceIdentity().recoveryGeneration;
+  return listPairedDevices(store.handle).filter(d => d.revokedAt === null && d.recoveryGeneration === generation && deviceAccountStands(d, store.accountOf(d.accountName)));
+}
+
 export function deviceAccountStands(device: PairedDeviceRow, account: { revokedAt: unknown; generation: number } | null): boolean {
   return account !== null && account.revokedAt === null && (device.accountGeneration === null || device.accountGeneration === account.generation);
 }
@@ -289,6 +293,9 @@ export function sweepCompanionIdempotencyOnStartup(db: CompanionDb, now = new Da
  * during database restore before swap.
  */
 const COMPANION_RESTORE_TABLES = [
+  // This Mac's companion keys go too: a restored copy (another Mac, or this one later) gets its own machine id and
+  // Noise key, so two copies never fight over one relay identity and a leaked backup carries no live key.
+  "companion_host_keys",
   "companion_paired_device",
   "companion_push_token",
   "companion_idempotency",

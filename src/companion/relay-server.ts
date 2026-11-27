@@ -85,6 +85,8 @@ interface PeerConn {
   idleTimer: ReturnType<typeof setTimeout>;
   frameBucket: TokenBucket;
   byteBucket: TokenBucket;
+  /** What the daemon sends this phone: its own budget, so going over it closes only this phone. */
+  downBucket: TokenBucket;
 }
 
 interface MachineRoom {
@@ -97,7 +99,12 @@ interface MachineRoom {
   nextConnId: number;
   machineFrameBucket: TokenBucket;
   machineByteBucket: TokenBucket;
+  /** Everything the daemon sends this machine's phones together: over it, the phone using the most is closed. */
+  daemonByteBucket: TokenBucket;
 }
+
+/** Machines one reference relay holds at once (it is for self-hosting a household or team, not the public). */
+const MAX_ROOMS = 1_000;
 
 export interface RunningReferenceRelay {
   url: string;
@@ -278,6 +285,13 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
         return;
       }
       if (!rooms.has(checked.machineId)) {
+        // Registering is free (a key and a signature), so rooms are bounded: an empty one (no daemon, phones or admitted
+        // devices) is evicted to make space; with none empty, a new machine waits.
+        if (rooms.size >= MAX_ROOMS) {
+          const empty = [...rooms.values()].find(room => room.daemon === null && room.peers.size === 0 && room.devices.size === 0);
+          if (empty === undefined) { sendJson(res, 503, { error: "relay_full" }); return; }
+          rooms.delete(empty.machineId);
+        }
         const t = nowMs();
         rooms.set(checked.machineId, {
           machineId: checked.machineId,
@@ -289,6 +303,7 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
           nextConnId: 1,
           machineFrameBucket: new TokenBucket(machineFramesPerMin, Math.max(phoneFrameBurst * 2, 240), t),
           machineByteBucket: new TokenBucket(machineBytesPerMin, Math.max(phoneByteBurst * 2, 4 * 1024 * 1024), t),
+          daemonByteBucket: new TokenBucket(phoneBytesPerMin * 16, phoneByteBurst * 16, t),
         });
       }
       sendJson(res, 200, { machineId: checked.machineId });
@@ -509,12 +524,20 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
             ws.close(1013, "relay_budget_exceeded");
             return;
           }
-          const t = nowMs();
-          if (!room.machineFrameBucket.tryConsume(1, t) || !room.machineByteBucket.tryConsume(env.payload.length, t)) {
-            ws.close(1008, "machine_rate_limited");
+          // What the daemon sends each phone is charged to that phone's own bucket (phones can't drain the daemon's, and
+          // one phone can't get another closed); over it, only that phone is closed.
+          const peer = room.peers.get(env.connId);
+          if (peer !== undefined && !peer.downBucket.tryConsume(env.payload.length, nowMs())) {
+            cleanupPeer(room, env.connId, "rate_limited", true);
             return;
           }
-          const peer = room.peers.get(env.connId);
+          // A total for the machine too (reconnecting a phone doesn't refill it), set at four phones' worth so a phone's own
+          // budget closes a heavy one first. Over it, this frame's phone is closed (an unsent frame would leave its Noise
+          // stream broken anyway) — never the daemon.
+          if (peer !== undefined && !room.daemonByteBucket.tryConsume(env.payload.length, nowMs())) {
+            cleanupPeer(room, env.connId, "rate_limited", true);
+            return;
+          }
           if (peer !== undefined && peer.ws.readyState === WebSocket.OPEN) {
             totalForwardedFrames += 1;
             peer.ws.send(env.payload, { binary: true });
@@ -567,6 +590,7 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
       idleTimer: makeIdleTimer(),
       frameBucket: new TokenBucket(phoneFramesPerMin, phoneFrameBurst, t0),
       byteBucket: new TokenBucket(phoneBytesPerMin, phoneByteBurst, t0),
+      downBucket: new TokenBucket(phoneBytesPerMin * 4, phoneByteBurst * 4, t0),
     };
     room.peers.set(connId, peer);
 
@@ -580,6 +604,8 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
     }
 
     ws.on("message", (raw, isBinary) => {
+      // A peer the relay already dropped can keep sending while its close handshake runs: none of it is forwarded.
+      if (room.peers.get(connId) !== peer) return;
       clearTimeout(peer.idleTimer);
       peer.idleTimer = makeIdleTimer();
       if (!peer.receivedFirstFrame) {

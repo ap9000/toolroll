@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Observation
 import ToolrollCompanionCore
 import UIKit
@@ -28,6 +29,8 @@ struct InboxPage: Equatable {
     /// Waiting asks that are no task row (a held release, a flow card, a setup step).
     var otherNeeds: [NeedRow]
     var next: String?
+    /// Why the last "Load more" failed, shown next to the button (which stays usable).
+    var moreFailure: String?
 }
 
 /// Everything fetched in one mode. Demo and live each have their own; both are cleared on unpair / exit demo.
@@ -78,6 +81,14 @@ final class CompanionAppState {
     private(set) var connectedPath: CompanionPath?
     /// Why the Mac can't be reached, when there's something the person can do about it.
     private(set) var connectionProblem: String?
+    /// iOS blocks this app from the local network, so direct connections to the Mac can't work.
+    private(set) var localNetworkDenied = false
+    /// An automatic reconnect is running (after a drop, a failed attempt's backoff, or a network change).
+    private(set) var isReconnecting = false
+    /// The title over `pairingError`: a code that isn't Toolroll's reads differently from a pairing that broke off.
+    private(set) var pairingErrorTitle = "Pairing didn't finish"
+    /// Bumped when a pairing completes (drives the success haptic).
+    private(set) var pairedCount = 0
     /// One-off message for the Welcome screen (for example, how unpairing went).
     var notice: String?
 
@@ -93,7 +104,12 @@ final class CompanionAppState {
     /// Bumped on background: a connect that finishes after the app left the foreground is dropped.
     @ObservationIgnored private var connectEpoch = 0
     @ObservationIgnored private var pairingTask: Task<Void, Never>?
-    @ObservationIgnored private var isActive = true
+    @ObservationIgnored private(set) var isActive = true
+    /// The next automatic reconnect while the Mac can't be reached (2, 5, 15, then every 30 seconds).
+    @ObservationIgnored private var retryTask: Task<Void, Never>?
+    @ObservationIgnored private var retryAttempt = 0
+    @ObservationIgnored private let pathMonitor = NWPathMonitor()
+    private static let retryDelays: [Duration] = [.seconds(2), .seconds(5), .seconds(15), .seconds(30)]
 
     #if DEBUG
     /// DEBUG-only launch route for screenshots: `--screen task:<id>|diff:<task>:<file>|live:<task>|settings|scan`.
@@ -138,6 +154,12 @@ final class CompanionAppState {
                 Task { @MainActor in await owner.value?.connectionDropped() }
             }
         }
+        // A network that comes back (Wi-Fi joined, cellular regained) is the best time to try again.
+        pathMonitor.pathUpdateHandler = { path in
+            let satisfied = path.status == .satisfied
+            Task { @MainActor in owner.value?.networkChanged(satisfied: satisfied) }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "dev.toolroll.companion.network-path"))
     }
 
     #if DEBUG
@@ -161,7 +183,7 @@ final class CompanionAppState {
     var isDemoMode: Bool { connection == .demo }
     var isPaired: Bool { pairedRecord != nil }
 
-    /// Cached rows are shown dimmed while the Mac can't be reached.
+    /// Cached data is shown under a "Last updated" banner while the Mac can't be reached.
     var isOffline: Bool {
         switch connection {
         case .unreachable, .notRecognized: return true
@@ -189,6 +211,7 @@ final class CompanionAppState {
 
     func enterDemoMode() {
         cancelPairing()
+        cancelRetry()
         epoch += 1
         let client = self.client
         Task { await client.disconnect() }
@@ -229,6 +252,7 @@ final class CompanionAppState {
         do {
             qr = try PairingQRPayload.parse(payload)
         } catch {
+            pairingErrorTitle = "That code didn't work"
             pairingError = (error as? PairingPayloadError ?? .invalid("")).userMessage
             return
         }
@@ -247,7 +271,9 @@ final class CompanionAppState {
                     _ = self?.pairingGate.codeReady(code, attempt: attempt)
                 }
             }
-            guard pairingGate.owns(attempt), !Task.isCancelled else { return }
+            // The Mac confirmed and now keeps this device: finish even if Cancel came in meanwhile (only a newer scan
+            // takes over).
+            guard pairingGate.mayComplete(attempt) else { return }
             try saveKeys([result.devicePsk, result.phoneNoisePriv, result.deviceRelayPriv])
             UserDefaults.standard.set(try JSONEncoder().encode(result.record), forKey: Self.recordStorageKey)
             UserDefaults.standard.removeObject(forKey: Self.labelStorageKey)
@@ -256,6 +282,8 @@ final class CompanionAppState {
             pairingGate.end(attempt)
             pairingTask = nil
             epoch += 1
+            pairedCount += 1
+            cancelRetry()
             await client.disconnect()
             pairedRecord = result.record
             connectedPath = nil
@@ -270,19 +298,41 @@ final class CompanionAppState {
             // Cancelled by the person, or replaced by a newer scan: that one owns the UI now.
             guard pairingGate.end(attempt) else { return }
             pairingTask = nil
-            if case CompanionConnectionError.unreachable(let message) = error,
-               message == CompanionRelayClient.noReachablePathMessage {
-                pairingError = message
+            pairingErrorTitle = "Pairing didn't finish"
+            if case CompanionConnectionError.unreachable(let message) = error {
+                if await Self.localNetworkBlocked(qr.paths) {
+                    localNetworkDenied = true
+                    pairingError = Self.localNetworkMessage
+                } else if message == CompanionRelayClient.noReachablePathMessage {
+                    pairingError = message
+                } else {
+                    // Nothing reached the Mac (offline, DNS, the relay timed out): the code is still good.
+                    pairingError = "Can't reach your Mac or the relay. Check this iPhone's connection."
+                }
             } else {
                 pairingError = CompanionPairingError.interrupted.userMessage
             }
         }
     }
 
+    static let localNetworkMessage =
+        "Allow Local Network for Toolroll so this iPhone can reach your Mac on your Wi-Fi: Settings → Toolroll → Local Network."
+
+    /// True when one of `paths`' direct addresses is on this network and iOS blocks the app from it.
+    private static func localNetworkBlocked(_ paths: [CompanionPath]) async -> Bool {
+        for path in paths where path.kind == .direct {
+            guard let url = URL(string: path.url), let host = url.host, let port = url.port,
+                  LocalNetworkAccess.isLocal(host) else { continue }
+            if await LocalNetworkAccess.isDenied(host: host, port: UInt16(clamping: port)) { return true }
+        }
+        return false
+    }
+
+    /// Stops the pairing UI and closes the pairing socket. The task itself isn't cancelled: if the Mac's
+    /// `pair.confirmed` already arrived, the pairing still finishes (`CompanionPairingGate.mayComplete`).
     func cancelPairing() {
         guard pairing != .idle || pairingTask != nil else { return }
         pairingGate.cancel()
-        pairingTask?.cancel()
         pairingTask = nil
         let client = self.client
         Task { await client.cancelPairing() }
@@ -325,7 +375,8 @@ final class CompanionAppState {
         guard let record = pairedRecord else { return false }
         let started = epoch, startedConnect = connectEpoch
         guard let keys = loadKeys() else {
-            connection = .notRecognized
+            // A restored backup (keys never leave this iPhone) or a wiped keychain: nothing to connect with.
+            forgetPairing(notice: "This iPhone's pairing keys are missing — pair again.")
             return false
         }
         if !quiet, !isConnectedState {
@@ -347,6 +398,8 @@ final class CompanionAppState {
             }
             connectedPath = result.path
             connectionProblem = nil
+            if result.path.kind == .direct { localNetworkDenied = false }
+            cancelRetry()
             if let label = hello.workspaceLabel, !label.isEmpty {
                 workspaceLabel = label
                 UserDefaults.standard.set(label, forKey: Self.labelStorageKey)
@@ -363,12 +416,57 @@ final class CompanionAppState {
             }
             if case CompanionConnectionError.handshakeFailed = error {
                 connection = .notRecognized
+                cancelRetry()
             } else {
                 connection = .unreachable(lastUpdated: lastUpdated)
+                let denied = await Self.localNetworkBlocked(record.paths)
+                guard started == epoch, pairedRecord == record else { return false }
+                localNetworkDenied = denied
+                scheduleRetry()
             }
             return false
         }
     }
+
+    // MARK: Automatic reconnect
+
+    /// After a failed attempt while the app is in front: try again in 2, 5, 15, then every 30 seconds.
+    private func scheduleRetry() {
+        retryTask?.cancel()
+        guard isActive, !isDemoMode, pairedRecord != nil, connection.isUnreachable else { return }
+        let delay = Self.retryDelays[min(retryAttempt, Self.retryDelays.count - 1)]
+        retryAttempt += 1
+        retryTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            await self?.autoReconnect()
+        }
+    }
+
+    private func cancelRetry() {
+        retryTask?.cancel()
+        retryTask = nil
+        retryAttempt = 0
+    }
+
+    /// One automatic attempt; a failure schedules the next (performConnect).
+    private func autoReconnect() async {
+        guard isActive, !isDemoMode, pairedRecord != nil, pairing == .idle else { return }
+        isReconnecting = true
+        let ok = await reconnect(quiet: true)
+        isReconnecting = false
+        if ok { refreshTick += 1 }
+    }
+
+    /// The network came back: if the Mac couldn't be reached, try now and restart the backoff.
+    private func networkChanged(satisfied: Bool) {
+        guard satisfied, isActive, connection.isUnreachable else { return }
+        cancelRetry()
+        Task { await autoReconnect() }
+    }
+
+    /// Fresh data while a screen is up: only when connected and in front (never dials on its own).
+    var canAutoRefresh: Bool { isActive && isConnectedState && pairing == .idle }
 
     private var isConnectedState: Bool {
         if case .connected = connection { return true }
@@ -377,24 +475,30 @@ final class CompanionAppState {
 
     /// Retry from the status line: reconnect, then reload what's on screen.
     func retry() async {
+        cancelRetry()
         if await reconnect(quiet: false) { refreshTick += 1 }
     }
 
     private func connectionDropped() async {
         guard isActive, !isDemoMode, pairedRecord != nil else { return }
-        if await reconnect(quiet: true) { refreshTick += 1 }
+        isReconnecting = true
+        let ok = await reconnect(quiet: true)
+        isReconnecting = false
+        if ok { refreshTick += 1 }
     }
 
     func handleForeground() async {
         let wasActive = isActive
         isActive = true
         guard !wasActive, !isDemoMode, pairedRecord != nil, pairing == .idle else { return }
+        cancelRetry()
         if await reconnect(quiet: true) { refreshTick += 1 }
     }
 
     /// Keep everything on screen; just close the socket. The next foreground reconnects quietly.
     func handleBackground() async {
         isActive = false
+        cancelRetry()
         guard !isDemoMode, pairing == .idle else { return }
         // Reads in flight fail with `closed` and keep their last good state (see failurePhase). A connect still in
         // flight belongs to the old epoch: retire it, so foreground starts a fresh one instead of joining it.
@@ -434,9 +538,10 @@ final class CompanionAppState {
         return .failed(loadFailureMessage(error))
     }
 
-    func loadInbox(_ view: WorkView) async {
+    /// `quiet`: a background refresh. The phase doesn't go to loading, and a failure keeps what's shown.
+    func loadInbox(_ view: WorkView, quiet: Bool = false) async {
         let started = epoch, demo = isDemoMode
-        cache.inbox[view, default: Loadable()].phase = .loading
+        if !quiet { cache.inbox[view, default: Loadable()].phase = .loading }
         do {
             let page = try await fetch { try await $0.workRows(view: view, cursor: nil) }
             guard started == epoch, demo == isDemoMode else { return }
@@ -450,18 +555,20 @@ final class CompanionAppState {
             cache = c
             noteSuccess()
         } catch {
-            guard started == epoch, demo == isDemoMode else { return }
+            guard started == epoch, demo == isDemoMode, !quiet else { return }
             let existing = cache.inbox[view] ?? Loadable()
             cache.inbox[view]?.phase = failurePhase(error, keeping: existing)
         }
     }
 
+    /// The next page. Allowed after a failure too (the button stays live); its error shows next to the button.
     func loadMore(_ view: WorkView) async {
-        guard let current = cache.inbox[view], current.phase == .loaded,
+        guard let current = cache.inbox[view], current.phase != .loading,
               let page = current.value, let cursor = page.next
         else { return }
         let started = epoch, demo = isDemoMode
         cache.inbox[view]?.phase = .loading
+        cache.inbox[view]?.value?.moreFailure = nil
         do {
             let next = try await fetch { try await $0.workRows(view: view, cursor: cursor) }
             guard started == epoch, demo == isDemoMode else { return }
@@ -470,6 +577,7 @@ final class CompanionAppState {
             let seen = Set(merged.rows.map(\.id))
             merged.rows += next.rows.filter { !seen.contains($0.id) }
             merged.next = next.next
+            merged.moreFailure = nil
             c.inbox[view] = Loadable(value: merged, phase: .loaded)
             c.needsCount = next.needsCount
             for row in next.rows { c.rows[row.id] = row }
@@ -481,41 +589,45 @@ final class CompanionAppState {
             await loadInbox(view)
         } catch {
             guard started == epoch, demo == isDemoMode else { return }
-            cache.inbox[view]?.phase = failurePhase(error, keeping: current)
+            // The page stays as it was; the error belongs to the button.
+            cache.inbox[view]?.phase = .loaded
+            if isActive, !(error is CancellationError) {
+                cache.inbox[view]?.value?.moreFailure = loadFailureMessage(error)
+            }
         }
     }
 
-    func loadTask(_ task: String) async {
-        async let steps: Void = loadSteps(task)
-        async let diff: Void = loadDiff(task)
+    func loadTask(_ task: String, quiet: Bool = false) async {
+        async let steps: Void = loadSteps(task, quiet: quiet)
+        async let diff: Void = loadDiff(task, quiet: quiet)
         _ = await (steps, diff)
     }
 
-    func loadSteps(_ task: String) async {
+    func loadSteps(_ task: String, quiet: Bool = false) async {
         let started = epoch, demo = isDemoMode
-        cache.steps[task, default: Loadable()].phase = .loading
+        if !quiet { cache.steps[task, default: Loadable()].phase = .loading }
         do {
             let steps = try await fetch { try await $0.taskSteps(task: task) }
             guard started == epoch, demo == isDemoMode else { return }
             cache.steps[task] = Loadable(value: steps, phase: .loaded)
             noteSuccess()
         } catch {
-            guard started == epoch, demo == isDemoMode else { return }
+            guard started == epoch, demo == isDemoMode, !quiet else { return }
             let existing = cache.steps[task] ?? Loadable()
             cache.steps[task]?.phase = failurePhase(error, keeping: existing)
         }
     }
 
-    func loadDiff(_ task: String) async {
+    func loadDiff(_ task: String, quiet: Bool = false) async {
         let started = epoch, demo = isDemoMode
-        cache.diffs[task, default: Loadable()].phase = .loading
+        if !quiet { cache.diffs[task, default: Loadable()].phase = .loading }
         do {
             let diff = try await fetch { try await $0.taskDiff(task: task, run: nil) }
             guard started == epoch, demo == isDemoMode else { return }
             cache.diffs[task] = Loadable(value: diff, phase: .loaded)
             noteSuccess()
         } catch {
-            guard started == epoch, demo == isDemoMode else { return }
+            guard started == epoch, demo == isDemoMode, !quiet else { return }
             let existing = cache.diffs[task] ?? Loadable()
             cache.diffs[task]?.phase = failurePhase(error, keeping: existing)
         }
@@ -537,7 +649,8 @@ final class CompanionAppState {
         }
     }
 
-    /// The run's recent records and a live stream after them. Ending the stream stops watching only.
+    /// The run's recent records and a live stream after them. Ending the stream stops watching only. Opening it again
+    /// (after the app comes back) starts from the run's latest window, so nothing is shown twice.
     func openWatch(run: Int) async throws -> (records: [LiveRecord], stream: AsyncThrowingStream<LiveRecord, Error>) {
         let window = try await fetch { try await $0.runWindow(run: run, cursor: nil) }
         let cursor = window.window.cursor
@@ -553,17 +666,40 @@ final class CompanionAppState {
         let revoked: Bool?
     }
 
-    /// Removes this iPhone. Says "and your Mac" only if the Mac confirmed the revoke.
+    /// Removes this iPhone. Says "and your Mac" only if the Mac confirmed the revoke. The Mac gets about five seconds
+    /// (connecting included); after that the iPhone forgets the pairing anyway and says to remove it on the Mac too.
     func unpairThisPhone() async {
         var revokedOnMac = false
-        if !isDemoMode, pairedRecord != nil, await reconnect(quiet: true) {
-            if let result = try? await client.call("device.self.revoke", params: EmptyParams(), as: RevokeResult.self) {
-                revokedOnMac = result.revoked == true
+        if !isDemoMode, pairedRecord != nil {
+            let answer = FirstAnswer<Bool>()
+            revokedOnMac = await withCheckedContinuation { continuation in
+                answer.set(continuation)
+                Task { @MainActor [weak self] in
+                    guard let self, await self.reconnect(quiet: true) else { return answer.give(false) }
+                    let result = try? await self.client.call(
+                        "device.self.revoke", params: EmptyParams(), as: RevokeResult.self, timeout: .seconds(5)
+                    )
+                    answer.give(result?.revoked == true)
+                }
+                Task {
+                    try? await Task.sleep(for: .seconds(5))
+                    answer.give(false)
+                }
             }
         }
+        forgetPairing(notice: revokedOnMac
+            ? "Removed from this iPhone and your Mac."
+            : "Removed from this iPhone. Remove it on your Mac too: Settings → Phone.")
+    }
+
+    /// Drops the pairing from this iPhone (keys, record, caches) and returns to Welcome with `notice`.
+    private func forgetPairing(notice message: String) {
         epoch += 1
         cancelPairing()
-        await client.disconnect()
+        cancelRetry()
+        connectTask = nil
+        let client = self.client
+        Task { await client.disconnect() }
         Self.keyAccounts.forEach { CompanionKeychain.delete(account: $0) }
         CompanionKeychain.delete(account: "push.p256.priv", sharedAppGroup: true)
         CompanionKeychain.delete(account: "push.auth.secret", sharedAppGroup: true)
@@ -572,13 +708,80 @@ final class CompanionAppState {
         pairedRecord = nil
         connectedPath = nil
         connectionProblem = nil
+        localNetworkDenied = false
         liveCache = CompanionCache()
         demoCache = CompanionCache()
         lastUpdated = nil
         workspaceLabel = "Your Mac"
         connection = .unpaired
-        notice = revokedOnMac
-            ? "Removed from this iPhone and your Mac."
-            : "Removed from this iPhone. Remove it on your Mac too: Settings → Phone."
+        notice = message
+    }
+}
+
+// MARK: - Local Network access
+
+/// iOS asks once before an app may reach devices on the local network. Asking from Welcome (before the camera
+/// opens) keeps the prompt out of the pairing itself; a denied permission is detected and named instead of showing as
+/// "Can't reach your Mac".
+enum LocalNetworkAccess {
+    nonisolated(unsafe) private static var promptBrowser: NWBrowser?
+    private static let queue = DispatchQueue(label: "dev.toolroll.companion.local-network")
+
+    /// A brief Bonjour browse for Toolroll (declared in NSBonjourServices): it finds nothing on its own and sends
+    /// nothing, but it makes iOS show the Local Network prompt now. Once per launch.
+    @MainActor
+    static func requestPrompt() {
+        guard promptBrowser == nil else { return }
+        let browser = NWBrowser(for: .bonjour(type: "_toolroll._tcp", domain: nil), using: .tcp)
+        promptBrowser = browser
+        browser.start(queue: queue)
+        queue.asyncAfter(deadline: .now() + 30) { browser.cancel() }
+    }
+
+    /// A private (RFC 1918) address: the ones Local Network covers. Tailscale's 100.64/10 goes over its VPN instead.
+    static func isLocal(_ host: String) -> Bool {
+        let parts = host.split(separator: ".").compactMap { UInt8($0) }
+        guard parts.count == 4 else { return false }
+        return parts[0] == 10 || (parts[0] == 172 && (16...31).contains(parts[1])) || (parts[0] == 192 && parts[1] == 168)
+    }
+
+    /// True when iOS refuses this app the local network on the way to `host` (the person turned it off).
+    static func isDenied(host: String, port: UInt16) async -> Bool {
+        guard let endpointPort = NWEndpoint.Port(rawValue: port) else { return false }
+        let connection = NWConnection(host: NWEndpoint.Host(host), port: endpointPort, using: .tcp)
+        let answer = FirstAnswer<Bool>()
+        return await withCheckedContinuation { continuation in
+            answer.set(continuation)
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .waiting, .failed, .ready:
+                    answer.give(connection.currentPath?.unsatisfiedReason == .localNetworkDenied)
+                    connection.cancel()
+                default:
+                    break
+                }
+            }
+            connection.start(queue: queue)
+            queue.asyncAfter(deadline: .now() + 1.5) {
+                answer.give(false)
+                connection.cancel()
+            }
+        }
+    }
+}
+
+/// Resumes a continuation once, with whichever answer comes first (a result or a deadline).
+private final class FirstAnswer<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value, Never>?
+
+    func set(_ continuation: CheckedContinuation<Value, Never>) { lock.withLock { self.continuation = continuation } }
+
+    func give(_ value: Value) {
+        let pending: CheckedContinuation<Value, Never>? = lock.withLock {
+            defer { continuation = nil }
+            return continuation
+        }
+        pending?.resume(returning: value)
     }
 }

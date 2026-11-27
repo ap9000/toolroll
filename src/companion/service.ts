@@ -19,7 +19,7 @@ import { CompanionDaemonEngine, relayEnvelopeLink, type CompanionReadHandlers, t
 import { startDirectServer, type RunningDirectServer } from "./direct-server.js";
 import { buildPaths, lanAddressesOf, type CompanionPath } from "./paths.js";
 import { decodeRelayEnvelope, signRegistrationPop, signRelayToken } from "./relay-auth.js";
-import { listPairedDevices, type PairedDeviceRow } from "./store.js";
+import { livePairedDevices, type PairedDeviceRow } from "./store.js";
 import { readTailnetIpv4 } from "../tailnet.js";
 import type { Store } from "../store.js";
 
@@ -71,6 +71,8 @@ export function relayAddressesOf(url: string): { http: string; ws: string; host:
 }
 
 const TAILNET_REFRESH_MS = 10_000;
+/** Bytes queued for the relay before the connection is treated as stalled and reopened. */
+const RELAY_BACKLOG_CAP = 16 * 1024 * 1024;
 
 export class CompanionService {
   readonly engine: CompanionDaemonEngine;
@@ -170,7 +172,7 @@ export class CompanionService {
         this.directState = {
           state: "failed",
           error: code === "EADDRINUSE"
-            ? `Port ${this.opts.direct.port} on this computer is in use. Set TOOLROLL_PHONE_RELAY_PORT to another port and restart Toolroll.`
+            ? `Port ${this.opts.direct.port} on this computer is in use. Set TOOLROLL_PHONE_PORT to another port and restart Toolroll.`
             : error instanceof Error ? error.message : String(error),
         };
         this.log(`phone access: direct listener didn't start (${this.directState.error})`);
@@ -211,8 +213,7 @@ export class CompanionService {
   }
 
   devices(): PairedDeviceRow[] {
-    const generation = this.store.workspaceIdentity().recoveryGeneration;
-    return listPairedDevices(this.store.handle).filter(d => d.revokedAt === null && d.recoveryGeneration === generation);
+    return livePairedDevices(this.store);
   }
 
   private refreshTailnet(wait = false): Promise<void> {
@@ -255,13 +256,27 @@ export class CompanionService {
       if (!current()) return;
       const socket = await this.openSocket();
       if (!current()) { socket.close(1000, "stopping"); return; }
-      const link = relayEnvelopeLink(`hosted#${generation}`, envelope => { if (socket.readyState === WebSocket.OPEN) socket.send(envelope, { binary: true }); });
+      // The relay socket carries every phone, so its queue says nothing about any one of them: no phone is dropped for
+      // it (each is bounded by its own credit and 1 MiB of held responses). A queue past the hard cap means the relay
+      // itself has stalled: the socket is closed and reconnected rather than allowed to grow.
+      const link = relayEnvelopeLink(`hosted#${generation}`, envelope => {
+        if (socket.readyState !== WebSocket.OPEN) return;
+        if (socket.bufferedAmount > RELAY_BACKLOG_CAP) { socket.close(1013, "relay_backlog"); return; }
+        socket.send(envelope, { binary: true });
+      });
       this.socket = socket;
       this.link = link;
       this.attempt = 0;
       this.hostedState = { state: "connected", relay, since: new Date(this.nowMs()).toISOString() };
       this.log(`phone access: connected to ${relay}`);
-      this.keepalive = setInterval(() => { if (socket.readyState === WebSocket.OPEN) socket.ping(); }, 20_000);
+      let admitted = JSON.stringify(this.engine.admittedDevices());
+      this.keepalive = setInterval(() => {
+        if (socket.readyState === WebSocket.OPEN) socket.ping();
+        // A phone retired outside this service (an account's password or access changed, another console removed it):
+        // the relay is told on the next tick rather than at the next reconnect.
+        const now = JSON.stringify(this.engine.admittedDevices());
+        if (now !== admitted) { admitted = now; this.oweReconcile(); }
+      }, 20_000);
       this.keepalive.unref?.();
       // A change that failed while the socket was opening: settle it now.
       if (this.reconcileOwed) this.oweReconcile();

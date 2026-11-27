@@ -3,13 +3,22 @@ import ToolrollCompanionCore
 
 /// Watches a running build: the recent window, then `run.watch.subscribe` live.
 /// Closing the sheet ends the stream (CANCEL), which stops watching only; the agent keeps running.
+/// Going to the background closes the connection; coming back starts the watch again from the run's latest window.
 struct LiveWatchView: View {
     let appState: CompanionAppState
     let run: Int
     let title: String
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var records: [Entry] = []
     @State private var phase: Phase = .connecting
+    /// Bumped to (re)start the watch: Try again, the app coming back, a reconnect.
+    @State private var watchGeneration = 0
+    @State private var nextId = 0
+    /// The end of the list is on screen: new records scroll into view. Scrolled up, they wait behind a pill.
+    @State private var atBottom = true
+    @State private var hasUnseen = false
 
     struct Entry: Identifiable {
         let id: Int
@@ -22,6 +31,8 @@ struct LiveWatchView: View {
         case finished
         case failed(String)
     }
+
+    private static let keep = 500
 
     var body: some View {
         NavigationStack {
@@ -43,12 +54,38 @@ struct LiveWatchView: View {
                             .foregroundStyle(ToolrollTheme.muted)
                             .padding(.top, 8)
                             .id("end")
+                            .onAppear {
+                                atBottom = true
+                                hasUnseen = false
+                            }
+                            .onDisappear { atBottom = false }
                     }
                     .padding(16)
                 }
                 .background(ToolrollTheme.paper.ignoresSafeArea())
-                .onChange(of: records.count) { _, _ in
-                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("end", anchor: .bottom) }
+                .onChange(of: records.last?.id) { _, _ in
+                    if atBottom {
+                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { proxy.scrollTo("end", anchor: .bottom) }
+                    } else {
+                        hasUnseen = true
+                    }
+                }
+                .overlay(alignment: .bottom) {
+                    if hasUnseen && !atBottom {
+                        Button {
+                            hasUnseen = false
+                            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) { proxy.scrollTo("end", anchor: .bottom) }
+                        } label: {
+                            Label("Jump to latest", systemImage: "arrow.down")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(ToolrollTheme.onInk)
+                                .padding(.horizontal, 16)
+                                .frame(minHeight: 44)
+                                .background(ToolrollTheme.ink, in: Capsule())
+                        }
+                        .padding(.bottom, 12)
+                        .transition(.opacity)
+                    }
                 }
             }
             .navigationTitle("Live output")
@@ -59,7 +96,14 @@ struct LiveWatchView: View {
                         .fontWeight(.semibold)
                 }
             }
-            .task { await watch() }
+            .task(id: watchGeneration) { await watch() }
+            .onChange(of: scenePhase) { _, newPhase in
+                // Back in front: the socket was closed in the background, so watch again.
+                if newPhase == .active, phase != .finished { watchGeneration += 1 }
+            }
+            .onChange(of: appState.refreshTick) { _, _ in
+                if phase != .watching, phase != .finished { watchGeneration += 1 }
+            }
             .discardingLinks()
         }
     }
@@ -72,14 +116,18 @@ struct LiveWatchView: View {
                 ProgressView().controlSize(.small)
                 Text("Connecting…")
             case .watching:
-                Circle().fill(ToolrollTheme.info).frame(width: 8, height: 8)
+                Image(systemName: "circle.fill")
+                    .font(.system(size: 8))
+                    .foregroundStyle(ToolrollTheme.info)
+                    .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
+                    .accessibilityHidden(true)
                 Text("Watching live")
             case .finished:
                 Image(systemName: "checkmark.circle").foregroundStyle(ToolrollTheme.success)
                 Text("This run finished")
             case .failed(let message):
                 Text(message)
-                Button("Try again") { Task { await watch() } }
+                Button("Try again") { watchGeneration += 1 }
                     .fontWeight(.semibold)
                     .foregroundStyle(ToolrollTheme.ink)
             }
@@ -93,20 +141,30 @@ struct LiveWatchView: View {
         phase = .connecting
         do {
             let opened = try await appState.openWatch(run: run)
-            records = opened.records.enumerated().map { Entry(id: $0.offset, record: $0.element) }
+            // A fresh window replaces what was shown (it is the run's latest), so a restart never repeats records.
+            records = opened.records.map(makeEntry)
             phase = .watching
-            var nextId = records.count
             for try await record in opened.stream {
-                records.append(Entry(id: nextId, record: record))
-                nextId += 1
-                if records.count > 500 { records.removeFirst(records.count - 500) }
+                records.append(makeEntry(record))
+                if records.count > Self.keep { records.removeFirst(records.count - Self.keep) }
             }
             if !Task.isCancelled { phase = .finished }
         } catch is CancellationError {
-            // The sheet closed: watching stopped, the run goes on.
+            // The sheet closed or the watch restarted: watching stopped, the run goes on.
         } catch {
-            if !Task.isCancelled { phase = .failed(loadFailureMessage(error)) }
+            guard !Task.isCancelled else { return }
+            if scenePhase != .active || !appState.isActive {
+                // Closed because the app left the foreground: quiet. Coming back restarts the watch.
+                phase = .connecting
+            } else {
+                phase = .failed(loadFailureMessage(error))
+            }
         }
+    }
+
+    private func makeEntry(_ record: LiveRecord) -> Entry {
+        defer { nextId += 1 }
+        return Entry(id: nextId, record: record)
     }
 }
 

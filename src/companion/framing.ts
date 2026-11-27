@@ -229,11 +229,18 @@ export class CompanionStreamGuard {
   private readonly openUnaryStreams = new Set<number>();
   private readonly openWatchStreams = new Set<number>();
   private readonly assemblies = new Map<number, PendingRequestAssembly>();
+  /** Bytes a unary response holds until it has all gone out (charged like request bytes). */
+  private readonly responseBytes = new Map<number, number>();
   private sessionBufferedBytes = 0;
   private readonly globalBudget: GlobalBufferBudget;
 
   constructor(globalBudget: GlobalBufferBudget = new GlobalBufferBudget()) {
     this.globalBudget = globalBudget;
+  }
+
+  /** Whether a client stream is still open (not cancelled, ended or refused). */
+  isOpen(streamId: number): boolean {
+    return this.openUnaryStreams.has(streamId) || this.openWatchStreams.has(streamId);
   }
 
   get openStreamCount(): number {
@@ -301,11 +308,35 @@ export class CompanionStreamGuard {
     return { ok: true };
   }
 
+  /** Charge a unary response's bytes to this phone's own budget until the stream closes. Not the daemon-wide one: a
+   * few phones holding responses must not starve every other phone (each is reaped at its 30 s deadline anyway). */
+  reserveResponse(streamId: number, bytes: number): boolean {
+    if (this.sessionBufferedBytes + bytes > MAX_SESSION_BUFFERED_BYTES) return false;
+    this.sessionBufferedBytes += bytes;
+    this.responseBytes.set(streamId, (this.responseBytes.get(streamId) ?? 0) + bytes);
+    return true;
+  }
+
+  /** Streams whose request has been half-sent for longer than the assembly deadline (they're closed here). */
+  expireAssemblies(nowMs = Date.now()): number[] {
+    const expired: number[] = [];
+    for (const [streamId, asm] of this.assemblies) {
+      if (nowMs - asm.startedAtMs > REQUEST_ASSEMBLY_DEADLINE_MS) expired.push(streamId);
+    }
+    for (const streamId of expired) this.closeStream(streamId);
+    return expired;
+  }
+
   closeStream(streamId: number): void {
     const asm = this.assemblies.get(streamId);
     if (asm !== undefined) {
       this.releaseBytes(asm.totalBytes);
       this.assemblies.delete(streamId);
+    }
+    const held = this.responseBytes.get(streamId);
+    if (held !== undefined) {
+      this.sessionBufferedBytes = Math.max(0, this.sessionBufferedBytes - held);
+      this.responseBytes.delete(streamId);
     }
     this.openUnaryStreams.delete(streamId);
     this.openWatchStreams.delete(streamId);
@@ -316,6 +347,8 @@ export class CompanionStreamGuard {
       this.releaseBytes(asm.totalBytes);
     }
     this.assemblies.clear();
+    for (const held of this.responseBytes.values()) this.sessionBufferedBytes = Math.max(0, this.sessionBufferedBytes - held);
+    this.responseBytes.clear();
     this.openUnaryStreams.clear();
     this.openWatchStreams.clear();
   }
@@ -402,6 +435,8 @@ export class LiveWatchBuffer {
 
   push(record: Buffer): { accepted: boolean; cutCount: number } {
     if (record.length > MAX_FRAME_PAYLOAD_BYTES) {
+      // Too big for one frame: dropped, and the phone is told there's a gap like any other cut.
+      this.droppedCount += 1;
       return { accepted: false, cutCount: this.droppedCount };
     }
     while (

@@ -27,6 +27,10 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_toolroll._tcp</string>
+	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Toolroll connects straight to your Mac when you're on the same Wi‑Fi.</string>
 	<key>NSCameraUsageDescription</key>

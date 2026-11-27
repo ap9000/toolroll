@@ -6,9 +6,5 @@
 	<array>
 		<string>group.dev.toolroll.ios</string>
 	</array>
-	<key>keychain-access-groups</key>
-	<array>
-		<string>$(AppIdentifierPrefix)group.dev.toolroll.ios</string>
-	</array>
 </dict>
 </plist>

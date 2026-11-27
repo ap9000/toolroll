@@ -35,6 +35,7 @@ struct WorkInboxView: View {
     @State private var showSettings = false
     @State private var showScanner = false
     @State private var path: [Route] = []
+    @State private var refreshed = 0
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var page: Loadable<InboxPage> { appState.inbox(filter.view) }
@@ -45,7 +46,9 @@ struct WorkInboxView: View {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     statusLine
                         .padding(.bottom, 2)
-                    if appState.connection.isUnreachable, let problem = appState.connectionProblem {
+                    if appState.connection.isUnreachable, appState.localNetworkDenied {
+                        LocalNetworkCard()
+                    } else if appState.connection.isUnreachable, let problem = appState.connectionProblem {
                         Text(problem)
                             .font(.footnote)
                             .foregroundStyle(ToolrollTheme.muted)
@@ -53,6 +56,9 @@ struct WorkInboxView: View {
                     }
                     if appState.connection == .notRecognized {
                         notRecognizedCard
+                    }
+                    if appState.isOffline, page.value != nil {
+                        StaleDataBanner(lastUpdated: appState.lastUpdated)
                     }
                     filterControl
                         .padding(.bottom, 4)
@@ -62,7 +68,12 @@ struct WorkInboxView: View {
                 .padding(.bottom, 24)
             }
             .background(ToolrollTheme.paper.ignoresSafeArea())
-            .refreshable { await appState.loadInbox(filter.view) }
+            .environment(\.showsStaleData, appState.isOffline)
+            .refreshable {
+                await appState.loadInbox(filter.view)
+                if page.phase == .loaded { refreshed += 1 }
+            }
+            .sensoryFeedback(.success, trigger: refreshed)
             .navigationTitle("Work")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -86,6 +97,14 @@ struct WorkInboxView: View {
             .task(id: "\(filter.rawValue)#\(appState.refreshTick)#\(appState.isDemoMode)") {
                 await appState.loadInbox(filter.view)
             }
+            .task(id: "\(filter.rawValue)#\(appState.isDemoMode)") {
+                // While this list is on screen and connected, keep it current.
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(15))
+                    guard !Task.isCancelled else { return }
+                    if appState.canAutoRefresh { await appState.loadInbox(filter.view, quiet: true) }
+                }
+            }
             .sheet(isPresented: $showSettings) {
                 SettingsView(appState: appState)
             }
@@ -96,7 +115,7 @@ struct WorkInboxView: View {
                 }
             }
             .alert(
-                "Pairing didn't finish",
+                appState.pairingErrorTitle,
                 isPresented: Binding(
                     get: { appState.pairingError != nil && appState.isPaired },
                     set: { if !$0 { appState.pairingError = nil } }
@@ -123,11 +142,16 @@ struct WorkInboxView: View {
                     .frame(width: 7, height: 7)
                     .accessibilityHidden(true)
             }
+            if appState.isReconnecting {
+                ProgressView()
+                    .controlSize(.mini)
+                    .accessibilityHidden(true)
+            }
             Text(statusText)
                 .font(.subheadline)
                 .foregroundStyle(ToolrollTheme.muted)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
-            if appState.connection.isUnreachable {
+            if appState.connection.isUnreachable && !appState.isReconnecting {
                 Spacer(minLength: 8)
                 Button("Retry") { Task { await appState.retry() } }
                     .font(.subheadline.weight(.semibold))
@@ -144,6 +168,7 @@ struct WorkInboxView: View {
     }
 
     private var statusText: String {
+        if appState.isReconnecting, !appState.isDemoMode { return "Reconnecting…" }
         switch appState.connection {
         case .demo:
             return "Demo · sample work, nothing leaves this iPhone"
@@ -151,10 +176,8 @@ struct WorkInboxView: View {
             return "Connecting to \(macName)…"
         case .connected:
             return "Connected to \(macName)"
-        case .unreachable(let lastUpdated):
-            if let lastUpdated {
-                return "Can't reach your Mac · last updated \(RelativeTime.ago(lastUpdated))"
-            }
+        case .unreachable:
+            // How old the shown data is goes in the banner below.
             return "Can't reach your Mac"
         case .notRecognized:
             return "Your Mac didn't accept this iPhone"
@@ -288,14 +311,12 @@ struct WorkInboxView: View {
                         WorkRowCard(row: row)
                     }
                     .buttonStyle(.plain)
-                    .opacity(appState.isOffline ? 0.55 : 1)
                 }
                 ForEach(value.otherNeeds) { need in
                     NeedOnlyCard(need: need)
-                        .opacity(appState.isOffline ? 0.55 : 1)
                 }
                 if value.next != nil {
-                    loadMore
+                    loadMore(failure: value.moreFailure)
                 }
             }
         } else if let failure = page.failure {
@@ -404,20 +425,30 @@ struct WorkInboxView: View {
         .background(ToolrollTheme.neutralSoft, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    private var loadMore: some View {
-        HStack {
-            Spacer()
+    /// The next page: loads as it scrolls into view; after a failure the button stays, with the reason beside it.
+    private func loadMore(failure: String?) -> some View {
+        VStack(spacing: 4) {
             if page.isLoading {
                 ProgressView()
+                    .frame(minHeight: 44)
             } else {
-                Button("Load more") { Task { await appState.loadMore(filter.view) } }
+                Button(failure == nil ? "Load more" : "Try loading more") { Task { await appState.loadMore(filter.view) } }
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(ToolrollTheme.ink)
                     .frame(minHeight: 44)
             }
-            Spacer()
+            if let failure, !page.isLoading {
+                Text(failure)
+                    .font(.footnote)
+                    .foregroundStyle(ToolrollTheme.muted)
+                    .multilineTextAlignment(.center)
+            }
         }
-        .onAppear { Task { await appState.loadMore(filter.view) } }
+        .frame(maxWidth: .infinity)
+        .onAppear {
+            guard failure == nil else { return }
+            Task { await appState.loadMore(filter.view) }
+        }
     }
 
     private func applyDebugScreen() {
@@ -449,6 +480,29 @@ struct WorkInboxView: View {
             break
         }
         #endif
+    }
+}
+
+/// iOS blocks this app from the local network: say so, and open the app's Settings page to turn it on.
+/// (Opened with UIApplication: screens showing agent text discard `openURL`.)
+struct LocalNetworkCard: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Allow Local Network for Toolroll")
+                .font(.headline)
+                .foregroundStyle(ToolrollTheme.ink)
+            Text("This iPhone can't reach your Mac on your Wi-Fi until Local Network is on for Toolroll.")
+                .font(.subheadline)
+                .foregroundStyle(ToolrollTheme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+            }
+            .buttonStyle(OutlineButtonStyle())
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
     }
 }
 

@@ -141,11 +141,22 @@ Phone sockets send and receive raw Noise messages (≤ 65,535 B); the relay hold
 
 The phone reaches the Mac **directly** when it can (same Wi-Fi, or the Mac's tailnet) and through the **hosted relay** otherwise. Both carry the identical Noise `IKpsk2` byte stream; only the transport differs.
 
-- **Direct endpoint** (on the Mac, port 4199 unless `TOOLROLL_PHONE_RELAY_PORT`): `GET /v1/health` → `{ ok, machineId }` (credential-free reachability probe); WebSocket `GET /v1/direct?role=pair|device&id=…` with **no** Authorization header — binary messages are exactly what the relay carries as `PEER_DATA` payloads. The listener drops any peer outside loopback, RFC 1918, link-local and Tailscale ranges before HTTP is parsed, caps sockets globally and per address, and rate-limits upgrades.
+- **Direct endpoint** (on the Mac, port 4199 unless `TOOLROLL_PHONE_PORT`): `GET /v1/health` → `{ ok, machineId }` (credential-free reachability probe); WebSocket `GET /v1/direct?role=pair|device&id=…` with **no** Authorization header and no browser `Origin`. Binary messages are exactly what the relay carries as `PEER_DATA` payloads. The listener binds IPv4 and admits the raw TCP socket only from loopback, RFC 1918 and Tailscale (100.64/10) ranges, before HTTP sees it. It caps sockets globally and per address, rate-limits connections and upgrades per address, and enforces a 5 s header deadline.
 - **`paths`** (QR and every `device.hello` result): 1–5 entries; ≤4 `direct` (`ws://<private IPv4 literal>:<port>/v1/direct`, never a hostname), ≤1 `hosted` (`wss://…/v1/connect`), hosted last, no duplicates. The phone replaces its stored list only after a hello that passed its identity checks.
 - **Dialing:** probe every direct path's health in parallel (1.2 s); exactly one handshake on the first healthy one (4 s handshake+hello budget); any failure before Noise authenticates the Mac falls back once to hosted. "Not recognized" comes only from an authenticated refusal (an encrypted error after Noise, or the hosted relay's 401/403).
 - **Engine:** every phone connection belongs to a link (the hosted relay socket, or one direct socket) and is keyed by link + connection id; one authenticated session per device (a newer one supersedes); a relay drop ends only that link's sessions.
 - **Hosted relay** is the operator's choice when turning phone access on (`TOOLROLL_RELAY_URL` names another; `off` removes it). Admission changes are serialized and a failed change is retried while connected.
+
+## 4b. Where the implementation differs from this spec (as of 2026-11-27)
+
+These are deliberate or deferred, and recorded so nobody relies on the spec text alone:
+
+- **PSK rotation is not implemented.** `pskVersion` and `next_device_psk` exist in the schema only; reconnect uses `devicePsk`. A paired phone keeps its PSK until it is removed or its account's credential generation changes (which retires it).
+- **`pair.confirmed` is sent as one raw transport message**, not inside a 13-byte frame. Every later message is framed.
+- **Pairing has no key confirmation from the phone before the code is shown.** IKpsk2 mixes the PSK at message 2, so a party who learned `pairSessionId` (visible to the relay, and in the direct URL on the local network) and `macStaticPub` can make the Mac show a code that no phone displays. The owner's code comparison is the guard: a code the phone doesn't show must not be confirmed. Even if it is confirmed, the party can't derive `devicePsk`. Follow-up: require one encrypted `pair.ready` from the phone before showing the code.
+- **Host keys** (`noise_static_priv`, `relay_priv`) are stored in the workspace's SQLite database like other credentials. A restore deletes them, so a restored copy gets its own machine id and Noise key.
+- **Relay token `jti` is not tracked.** A captured token can be replayed within its TTL (≤300 s plus skew), which can only occupy socket slots on the relay; Noise still authenticates every session.
+- **Paired phones are derived authority.** Any change to the account's generation (password, rotation, access or role change, revocation) retires its phones in the same transaction.
 
 ## 5. End-to-End Encrypted Push Notifications
 

@@ -6,10 +6,10 @@
  * themselves are wiped on restore: restore-retirement.ts).
  *
  * Two paths (service.ts): direct — a listener on this Mac's network for a phone on the same Wi-Fi or tailnet (port
- * 4199 unless `TOOLROLL_PHONE_RELAY_PORT` says otherwise) — and hosted, an end-to-end encrypted relay for a phone
+ * 4199 unless `TOOLROLL_PHONE_PORT` says otherwise) — and hosted, an end-to-end encrypted relay for a phone
  * anywhere else (wss://relay.toolroll.dev unless `TOOLROLL_RELAY_URL` names another; `TOOLROLL_RELAY_URL=off` removes
  * it). The hosted path is its own choice, saved beside the switch as the exact relay address that was approved:
- * turning phone access on asks for it explicitly, and if the configured relay later changes, the new one isn't used
+ * turning phone access on shows it as its own checkbox (ticked by default, naming the relay), and if the configured relay later changes, the new one isn't used
  * until someone approves it — an approval never carries over to a different destination.
  */
 
@@ -82,12 +82,14 @@ export function hostedRelayOf(env: NodeJS.ProcessEnv): HostedChoice {
   }
 }
 
-/** The direct listener's port from the environment, or why it can't be used. */
+/** The direct listener's port from the environment (`TOOLROLL_PHONE_PORT`; the earlier name
+ * `TOOLROLL_PHONE_RELAY_PORT` still works), or why it can't be used. */
 export function directPortOf(env: NodeJS.ProcessEnv): { ok: true; port: number } | { ok: false; problem: string } {
-  const raw = env["TOOLROLL_PHONE_RELAY_PORT"]?.trim();
+  const name = env["TOOLROLL_PHONE_PORT"]?.trim() ? "TOOLROLL_PHONE_PORT" : "TOOLROLL_PHONE_RELAY_PORT";
+  const raw = env[name]?.trim();
   const port = raw === undefined || raw.length === 0 ? DEFAULT_DIRECT_PORT : Number(raw);
-  if (!Number.isInteger(port) || port < 1024 || port > 65_535) return { ok: false, problem: "TOOLROLL_PHONE_RELAY_PORT must be a port from 1024 to 65535." };
-  if (FETCH_BAD_PORTS.has(port)) return { ok: false, problem: `TOOLROLL_PHONE_RELAY_PORT ${port} is a port web clients refuse to connect to; choose another.` };
+  if (!Number.isInteger(port) || port < 1024 || port > 65_535) return { ok: false, problem: `${name} must be a port from 1024 to 65535.` };
+  if (FETCH_BAD_PORTS.has(port)) return { ok: false, problem: `${name} ${port} is a port web clients refuse to connect to; choose another.` };
   return { ok: true, port };
 }
 
