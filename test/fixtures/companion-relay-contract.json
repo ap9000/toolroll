@@ -1,0 +1,53 @@
+{
+  "$comment": "Machine-readable copy of the relay contract (normative text: relay/PROTOCOL.md). Both relays are held to it by relay/conformance/suite.ts; Mac and iOS tests may read it. Numbers shared with the Mac and the phone (limits, close codes, token grammar) live in companion-wire.json and are not repeated here.",
+  "errorHeader": "Toolroll-Relay-Error",
+  "refusals": [
+    { "status": 400, "code": "bad_request", "when": "malformed body or params, bad key length, more than 32 devices, body over its cap, not a WebSocket upgrade on /v1/connect, no such endpoint or method" },
+    { "status": 401, "code": "token_invalid", "when": "missing or malformed token, bad signature, wrong aud/htm/htu, unknown or bad claims, replayed jti, wrong role; on registration: bad or expired challenge, bad proof-of-possession" },
+    { "status": 401, "code": "token_expired", "when": "exp <= now - 30", "headers": ["Date"] },
+    { "status": 401, "code": "token_not_yet_valid", "when": "iat > now + 30", "headers": ["Date"] },
+    { "status": 403, "code": "device_revoked", "when": "a device token that verifies against the device's tombstone key" },
+    { "status": 404, "code": "machine_unknown", "when": "no registration for this machine id" },
+    { "status": 404, "code": "device_unknown", "when": "no live row and no tombstone for the device, daemon connected" },
+    { "status": 429, "code": "rate_limited", "when": "a rate limit (per client, per client for registration, per machine + client), or the relay shedding load: misconfigured, reference circuit breaker, reference room cap with no evictable room", "headers": ["Retry-After"] },
+    { "status": 429, "code": "too_many_peers", "when": "4 phone/pair sockets already open for the machine", "headers": ["Retry-After"] },
+    { "status": 429, "code": "replay_cache_full", "when": "the token's principal (the daemon, one device, one pair session) has spent its replay budget", "headers": ["Retry-After"] },
+    { "status": 503, "code": "daemon_unavailable", "when": "a phone connects (or an unknown device asks) while no daemon is connected" }
+  ],
+  "deviceConnectOrder": [
+    "per-client rate limit (429 rate_limited)",
+    "parse token (401 token_invalid), then the per machine + client rate limit (429 rate_limited)",
+    "machine registered? (404 machine_unknown)",
+    "live device row, else tombstone; neither: no daemon ? 503 daemon_unavailable : 404 device_unknown",
+    "verify the signature against that key (401 token_invalid)",
+    "after the signature await, re-read: same key and same live/tombstone state (401 token_invalid)",
+    "claims, checked without writing anything (401 token_*)",
+    "tombstone? 403 device_revoked (before the jti is consumed: a revoked device never writes to the replay cache)",
+    "consume jti from its principal's own budget, synchronously in the same turn (401 token_invalid if replayed, 429 replay_cache_full)",
+    "no live daemon? 503 daemon_unavailable",
+    "slot reservation, synchronous: older sockets of the same device closed 4409; otherwise 4 sockets per machine (429 too_many_peers)",
+    "101"
+  ],
+  "closeReasons": {
+    "4400": ["binary_only", "oversize", "protocol"],
+    "4403": ["device_revoked"],
+    "4408": ["first_frame_timeout", "idle_timeout", "heartbeat_timeout"],
+    "4409": ["superseded"],
+    "4429": ["rate_limited"],
+    "4503": ["daemon_gone"],
+    "1000": ["closed_by_daemon", "machine_deleted"]
+  },
+  "endpoints": [
+    { "method": "GET", "path": "/v1/health" },
+    { "method": "POST", "path": "/v1/challenge", "rateLimit": "register" },
+    { "method": "POST", "path": "/v1/machines/register", "rateLimit": "register", "bodyBytes": 4096 },
+    { "method": "PUT", "path": "/v1/machines/:machineId/devices", "token": "daemon+htm/htu", "rateLimit": "client, then connect", "bodyBytes": 16384 },
+    { "method": "POST", "path": "/v1/machines/:machineId/devices", "token": "daemon+htm/htu", "rateLimit": "client, then connect", "bodyBytes": 4096 },
+    { "method": "DELETE", "path": "/v1/machines/:machineId/devices/:deviceId", "token": "daemon+htm/htu", "rateLimit": "client, then connect" },
+    { "method": "DELETE", "path": "/v1/machines/:machineId", "token": "daemon+htm/htu", "rateLimit": "client, then connect" },
+    { "method": "GET", "path": "/v1/connect", "upgrade": "websocket", "token": "daemon|pair|device, no htm/htu", "rateLimit": "client, then connect" }
+  ],
+  "rateLimitsPerMinute": { "register": 20, "connect": 120, "client": 600 },
+  "tombstonesPerMachine": 256,
+  "replayBudgets": { "daemon": 512, "perDevice": 64, "perPairSession": 16, "devicesTotal": 2048, "pairSessionsTotal": 64 }
+}

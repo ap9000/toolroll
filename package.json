@@ -35,7 +35,12 @@
     "e2e:app": "npm run build && node scripts/app-e2e.mjs",
     "e2e:app:parallel": "npm run build && node scripts/e2e-parallel.mjs scripts/app-e2e.mjs",
     "e2e": "npm run build && node scripts/flows-e2e.mjs && node scripts/app-e2e.mjs",
-    "e2e:click-paths": "npm run build && node scripts/click-paths-journey.mjs"
+    "e2e:click-paths": "npm run build && node scripts/click-paths-journey.mjs",
+    "relay:install": "npm ci --prefix relay/cloudflare --no-audit --no-fund",
+    "relay:typecheck": "tsc -p relay/cloudflare/tsconfig.json && tsc -p relay/reference/tsconfig.json",
+    "relay:test": "vitest run --config relay/vitest.config.ts",
+    "relay:smoke": "tsx relay/cloudflare/scripts/smoke.ts",
+    "relay:deploy": "node relay/cloudflare/scripts/deploy.mjs"
   },
   "repository": {
     "type": "git",

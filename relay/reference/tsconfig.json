@@ -1,0 +1,7 @@
+{
+  // Type-checks the reference relay's entry point with the relay it starts (`npm run relay:typecheck`).
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "rootDir": "../..", "noEmit": true, "declaration": false, "declarationMap": false, "sourceMap": false },
+  "include": ["server.ts"],
+  "exclude": []
+}

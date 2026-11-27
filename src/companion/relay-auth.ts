@@ -112,61 +112,179 @@ export function signRelayToken(
   return `${encoded}.${sig}`;
 }
 
-export function parseRelayTokenUnverified(token: string): { claims: RelayTokenClaims; signingInput: Buffer; signature: Buffer } | null {
+// ---- Verification (relay side; relay/PROTOCOL.md "Tokens") -------------------
+
+/** Clock skew the relay allows on `iat` and `exp`, both ways. */
+export const RELAY_TOKEN_SKEW_SEC = 30;
+/** The claims part (before the dot) may be at most this many bytes. */
+export const MAX_RELAY_TOKEN_PART_BYTES = 1024;
+export const RELAY_MACHINE_ID_PATTERN = /^[a-z2-7]{26}$/;
+export const RELAY_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+export const RELAY_JTI_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
+const B64URL = /^[A-Za-z0-9_-]+$/;
+
+/** The token refusals a relay answers with 401 (relay/PROTOCOL.md "Refusals"). */
+export type RelayTokenRefusal = "token_invalid" | "token_expired" | "token_not_yet_valid";
+
+/** What a relay needs before it can pick the verification key: the role and the ids it routes on. Everything else in
+ * the claims is checked only after the signature (checkRelayClaims). */
+export interface ParsedRelayToken {
+  role: RelayRole;
+  machineId: string;
+  /** role=device only. */
+  deviceId?: string;
+  /** role=pair only. */
+  pairSessionId?: string;
+  /** The decoded claims object, unchecked beyond the fields above. */
+  raw: Record<string, unknown>;
+  signingInput: Buffer;
+  signature: Buffer;
+}
+
+/** Structure only: `base64url(JSON) "." base64url(sig)`, the claims part ≤ 1024 bytes, a JSON object with a known role,
+ * a well-formed machineId and, for device and pair tokens, the id the relay looks up. Null for anything else
+ * (the relay answers 401 token_invalid). */
+export function parseRelayToken(token: string): ParsedRelayToken | null {
   const parts = token.split(".");
   if (parts.length !== 2) return null;
-  const [encoded, sigB64] = parts;
-  if (!encoded || !sigB64) return null;
+  const [encoded, sigB64] = parts as [string, string];
+  if (encoded.length === 0 || encoded.length > MAX_RELAY_TOKEN_PART_BYTES || !B64URL.test(encoded)) return null;
+  if (sigB64.length !== 86 || !B64URL.test(sigB64)) return null; // 64 bytes, unpadded
+  let raw: unknown;
   try {
-    const raw = Buffer.from(encoded, "base64url").toString("utf8");
-    const parsed = JSON.parse(raw) as Partial<RelayTokenClaims>;
-    if (
-      parsed.v !== 1
-      || (parsed.role !== "daemon" && parsed.role !== "pair" && parsed.role !== "device")
-      || typeof parsed.machineId !== "string" || parsed.machineId.length !== 26
-      || typeof parsed.jti !== "string" || parsed.jti.length === 0
-      || typeof parsed.iat !== "number" || typeof parsed.exp !== "number"
-    ) {
-      return null;
-    }
-    if (parsed.role === "pair" && (typeof parsed.pairSessionId !== "string" || parsed.pairSessionId.length === 0)) {
-      return null;
-    }
-    if (parsed.role === "device" && (typeof parsed.deviceId !== "string" || parsed.deviceId.length === 0)) {
-      return null;
-    }
-    return {
-      claims: parsed as RelayTokenClaims,
-      signingInput: Buffer.from(`tr-relay-v1.${encoded}`, "ascii"),
-      signature: Buffer.from(sigB64, "base64url"),
-    };
+    raw = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
   } catch {
     return null;
   }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const claims = raw as Record<string, unknown>;
+  const role = claims["role"];
+  if (role !== "daemon" && role !== "pair" && role !== "device") return null;
+  const machineId = claims["machineId"];
+  if (typeof machineId !== "string" || !RELAY_MACHINE_ID_PATTERN.test(machineId)) return null;
+  const deviceId = claims["deviceId"], pairSessionId = claims["pairSessionId"];
+  if (role === "device" && (typeof deviceId !== "string" || !RELAY_ID_PATTERN.test(deviceId))) return null;
+  if (role === "pair" && (typeof pairSessionId !== "string" || !RELAY_ID_PATTERN.test(pairSessionId))) return null;
+  return {
+    role,
+    machineId,
+    ...(role === "device" ? { deviceId: deviceId as string } : {}),
+    ...(role === "pair" ? { pairSessionId: pairSessionId as string } : {}),
+    raw: claims,
+    signingInput: Buffer.from(`tr-relay-v1.${encoded}`, "ascii"),
+    signature: Buffer.from(sigB64, "base64url"),
+  };
 }
 
-export function verifyRelayToken(
-  token: string,
-  expectedPublicKey: Buffer,
-  nowSec = Math.floor(Date.now() / 1000),
-  clockSkewSec = 30,
-): { ok: true; claims: RelayTokenClaims } | { ok: false; reason: string } {
-  const parsed = parseRelayTokenUnverified(token);
-  if (parsed === null) return { ok: false, reason: "malformed_token" };
-  const { claims, signingInput, signature } = parsed;
-  if (claims.exp - claims.iat > MAX_RELAY_TOKEN_TTL_SEC + 5) {
-    return { ok: false, reason: "ttl_too_long" };
+/** What the token must be for: the relay's public host, and either a WebSocket connect or one exact HTTP call. */
+export interface RelayTokenExpectation {
+  aud: string;
+  /** "ws" for `/v1/connect`; for an admission call, its method and exact path (no query, no trailing slash). */
+  use: "ws" | { method: "PUT" | "POST" | "DELETE"; path: string };
+  /** HTTP admission calls are daemon-only; a WebSocket accepts any role. */
+  role?: RelayRole;
+  nowSec: number;
+}
+
+const BASE_CLAIMS = ["v", "role", "machineId", "aud", "jti", "iat", "exp"];
+
+/** The claim rules (relay/PROTOCOL.md "Tokens"), checked after the signature: exactly the allowed keys, v=1, the exact
+ * audience, the jti grammar, integer times with 0 < exp-iat ≤ 300, htm/htu exactly on HTTP calls, then the clock. */
+export function checkRelayClaims(
+  parsed: ParsedRelayToken,
+  expect: RelayTokenExpectation,
+): { ok: true; claims: RelayTokenClaims } | { ok: false; code: RelayTokenRefusal } {
+  const c = parsed.raw;
+  const allowed = new Set(BASE_CLAIMS);
+  if (parsed.role === "device") allowed.add("deviceId");
+  if (parsed.role === "pair") allowed.add("pairSessionId");
+  if (expect.use !== "ws") { allowed.add("htm"); allowed.add("htu"); }
+  const keys = Object.keys(c);
+  const invalid = { ok: false as const, code: "token_invalid" as const };
+  if (keys.some(key => !allowed.has(key)) || BASE_CLAIMS.some(key => !(key in c))) return invalid;
+  if (c["v"] !== 1 || c["aud"] !== expect.aud) return invalid;
+  if (expect.role !== undefined && parsed.role !== expect.role) return invalid;
+  if (typeof c["jti"] !== "string" || !RELAY_JTI_PATTERN.test(c["jti"])) return invalid;
+  const iat = c["iat"], exp = c["exp"];
+  if (!Number.isSafeInteger(iat) || !Number.isSafeInteger(exp)) return invalid;
+  const ttl = (exp as number) - (iat as number);
+  if (ttl <= 0 || ttl > MAX_RELAY_TOKEN_TTL_SEC) return invalid;
+  if (expect.use !== "ws") {
+    if (c["htm"] !== expect.use.method || c["htu"] !== expect.use.path) return invalid;
   }
-  if (nowSec > claims.exp + clockSkewSec) {
-    return { ok: false, reason: "token_expired" };
+  if ((iat as number) > expect.nowSec + RELAY_TOKEN_SKEW_SEC) return { ok: false, code: "token_not_yet_valid" };
+  if ((exp as number) <= expect.nowSec - RELAY_TOKEN_SKEW_SEC) return { ok: false, code: "token_expired" };
+  return { ok: true, claims: c as unknown as RelayTokenClaims };
+}
+
+/** Replay budgets per principal within one machine (relay/PROTOCOL.md "Replay"): the daemon has its own reserved
+ * rows, each device and each pair session its own, so no principal can fill the cache for another. Class totals bound
+ * the room: 512 + 32 × 64 + 4 × 16 rows. */
+export const RELAY_REPLAY_BUDGETS = Object.freeze({
+  daemon: 512,
+  perDevice: 64,
+  perPairSession: 16,
+  devicesTotal: 32 * 64,
+  pairSessionsTotal: 4 * 16,
+});
+
+export type ReplayPrincipalKind = "daemon" | "device" | "pair";
+
+/** The principal a token's jti is charged to: the daemon, one deviceId or one pairSessionId. */
+export function replayPrincipalOf(parsed: Pick<ParsedRelayToken, "role" | "deviceId" | "pairSessionId">): { kind: ReplayPrincipalKind; key: string } {
+  if (parsed.role === "device") return { kind: "device", key: `d:${parsed.deviceId}` };
+  if (parsed.role === "pair") return { kind: "pair", key: `p:${parsed.pairSessionId}` };
+  return { kind: "daemon", key: "daemon" };
+}
+
+function replayBudget(kind: ReplayPrincipalKind): { own: number; total: number } {
+  if (kind === "device") return { own: RELAY_REPLAY_BUDGETS.perDevice, total: RELAY_REPLAY_BUDGETS.devicesTotal };
+  if (kind === "pair") return { own: RELAY_REPLAY_BUDGETS.perPairSession, total: RELAY_REPLAY_BUDGETS.pairSessionsTotal };
+  return { own: RELAY_REPLAY_BUDGETS.daemon, total: RELAY_REPLAY_BUDGETS.daemon };
+}
+
+/** One-time `jti` bookkeeping for one machine (relay/PROTOCOL.md "Replay"): daemon and device tokens once, pair tokens
+ * at most 3 times. Ids are remembered per principal (a device can't spend or collide with the daemon's ids) until
+ * 30 s after the token's expiry; each principal has its own budget (RELAY_REPLAY_BUDGETS). */
+export class RelayReplayCache {
+  private readonly rows = new Map<string, { principal: string; kind: ReplayPrincipalKind; exp: number; uses: number }>();
+  private readonly perPrincipal = new Map<string, number>();
+  private readonly perKind = new Map<ReplayPrincipalKind, number>();
+  /** Consumes one use. "ok", "replayed" (used up) or "full" (this principal's budget is spent, nothing expired). */
+  consume(principal: { kind: ReplayPrincipalKind; key: string }, jti: string, expSec: number, maxUses: number, nowSec: number): "ok" | "replayed" | "full" {
+    const id = `${principal.key}\u0000${jti}`;
+    const row = this.rows.get(id);
+    if (row !== undefined) {
+      if (row.uses >= maxUses) return "replayed";
+      row.uses += 1;
+      return "ok";
+    }
+    const budget = replayBudget(principal.kind);
+    const over = (): boolean => (this.perPrincipal.get(principal.key) ?? 0) >= budget.own || (this.perKind.get(principal.kind) ?? 0) >= budget.total;
+    if (over()) this.prune(nowSec);
+    if (over()) return "full";
+    this.rows.set(id, { principal: principal.key, kind: principal.kind, exp: expSec, uses: 1 });
+    this.perPrincipal.set(principal.key, (this.perPrincipal.get(principal.key) ?? 0) + 1);
+    this.perKind.set(principal.kind, (this.perKind.get(principal.kind) ?? 0) + 1);
+    return "ok";
   }
-  if (nowSec + clockSkewSec < claims.iat) {
-    return { ok: false, reason: "token_not_yet_valid" };
+  prune(nowSec: number): void {
+    for (const [id, row] of this.rows) {
+      if (row.exp >= nowSec - RELAY_TOKEN_SKEW_SEC) continue;
+      this.rows.delete(id);
+      const left = (this.perPrincipal.get(row.principal) ?? 1) - 1;
+      if (left <= 0) this.perPrincipal.delete(row.principal); else this.perPrincipal.set(row.principal, left);
+      this.perKind.set(row.kind, (this.perKind.get(row.kind) ?? 1) - 1);
+    }
   }
-  if (!ed25519Verify(expectedPublicKey, signingInput, signature)) {
-    return { ok: false, reason: "invalid_signature" };
-  }
-  return { ok: true, claims };
+  get size(): number { return this.rows.size; }
+  /** Rows charged to one principal (tests). */
+  rowsOf(principalKey: string): number { return this.perPrincipal.get(principalKey) ?? 0; }
+}
+
+/** Uses a `jti` may have: pair tokens ride in the QR and a phone may retry, so 3; every other role once. */
+export function relayTokenMaxUses(role: RelayRole): number {
+  return role === "pair" ? 3 : 1;
 }
 
 /** Verify a registration request and return the deterministic `machineId`. */
@@ -198,6 +316,16 @@ export const RelayOp = {
 
 export type RelayOpCode = (typeof RelayOp)[keyof typeof RelayOp];
 
+/** HEARTBEAT and HEARTBEAT_ACK carry an 8-byte big-endian millisecond timestamp (connId 0). */
+export const HEARTBEAT_PAYLOAD_BYTES = 8;
+
+/** A daemon heartbeat envelope for `nowMs` (the relay echoes the same 8 bytes in HEARTBEAT_ACK). */
+export function encodeHeartbeat(nowMs: number, op: typeof RelayOp.HEARTBEAT | typeof RelayOp.HEARTBEAT_ACK = RelayOp.HEARTBEAT): Buffer {
+  const payload = Buffer.alloc(HEARTBEAT_PAYLOAD_BYTES);
+  payload.writeBigUInt64BE(BigInt(Math.max(0, Math.floor(nowMs))));
+  return encodeRelayEnvelope({ op, connId: 0, payload });
+}
+
 export interface RelayEnvelope {
   op: RelayOpCode;
   connId: number; // uint32 BE
@@ -220,7 +348,7 @@ export function decodeRelayEnvelope(raw: Buffer): RelayEnvelope {
     throw new Error(`Relay envelope truncated: ${raw.length} bytes`);
   }
   const op = raw.readUInt8(0);
-  if (op !== RelayOp.PEER_OPEN && op !== RelayOp.PEER_DATA && op !== RelayOp.PEER_CLOSE) {
+  if (op < RelayOp.PEER_OPEN || op > RelayOp.HEARTBEAT_ACK) {
     throw new Error(`Unknown relay opcode: 0x${op.toString(16)}`);
   }
   const connId = raw.readUInt32BE(1);
@@ -228,5 +356,8 @@ export function decodeRelayEnvelope(raw: Buffer): RelayEnvelope {
   if (op === RelayOp.PEER_DATA && payload.length > MAX_NOISE_MESSAGE_BYTES) {
     throw new Error(`PEER_DATA exceeds ${MAX_NOISE_MESSAGE_BYTES} bytes`);
   }
-  return { op, connId, payload };
+  if ((op === RelayOp.HEARTBEAT || op === RelayOp.HEARTBEAT_ACK) && (connId !== 0 || payload.length !== HEARTBEAT_PAYLOAD_BYTES)) {
+    throw new Error(`Heartbeat envelope must be [4B 0][8B timestamp]`);
+  }
+  return { op: op as RelayOpCode, connId, payload };
 }

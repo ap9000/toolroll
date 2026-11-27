@@ -1,77 +1,171 @@
 /**
- * Portable open-source Reference Relay for Toolroll Companion (`relay/PROTOCOL.md`).
- * Zero cloud vendor lock-in: runs on plain Node.js HTTP + `ws` (`docker run` or embedded in tests).
+ * The open-source reference relay for the Toolroll companion (normative contract: relay/PROTOCOL.md).
+ * Plain Node.js HTTP + `ws`, for self-hosting (relay/reference/Dockerfile) and for tests. The hosted relay
+ * (relay/cloudflare) implements the same contract; relay/conformance/suite.ts runs against both.
  *
- * The relay holds ZERO Noise keys, cannot read payloads, and cannot authorize any Toolroll act.
- * It enforces pre-upgrade Ed25519 admission, deterministic machineId ownership, 5-byte connId
- * multi-phone routing, 5s first-frame / 60s idle deadlines, 65,535 B frame cap, token-bucket
- * rate & byte limits, and a global circuit breaker.
+ * The relay holds no Noise keys, cannot read payloads and cannot authorize any Toolroll act. It admits sockets with
+ * Ed25519 tokens before the upgrade, routes phones to the Mac (the daemon) over the 5-byte connId envelope and enforces
+ * the limits in PROTOCOL.md. All state is in memory: a restart forgets every machine, and the Mac registers again when
+ * it sees 404 machine_unknown.
  */
 
-import { randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { MAX_NOISE_MESSAGE_BYTES } from "./noise.js";
 import {
-  decodeRelayEnvelope,
+  checkRelayClaims,
+  ed25519Verify,
   encodeRelayEnvelope,
+  HEARTBEAT_PAYLOAD_BYTES,
   MAX_DAEMON_WS_FRAME_BYTES,
-  parseRelayTokenUnverified,
+  parseRelayToken,
+  RELAY_ENVELOPE_HEADER_BYTES,
+  RELAY_ID_PATTERN,
   RelayOp,
+  RelayReplayCache,
+  relayTokenMaxUses,
+  replayPrincipalOf,
   verifyMachineRegistration,
-  verifyRelayToken,
+  type ParsedRelayToken,
   type RelayRole,
 } from "./relay-auth.js";
+
+/** relay/PROTOCOL.md, "Limits". The same numbers live in test/fixtures/companion-wire.json (the suite compares). */
+export const RELAY_LIMITS = Object.freeze({
+  phoneFirstFrameMs: 10_000,
+  phoneIdleMs: 90_000,
+  daemonSilenceMs: 60_000,
+  socketsPerMachine: 4,
+  devicesPerMachine: 32,
+  tombstonesPerMachine: 256,
+  tombstoneMs: 30 * 24 * 60 * 60 * 1000,
+  roomIdleDeleteMs: 90 * 24 * 60 * 60 * 1000,
+  phoneUp: { framesPerMin: 600, framesBurst: 120, bytesPerMin: 4 * 1024 * 1024, bytesBurst: 1024 * 1024 },
+  phoneDown: { bytesPerMin: 16 * 1024 * 1024, bytesBurst: 4 * 1024 * 1024 },
+  machineUp: { bytesPerMin: 32 * 1024 * 1024, bytesBurst: 8 * 1024 * 1024 },
+  machineDown: { bytesPerMin: 64 * 1024 * 1024, bytesBurst: 16 * 1024 * 1024 },
+  registerPerMin: 20,
+  connectPerMin: 120,
+  clientPerMin: 600,
+  registerBodyBytes: 4096,
+  putBodyBytes: 16_384,
+  postBodyBytes: 4096,
+  challengeTtlMs: 60_000,
+});
+
+/** Close codes (relay/PROTOCOL.md "Close codes"). */
+export const RelayClose = Object.freeze({
+  normal: 1000,
+  protocol: 4400,
+  revoked: 4403,
+  timeout: 4408,
+  superseded: 4409,
+  rateLimited: 4429,
+  daemonGone: 4503,
+});
 
 export interface ReferenceRelayOptions {
   host?: string;
   port?: number;
-  /** Override public host used in registration PoP signature check (defaults to Host header). */
+  /** The relay's public host: token `aud` and the registration signature's host. Lowercased. Default `host:port` of
+   * the listening socket (right for tests and a relay reached directly; behind a proxy set RELAY_PUBLIC_HOST). */
   publicHost?: string;
-  /** First-frame deadline on newly upgraded peer sockets (default 5_000 ms). */
-  firstFrameDeadlineMs?: number;
-  /** Idle timeout without any frame in either direction (default 60_000 ms). */
-  idleTimeoutMs?: number;
-  /** Max concurrent phone/pair sockets per machineId (default 4). */
-  maxPhonesPerMachine?: number;
-  /** Per-phone sustained frames/min (default 600) and burst (default 120). */
-  phoneFramesPerMin?: number;
-  phoneFrameBurst?: number;
-  /** Per-phone sustained bytes/min (default 4 MiB) and burst (default 2 MiB). */
-  phoneBytesPerMin?: number;
-  phoneByteBurst?: number;
-  /** Per-machine sustained frames/min (default 2400) and bytes/min (default 16 MiB). */
-  machineFramesPerMin?: number;
-  machineBytesPerMin?: number;
-  /** Global circuit breaker: max total forwarded frames before returning 503 (0 = unlimited). */
-  globalMaxFrames?: number;
-  /** Optional clock for deterministic tests. */
+  /** Take the client address from the last `X-Forwarded-For` entry (set only behind a proxy you run). */
+  trustProxy?: boolean;
+  /** HMAC key for stateless registration challenges (random per process when unset), plus the previous one while
+   * rotating. */
+  challengeSecret?: string;
+  previousChallengeSecret?: string;
+  /** Build id shown by /v1/health. */
+  build?: string;
+  /** Timing overrides (tests). */
+  phoneFirstFrameMs?: number;
+  phoneIdleMs?: number;
+  daemonSilenceMs?: number;
+  /** Per client address per minute (register + challenge) and per machine + client address per minute (connect +
+   * admission calls). */
+  registerPerMin?: number;
+  connectPerMin?: number;
+  /** Per client address per minute across every machine (connect + admission calls), checked first: varying the
+   * machine id can't get around the per-machine limit. */
+  clientPerMin?: number;
+  /** Machines held at once (reference only). At the cap the least recently active room with no sockets is dropped. */
+  maxRooms?: number;
+  /** Open WebSockets per client address (reference only). */
+  maxSocketsPerIp?: number;
+  /** Frames forwarded per minute across the whole relay before it sheds load with 503 (reference only; 0 = off). */
+  globalFramesPerMin?: number;
+  /** Clock for deterministic tests (token times, tombstones, room GC). */
   nowMs?: () => number;
+  /** One structured line per refusal and close; never tokens, keys or full ids. */
+  log?: (entry: Record<string, unknown>) => void;
 }
+
+export interface RunningReferenceRelay {
+  url: string;
+  wsUrl: string;
+  port: number;
+  publicHost: string;
+  close: () => Promise<void>;
+  /** Runs the hourly sweep now (room GC, expired tombstones and jti rows). */
+  sweep: () => void;
+  stats: () => { machines: number; forwardedThisWindow: number };
+  /** Replay-cache rows a machine holds (tests), or null for an unknown machine. */
+  replayRows: (machineId: string) => number | null;
+}
+
+type RefusalCode =
+  | "bad_request" | "token_invalid" | "token_expired" | "token_not_yet_valid" | "device_revoked" | "machine_unknown"
+  | "device_unknown" | "rate_limited" | "too_many_peers" | "replay_cache_full" | "daemon_unavailable";
+
+interface Refusal { status: number; code: RefusalCode; retryAfterSec?: number }
 
 class TokenBucket {
   private tokens: number;
-  private lastRefillMs: number;
-  private readonly capacity: number;
+  private at: number;
   private readonly ratePerMs: number;
-
-  constructor(perMinute: number, burst: number, nowMs: number) {
-    this.capacity = burst;
+  constructor(perMinute: number, private readonly burst: number, nowMs: number) {
     this.tokens = burst;
     this.ratePerMs = perMinute / 60_000;
-    this.lastRefillMs = nowMs;
+    this.at = nowMs;
   }
-
-  tryConsume(cost: number, nowMs: number): boolean {
-    const elapsed = Math.max(0, nowMs - this.lastRefillMs);
-    if (elapsed > 0) {
-      this.tokens = Math.min(this.capacity, this.tokens + elapsed * this.ratePerMs);
-      this.lastRefillMs = nowMs;
-    }
+  take(cost: number, nowMs: number): boolean {
+    this.refill(nowMs);
     if (this.tokens < cost) return false;
     this.tokens -= cost;
     return true;
+  }
+  /** Seconds until `cost` would be available (for Retry-After). */
+  waitSec(cost: number, nowMs: number): number {
+    this.refill(nowMs);
+    return Math.max(1, Math.ceil((cost - this.tokens) / this.ratePerMs / 1000));
+  }
+  full(nowMs: number): boolean { this.refill(nowMs); return this.tokens >= this.burst; }
+  private refill(nowMs: number): void {
+    const elapsed = Math.max(0, nowMs - this.at);
+    this.tokens = Math.min(this.burst, this.tokens + elapsed * this.ratePerMs);
+    this.at = nowMs;
+  }
+}
+
+/** Rate buckets by key with a bounded number of keys (full buckets are dropped first). */
+class KeyedBuckets {
+  private readonly buckets = new Map<string, TokenBucket>();
+  constructor(private readonly perMin: number, private readonly maxKeys = 50_000) {}
+  take(key: string, nowMs: number): Refusal | null {
+    let bucket = this.buckets.get(key);
+    if (bucket === undefined) {
+      if (this.buckets.size >= this.maxKeys) this.prune(nowMs);
+      bucket = new TokenBucket(this.perMin, this.perMin, nowMs);
+      this.buckets.set(key, bucket);
+    }
+    return bucket.take(1, nowMs) ? null : { status: 429, code: "rate_limited", retryAfterSec: bucket.waitSec(1, nowMs) };
+  }
+  private prune(nowMs: number): void {
+    for (const [key, bucket] of this.buckets) if (bucket.full(nowMs)) this.buckets.delete(key);
+    while (this.buckets.size >= this.maxKeys) this.buckets.delete(this.buckets.keys().next().value!);
   }
 }
 
@@ -80,84 +174,72 @@ interface PeerConn {
   ws: WebSocket;
   role: "pair" | "device";
   peerId: string;
-  receivedFirstFrame: boolean;
-  firstFrameTimer: ReturnType<typeof setTimeout>;
-  idleTimer: ReturnType<typeof setTimeout>;
-  frameBucket: TokenBucket;
-  byteBucket: TokenBucket;
-  /** What the daemon sends this phone: its own budget, so going over it closes only this phone. */
-  downBucket: TokenBucket;
+  /** Set once the relay or the daemon closed it: later frames are dropped and no second PEER_CLOSE is sent. */
+  closed: boolean;
+  firstFrame: boolean;
+  timer: ReturnType<typeof setTimeout> | null;
+  frames: TokenBucket;
+  bytes: TokenBucket;
+  down: TokenBucket;
+}
+
+interface DaemonConn {
+  ws: WebSocket;
+  epoch: number;
+  /** Superseded or deleted: its close must not touch the room any more. */
+  retired: boolean;
+  timer: ReturnType<typeof setTimeout> | null;
 }
 
 interface MachineRoom {
   machineId: string;
-  relayMachinePub: Buffer;
-  devices: Map<string, Buffer>; // deviceId -> 32B Ed25519 pubkey
-  daemon: WebSocket | null;
-  daemonIdleTimer: ReturnType<typeof setTimeout> | null;
+  pub: Buffer;
+  devices: Map<string, Buffer>;
+  tombstones: Map<string, { pub: Buffer; expiresAtMs: number }>;
+  replay: RelayReplayCache;
+  daemon: DaemonConn | null;
+  epoch: number;
   peers: Map<number, PeerConn>;
   nextConnId: number;
-  machineFrameBucket: TokenBucket;
-  machineByteBucket: TokenBucket;
-  /** Everything the daemon sends this machine's phones together: over it, the phone using the most is closed. */
-  daemonByteBucket: TokenBucket;
+  lastDaemonAtMs: number;
+  lastActiveMs: number;
+  up: TokenBucket;
+  down: TokenBucket;
 }
 
-/** Machines one reference relay holds at once (it is for self-hosting a household or team, not the public). */
-const MAX_ROOMS = 1_000;
+const STATUS_TEXT: Record<number, string> = {
+  400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 429: "Too Many Requests", 503: "Service Unavailable",
+};
 
-export interface RunningReferenceRelay {
-  url: string;
-  wsUrl: string;
-  port: number;
-  close: () => Promise<void>;
-  stats: () => { machines: number; totalForwardedFrames: number };
+function refusalHeaders(refusal: Refusal): Record<string, string> {
+  return {
+    "toolroll-relay-error": refusal.code,
+    ...(refusal.retryAfterSec !== undefined ? { "retry-after": String(refusal.retryAfterSec) } : {}),
+  };
 }
 
-function readJsonBody(req: IncomingMessage, maxBytes = 16_384): Promise<Record<string, unknown> | null> {
-  return new Promise(resolve => {
-    const chunks: Buffer[] = [];
-    let total = 0;
-    req.on("data", (chunk: Buffer) => {
-      total += chunk.length;
-      if (total > maxBytes) {
-        resolve(null);
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on("end", () => {
-      try {
-        const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
-        resolve(parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-          ? (parsed as Record<string, unknown>)
-          : null);
-      } catch {
-        resolve(null);
-      }
-    });
-    req.on("error", () => resolve(null));
-  });
-}
-
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
+function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
     "content-length": Buffer.byteLength(payload),
+    ...headers,
   });
   res.end(payload);
 }
 
-function rejectUpgrade(socket: Duplex, status: number, reason: string): void {
-  const text = JSON.stringify({ error: reason });
-  socket.write(
-    `HTTP/1.1 ${status} ${status === 401 ? "Unauthorized" : status === 403 ? "Forbidden" : status === 429 ? "Too Many Requests" : status === 503 ? "Service Unavailable" : "Bad Request"}\r\n`
-    + `Content-Type: application/json\r\n`
-    + `Content-Length: ${Buffer.byteLength(text)}\r\n`
-    + `Connection: close\r\n\r\n${text}`,
+function sendRefusal(res: ServerResponse, refusal: Refusal): void {
+  sendJson(res, refusal.status, { error: refusal.code }, refusalHeaders(refusal));
+}
+
+function rejectUpgrade(socket: Duplex, refusal: Refusal): void {
+  const text = JSON.stringify({ error: refusal.code });
+  const headers = { ...refusalHeaders(refusal), date: new Date().toUTCString() };
+  socket.end(
+    `HTTP/1.1 ${refusal.status} ${STATUS_TEXT[refusal.status] ?? "Error"}\r\n`
+    + Object.entries(headers).map(([name, value]) => `${name}: ${value}\r\n`).join("")
+    + `content-type: application/json\r\ncontent-length: ${Buffer.byteLength(text)}\r\nconnection: close\r\n\r\n${text}`,
   );
   socket.destroy();
 }
@@ -168,485 +250,605 @@ function rawDataToBuffer(data: RawData): Buffer {
   return Buffer.from(data);
 }
 
+/** Reads a JSON object body of at most `maxBytes` (null when longer, malformed or not an object). */
+function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<Record<string, unknown> | null> {
+  return new Promise(resolve => {
+    const declared = Number(req.headers["content-length"] ?? "0");
+    if (Number.isFinite(declared) && declared > maxBytes) { resolve(null); req.resume(); return; }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let done = false;
+    const finish = (value: Record<string, unknown> | null) => { if (!done) { done = true; resolve(value); } };
+    req.on("data", (chunk: Buffer) => {
+      if (done) return;
+      total += chunk.length;
+      if (total > maxBytes) { finish(null); req.resume(); return; }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      try {
+        const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+        finish(parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null);
+      } catch {
+        finish(null);
+      }
+    });
+    req.on("error", () => finish(null));
+  });
+}
+
+/** A 32-byte Ed25519 key in unpadded base64url, or null. */
+function relayKeyOrNull(value: unknown): Buffer | null {
+  if (typeof value !== "string" || value.length !== 43 || !/^[A-Za-z0-9_-]+$/.test(value)) return null;
+  const key = Buffer.from(value, "base64url");
+  return key.length === 32 ? key : null;
+}
+
+/** The rate-limit key for a client address: IPv4 as is, IPv6 by its /64. */
+export function clientRateKey(ip: string | null | undefined): string {
+  if (ip === null || ip === undefined || ip.length === 0) return "no-ip";
+  const plain = ip.startsWith("::ffff:") && ip.includes(".") ? ip.slice(7) : ip;
+  if (!plain.includes(":")) return plain;
+  const [head, tail = ""] = plain.toLowerCase().split("::");
+  const left = head!.split(":").filter(Boolean);
+  const right = tail.split(":").filter(Boolean);
+  const full = [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill("0"), ...right];
+  return `${full.slice(0, 4).join(":")}::/64`;
+}
+
+/** A short, non-reversible tag for a machine id in logs. */
+function idTag(id: string): string {
+  return createHash("sha256").update(id).digest("hex").slice(0, 8);
+}
+
 export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Promise<RunningReferenceRelay> {
   const nowMs = opts.nowMs ?? (() => Date.now());
-  const firstFrameDeadlineMs = opts.firstFrameDeadlineMs ?? 5_000;
-  const idleTimeoutMs = opts.idleTimeoutMs ?? 60_000;
-  const maxPhonesPerMachine = opts.maxPhonesPerMachine ?? 4;
-  const phoneFramesPerMin = opts.phoneFramesPerMin ?? 600;
-  const phoneFrameBurst = opts.phoneFrameBurst ?? 120;
-  const phoneBytesPerMin = opts.phoneBytesPerMin ?? 4 * 1024 * 1024;
-  const phoneByteBurst = opts.phoneByteBurst ?? 2 * 1024 * 1024;
-  const machineFramesPerMin = opts.machineFramesPerMin ?? 2_400;
-  const machineBytesPerMin = opts.machineBytesPerMin ?? 16 * 1024 * 1024;
-  const globalMaxFrames = opts.globalMaxFrames ?? 0;
-
-  const challenges = new Map<string, number>(); // challenge -> expiresAtMs
+  const L = RELAY_LIMITS;
+  const phoneFirstFrameMs = opts.phoneFirstFrameMs ?? L.phoneFirstFrameMs;
+  const phoneIdleMs = opts.phoneIdleMs ?? L.phoneIdleMs;
+  const daemonSilenceMs = opts.daemonSilenceMs ?? L.daemonSilenceMs;
+  const maxRooms = opts.maxRooms ?? 1_000;
+  const maxSocketsPerIp = opts.maxSocketsPerIp ?? 64;
+  const globalFramesPerMin = opts.globalFramesPerMin ?? 0;
+  const log = opts.log ?? (() => {});
+  const challengeSecrets = [opts.challengeSecret ?? randomBytes(32).toString("base64url"), opts.previousChallengeSecret]
+    .filter((one): one is string => typeof one === "string" && one.length > 0);
+  const registerLimit = new KeyedBuckets(opts.registerPerMin ?? L.registerPerMin);
+  const connectLimit = new KeyedBuckets(opts.connectPerMin ?? L.connectPerMin);
+  const clientLimit = new KeyedBuckets(opts.clientPerMin ?? L.clientPerMin);
+  const socketsByIp = new Map<string, number>();
   const rooms = new Map<string, MachineRoom>();
-  let totalForwardedFrames = 0;
+  let publicHost = (opts.publicHost ?? "").toLowerCase();
+  // The breaker is a windowed budget: it opens for the rest of the minute in which the relay forwarded too much, then
+  // closes again on its own.
+  let windowStartMs = nowMs();
+  let forwardedThisWindow = 0;
 
-  const circuitTripped = (): boolean => globalMaxFrames > 0 && totalForwardedFrames >= globalMaxFrames;
+  const breakerOpen = (): boolean => {
+    if (globalFramesPerMin <= 0) return false;
+    if (nowMs() - windowStartMs >= 60_000) { windowStartMs = nowMs(); forwardedThisWindow = 0; }
+    return forwardedThisWindow >= globalFramesPerMin;
+  };
+  const countForwarded = (): void => { forwardedThisWindow += 1; };
 
-  const bearerFrom = (req: IncomingMessage): string | null => {
+  const clientKey = (req: IncomingMessage): string => {
+    if (opts.trustProxy) {
+      const forwarded = req.headers["x-forwarded-for"];
+      const list = (Array.isArray(forwarded) ? forwarded.join(",") : forwarded ?? "").split(",").map(one => one.trim()).filter(Boolean);
+      if (list.length > 0) return clientRateKey(list[list.length - 1]);
+    }
+    return clientRateKey(req.socket.remoteAddress);
+  };
+
+  const refused = (route: string, refusal: Refusal, extra: Record<string, unknown> = {}): Refusal => {
+    log({ event: "refusal", route, status: refusal.status, code: refusal.code, ...extra });
+    return refusal;
+  };
+
+  // ---- Challenges: stateless, HMAC-signed, 60 s (no pool anyone can fill) ----
+  const challengeMac = (secret: string, body: Buffer): Buffer => createHmac("sha256", secret).update(body).digest();
+  const mintChallenge = (): string => {
+    const body = Buffer.alloc(24);
+    randomBytes(16).copy(body, 0);
+    body.writeBigUInt64BE(BigInt(nowMs() + L.challengeTtlMs), 16);
+    return Buffer.concat([body, challengeMac(challengeSecrets[0]!, body)]).toString("base64url");
+  };
+  const challengeValid = (challenge: string): boolean => {
+    if (!/^[A-Za-z0-9_-]{75}$/.test(challenge)) return false;
+    const raw = Buffer.from(challenge, "base64url");
+    if (raw.length !== 56) return false;
+    const body = raw.subarray(0, 24), mac = raw.subarray(24);
+    if (!challengeSecrets.some(secret => timingSafeEqual(challengeMac(secret, body), mac))) return false;
+    return Number(body.readBigUInt64BE(16)) > nowMs();
+  };
+
+  // ---- Rooms ----
+  const liveDaemon = (room: MachineRoom): DaemonConn | null =>
+    room.daemon !== null && !room.daemon.retired && room.daemon.ws.readyState === WebSocket.OPEN ? room.daemon : null;
+
+  const sendPeerClose = (room: MachineRoom, connId: number, reason: string): void => {
+    const daemon = liveDaemon(room);
+    if (daemon === null) return;
+    daemon.ws.send(encodeRelayEnvelope({ op: RelayOp.PEER_CLOSE, connId, payload: Buffer.from(JSON.stringify({ reason }), "utf8") }), { binary: true });
+  };
+
+  /** Closes a phone socket the relay or the daemon decided to drop. Idempotent: one PEER_CLOSE at most. */
+  const closePeer = (room: MachineRoom, peer: PeerConn, code: number, reason: string, notifyDaemon: boolean): void => {
+    if (peer.closed) return;
+    peer.closed = true;
+    if (peer.timer !== null) clearTimeout(peer.timer);
+    room.peers.delete(peer.connId);
+    if (peer.ws.readyState === WebSocket.OPEN || peer.ws.readyState === WebSocket.CONNECTING) peer.ws.close(code, reason);
+    if (notifyDaemon) sendPeerClose(room, peer.connId, reason);
+    log({ event: "close", leg: peer.role, code, reason, machine: idTag(room.machineId) });
+  };
+
+  const armPeerTimer = (room: MachineRoom, peer: PeerConn): void => {
+    if (peer.timer !== null) clearTimeout(peer.timer);
+    const firstFrame = !peer.firstFrame;
+    peer.timer = setTimeout(() => {
+      closePeer(room, peer, RelayClose.timeout, firstFrame ? "first_frame_timeout" : "idle_timeout", true);
+    }, firstFrame ? phoneFirstFrameMs : phoneIdleMs);
+    peer.timer.unref?.();
+  };
+
+  const armDaemonTimer = (room: MachineRoom, daemon: DaemonConn): void => {
+    if (daemon.timer !== null) clearTimeout(daemon.timer);
+    daemon.timer = setTimeout(() => {
+      if (room.daemon === daemon && !daemon.retired) daemon.ws.close(RelayClose.timeout, "heartbeat_timeout");
+    }, daemonSilenceMs);
+    daemon.timer.unref?.();
+  };
+
+  /** Drops the room's daemon and its phones (replacement, deletion or the daemon leaving). */
+  const retireDaemon = (room: MachineRoom, code: number | null, reason: string): void => {
+    const daemon = room.daemon;
+    if (daemon !== null) {
+      daemon.retired = true;
+      if (daemon.timer !== null) clearTimeout(daemon.timer);
+      if (code !== null && (daemon.ws.readyState === WebSocket.OPEN || daemon.ws.readyState === WebSocket.CONNECTING)) daemon.ws.close(code, reason);
+    }
+    room.daemon = null;
+    // The phones were talking to that daemon's Noise sessions: they go with it, and no PEER_CLOSE reaches anyone.
+    for (const peer of [...room.peers.values()]) closePeer(room, peer, RelayClose.daemonGone, "daemon_gone", false);
+  };
+
+  const pruneRoom = (room: MachineRoom, now: number): void => {
+    for (const [id, stone] of room.tombstones) if (stone.expiresAtMs <= now) room.tombstones.delete(id);
+    room.replay.prune(Math.floor(now / 1000));
+  };
+
+  const addTombstone = (room: MachineRoom, deviceId: string, pub: Buffer, now: number): void => {
+    room.tombstones.delete(deviceId);
+    if (room.tombstones.size >= L.tombstonesPerMachine) {
+      let oldest: string | null = null, oldestAt = Infinity;
+      for (const [id, stone] of room.tombstones) if (stone.expiresAtMs < oldestAt) { oldest = id; oldestAt = stone.expiresAtMs; }
+      if (oldest !== null) room.tombstones.delete(oldest);
+    }
+    room.tombstones.set(deviceId, { pub, expiresAtMs: now + L.tombstoneMs });
+  };
+
+  const sweep = (): void => {
+    const now = nowMs();
+    for (const room of [...rooms.values()]) {
+      if (room.daemon === null && room.peers.size === 0 && now - room.lastDaemonAtMs >= L.roomIdleDeleteMs) {
+        rooms.delete(room.machineId);
+        log({ event: "room_gc", machine: idTag(room.machineId) });
+        continue;
+      }
+      pruneRoom(room, now);
+    }
+  };
+  const sweepTimer = setInterval(sweep, 60 * 60 * 1000);
+  sweepTimer.unref?.();
+
+  const newRoom = (machineId: string, pub: Buffer, now: number): MachineRoom => ({
+    machineId,
+    pub,
+    devices: new Map(),
+    tombstones: new Map(),
+    replay: new RelayReplayCache(),
+    daemon: null,
+    epoch: 0,
+    peers: new Map(),
+    nextConnId: 1,
+    lastDaemonAtMs: now,
+    lastActiveMs: now,
+    up: new TokenBucket(L.machineUp.bytesPerMin, L.machineUp.bytesBurst, now),
+    down: new TokenBucket(L.machineDown.bytesPerMin, L.machineDown.bytesBurst, now),
+  });
+
+  // ---- Token admission ----
+  const bearer = (req: IncomingMessage): string | null => {
     const auth = req.headers["authorization"];
     if (typeof auth !== "string" || !auth.startsWith("Bearer ")) return null;
-    return auth.slice("Bearer ".length).trim() || null;
+    return auth.slice(7).trim() || null;
   };
 
-  const cleanupPeer = (room: MachineRoom, connId: number, reason: string, notifyDaemon = true): void => {
-    const peer = room.peers.get(connId);
-    if (peer === undefined) return;
-    clearTimeout(peer.firstFrameTimer);
-    clearTimeout(peer.idleTimer);
-    room.peers.delete(connId);
-    if (peer.ws.readyState === WebSocket.OPEN || peer.ws.readyState === WebSocket.CONNECTING) {
-      peer.ws.close(1000, reason);
-    }
-    if (notifyDaemon && room.daemon !== null && room.daemon.readyState === WebSocket.OPEN) {
-      const env = encodeRelayEnvelope({
-        op: RelayOp.PEER_CLOSE,
-        connId,
-        payload: Buffer.from(JSON.stringify({ reason }), "utf8"),
-      });
-      room.daemon.send(env, { binary: true });
-    }
+  /** The claim rules, after the signature verified. Writes nothing. */
+  const checkClaims = (
+    parsed: ParsedRelayToken,
+    use: "ws" | { method: "PUT" | "POST" | "DELETE"; path: string },
+  ): { refusal: Refusal; jti?: never; exp?: never } | { refusal?: never; jti: string; exp: number } => {
+    const checked = checkRelayClaims(parsed, { aud: publicHost, use, nowSec: Math.floor(nowMs() / 1000), ...(use === "ws" ? {} : { role: "daemon" as const }) });
+    return checked.ok ? { jti: checked.claims.jti, exp: checked.claims.exp } : { refusal: { status: 401, code: checked.code } };
   };
 
-  const authenticateDaemonHttp = (req: IncomingMessage, machineId: string): { ok: true; room: MachineRoom } | { ok: false; status: number; error: string } => {
+  /** Consumes one use of the jti from its principal's own budget (relay/PROTOCOL.md "Replay"). */
+  const consumeJti = (room: MachineRoom, parsed: ParsedRelayToken, jti: string, exp: number): Refusal | null => {
+    const consumed = room.replay.consume(replayPrincipalOf(parsed), jti, exp, relayTokenMaxUses(parsed.role), Math.floor(nowMs() / 1000));
+    if (consumed === "replayed") return { status: 401, code: "token_invalid" };
+    if (consumed === "full") return { status: 429, code: "replay_cache_full", retryAfterSec: 30 };
+    return null;
+  };
+
+  /** A daemon-signed admission call: token → machine → signature → claims (htm/htu) → jti. */
+  const admitDaemonCall = (
+    req: IncomingMessage, machineId: string, method: "PUT" | "POST" | "DELETE", path: string,
+  ): { room: MachineRoom; refusal?: never } | { refusal: Refusal; room?: never } => {
+    const token = bearer(req);
+    const parsed = token === null ? null : parseRelayToken(token);
+    if (parsed === null) return { refusal: { status: 401, code: "token_invalid" } };
     const room = rooms.get(machineId);
-    if (room === undefined) return { ok: false, status: 401, error: "unknown_machine" };
-    const token = bearerFrom(req);
-    if (token === null) return { ok: false, status: 401, error: "missing_token" };
-    const verified = verifyRelayToken(token, room.relayMachinePub, Math.floor(nowMs() / 1000));
-    if (!verified.ok) return { ok: false, status: 401, error: verified.reason };
-    if (verified.claims.role !== "daemon" || verified.claims.machineId !== machineId) {
-      return { ok: false, status: 403, error: "forbidden_role" };
+    if (room === undefined) return { refusal: { status: 404, code: "machine_unknown" } };
+    if (parsed.machineId !== machineId || !ed25519Verify(room.pub, parsed.signingInput, parsed.signature)) {
+      return { refusal: { status: 401, code: "token_invalid" } };
     }
-    return { ok: true, room };
+    const claims = checkClaims(parsed, { method, path });
+    if (claims.refusal !== undefined) return { refusal: claims.refusal };
+    const refusal = consumeJti(room, parsed, claims.jti, claims.exp);
+    return refusal === null ? { room } : { refusal };
   };
 
-  // Every HTTP request runs guarded: a malformed path, escape or body answers 400 (or drops the socket) and can never
-  // reject unhandled — the console runs this relay in-process, so a crash here would take the console down with it.
+  // ---- HTTP ----
   const handleHttp = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    if (circuitTripped()) {
-      sendJson(res, 503, { error: "relay_budget_exceeded" });
-      return;
-    }
     const url = new URL(req.url ?? "/", "http://relay.invalid"); // never the Host header: a bad one must not throw
+    const path = url.pathname;
+    const route = path.startsWith("/v1/machines/") ? path.replace(/^\/v1\/machines\/[^/]+/, "/v1/machines/:id").replace(/\/devices\/[^/]+$/, "/devices/:id") : path;
+    const refuse = (refusal: Refusal, extra: Record<string, unknown> = {}): void => sendRefusal(res, refused(route, refusal, extra));
 
-    if (req.method === "GET" && url.pathname === "/v1/health") {
-      sendJson(res, 200, { ok: true, version: 1 });
+    if (req.method === "GET" && path === "/v1/health") {
+      const shedding = breakerOpen();
+      sendJson(res, shedding ? 503 : 200, { ok: !shedding, version: 1, runtime: "reference", build: opts.build ?? "dev", configured: { publicHost: publicHost.length > 0 } });
       return;
     }
+    if (breakerOpen()) { refuse({ status: 429, code: "rate_limited", retryAfterSec: 60 }); return; }
+    const ip = clientKey(req);
 
-    if (req.method === "POST" && url.pathname === "/v1/challenge") {
-      // Prune expired challenges
-      const t = nowMs();
-      for (const [k, exp] of challenges) {
-        if (exp <= t) challenges.delete(k);
-      }
-      if (challenges.size > 10_000) {
-        sendJson(res, 429, { error: "challenge_pool_full" });
+    if (req.method === "POST" && (path === "/v1/challenge" || path === "/v1/machines/register")) {
+      const limited = registerLimit.take(ip, nowMs());
+      if (limited !== null) { refuse(limited); return; }
+      if (path === "/v1/challenge") {
+        sendJson(res, 200, { challenge: mintChallenge(), expiresInSec: L.challengeTtlMs / 1000 });
         return;
       }
-      const challenge = randomBytes(32).toString("base64url");
-      challenges.set(challenge, t + 60_000);
-      sendJson(res, 200, { challenge, expiresInSec: 60 });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/v1/machines/register") {
-      const body = await readJsonBody(req);
-      if (
-        body === null
-        || typeof body["relayMachinePub"] !== "string"
-        || typeof body["challenge"] !== "string"
-        || typeof body["signature"] !== "string"
-      ) {
-        sendJson(res, 400, { error: "invalid_body" });
+      const body = await readJsonBody(req, L.registerBodyBytes);
+      if (body === null || typeof body["relayMachinePub"] !== "string" || typeof body["challenge"] !== "string" || typeof body["signature"] !== "string") {
+        refuse({ status: 400, code: "bad_request" });
         return;
       }
-      const exp = challenges.get(body["challenge"]);
-      if (exp === undefined || exp <= nowMs()) {
-        challenges.delete(body["challenge"]);
-        sendJson(res, 401, { error: "invalid_or_expired_challenge" });
-        return;
-      }
-      challenges.delete(body["challenge"]); // single-use
-      const relayHost = opts.publicHost ?? String(req.headers.host ?? "localhost");
+      if (relayKeyOrNull(body["relayMachinePub"]) === null) { refuse({ status: 400, code: "bad_request" }); return; }
+      if (!challengeValid(body["challenge"])) { refuse({ status: 401, code: "token_invalid" }); return; }
       const checked = verifyMachineRegistration({
         relayMachinePubB64: body["relayMachinePub"],
-        relayHost,
+        relayHost: publicHost,
         challenge: body["challenge"],
         signatureB64: body["signature"],
       });
-      if (!checked.ok) {
-        sendJson(res, 401, { error: checked.reason });
-        return;
-      }
-      if (!rooms.has(checked.machineId)) {
-        // Registering is free (a key and a signature), so rooms are bounded: an empty one (no daemon, phones or admitted
-        // devices) is evicted to make space; with none empty, a new machine waits.
-        if (rooms.size >= MAX_ROOMS) {
-          const empty = [...rooms.values()].find(room => room.daemon === null && room.peers.size === 0 && room.devices.size === 0);
-          if (empty === undefined) { sendJson(res, 503, { error: "relay_full" }); return; }
-          rooms.delete(empty.machineId);
+      if (!checked.ok) { refuse({ status: 401, code: "token_invalid" }); return; }
+      const now = nowMs();
+      const existing = rooms.get(checked.machineId);
+      if (existing !== undefined) {
+        existing.lastActiveMs = now;
+      } else {
+        if (rooms.size >= maxRooms) {
+          // Registration is free, so at the cap the oldest idle room that holds nothing makes way (its Mac registers
+          // again on 404). A room holding admitted devices or tombstones is never evicted for a newcomer — only by the
+          // 90-day GC — so a registration flood can't erase a real machine's phones or their revocations.
+          const now = nowMs();
+          let victim: MachineRoom | null = null;
+          for (const room of rooms.values()) {
+            const idle = room.daemon === null && room.peers.size === 0;
+            const empty = room.devices.size === 0 && room.tombstones.size === 0;
+            const expired = now - room.lastDaemonAtMs >= L.roomIdleDeleteMs;
+            if (idle && (empty || expired) && (victim === null || room.lastActiveMs < victim.lastActiveMs)) victim = room;
+          }
+          if (victim === null) { refuse({ status: 429, code: "rate_limited", retryAfterSec: 60 }); return; }
+          rooms.delete(victim.machineId);
         }
-        const t = nowMs();
-        rooms.set(checked.machineId, {
-          machineId: checked.machineId,
-          relayMachinePub: checked.publicKey,
-          devices: new Map(),
-          daemon: null,
-          daemonIdleTimer: null,
-          peers: new Map(),
-          nextConnId: 1,
-          machineFrameBucket: new TokenBucket(machineFramesPerMin, Math.max(phoneFrameBurst * 2, 240), t),
-          machineByteBucket: new TokenBucket(machineBytesPerMin, Math.max(phoneByteBurst * 2, 4 * 1024 * 1024), t),
-          daemonByteBucket: new TokenBucket(phoneBytesPerMin * 16, phoneByteBurst * 16, t),
-        });
+        rooms.set(checked.machineId, newRoom(checked.machineId, checked.publicKey, now));
       }
       sendJson(res, 200, { machineId: checked.machineId });
       return;
     }
 
-    const devicesMatch = /^\/v1\/machines\/([a-z2-7]{26})\/devices$/.exec(url.pathname);
-    // PUT replaces the machine's whole set of admitted phones: the daemon reconciles after every (re)connect, so a relay
-    // that restarted (empty) or missed a DELETE (revoked or restored while the relay was unreachable) converges exactly.
-    // Any phone socket whose device left the set is closed.
-    if (req.method === "PUT" && devicesMatch !== null) {
-      const machineId = devicesMatch[1]!;
-      const auth = authenticateDaemonHttp(req, machineId);
-      if (!auth.ok) {
-        sendJson(res, auth.status, { error: auth.error });
-        return;
-      }
-      const body = await readJsonBody(req);
-      const list = body === null ? null : body["devices"];
-      if (!Array.isArray(list) || list.length > 64) {
-        sendJson(res, 400, { error: "invalid_body" });
-        return;
-      }
-      const next = new Map<string, Buffer>();
-      for (const item of list) {
-        const entry = item !== null && typeof item === "object" ? (item as Record<string, unknown>) : null;
-        const deviceId = entry?.["deviceId"], pubB64 = entry?.["deviceRelayPub"];
-        if (typeof deviceId !== "string" || deviceId.length === 0 || deviceId.length > 128 || typeof pubB64 !== "string") {
-          sendJson(res, 400, { error: "invalid_body" });
-          return;
-        }
-        const pub = Buffer.from(pubB64, "base64url");
-        if (pub.length !== 32) {
-          sendJson(res, 400, { error: "invalid_device_public_key" });
-          return;
-        }
-        next.set(deviceId, pub);
-      }
-      auth.room.devices.clear();
-      for (const [deviceId, pub] of next) auth.room.devices.set(deviceId, pub);
-      for (const [connId, peer] of [...auth.room.peers]) {
-        if (peer.role === "device" && !next.has(peer.peerId)) cleanupPeer(auth.room, connId, "device_revoked", true);
-      }
-      sendJson(res, 200, { ok: true, devices: next.size });
+    const machineMatch = /^\/v1\/machines\/([a-z2-7]{26})(\/devices(?:\/([^/]*))?)?$/.exec(path);
+    const method = req.method;
+    if (machineMatch === null || (method !== "PUT" && method !== "POST" && method !== "DELETE")) {
+      refuse({ status: 400, code: "bad_request" });
       return;
     }
-    if (req.method === "POST" && devicesMatch !== null) {
-      const machineId = devicesMatch[1]!;
-      const auth = authenticateDaemonHttp(req, machineId);
-      if (!auth.ok) {
-        sendJson(res, auth.status, { error: auth.error });
-        return;
-      }
-      const body = await readJsonBody(req);
-      if (body === null || typeof body["deviceId"] !== "string" || typeof body["deviceRelayPub"] !== "string" || body["deviceId"].length === 0) {
-        sendJson(res, 400, { error: "invalid_body" });
-        return;
-      }
-      const pub = Buffer.from(body["deviceRelayPub"], "base64url");
-      if (pub.length !== 32) {
-        sendJson(res, 400, { error: "invalid_device_public_key" });
-        return;
-      }
-      auth.room.devices.set(body["deviceId"], pub);
-      sendJson(res, 200, { ok: true, deviceId: body["deviceId"] });
+    const machineId = machineMatch[1]!;
+    const devicesPath = machineMatch[2] !== undefined;
+    const deviceSegment = machineMatch[3];
+    const shapeOk = !devicesPath ? method === "DELETE"
+      : deviceSegment === undefined ? method === "PUT" || method === "POST"
+        : method === "DELETE";
+    if (!shapeOk) { refuse({ status: 400, code: "bad_request" }); return; }
+    const limited = clientLimit.take(ip, nowMs()) ?? connectLimit.take(`${machineId}|${ip}`, nowMs());
+    if (limited !== null) { refuse(limited); return; }
+    const admitted = admitDaemonCall(req, machineId, method, path);
+    if (admitted.refusal !== undefined) { refuse(admitted.refusal, { machine: idTag(machineId) }); return; }
+    const room = admitted.room;
+    const now = nowMs();
+    room.lastActiveMs = now;
+
+    if (!devicesPath) {
+      // DELETE /v1/machines/:id — the Mac turned phone access off or retires its keys.
+      retireDaemon(room, RelayClose.normal, "machine_deleted");
+      rooms.delete(machineId);
+      log({ event: "machine_deleted", machine: idTag(machineId) });
+      sendJson(res, 200, { ok: true });
       return;
     }
 
-    const deleteDeviceMatch = /^\/v1\/machines\/([a-z2-7]{26})\/devices\/([^/]+)$/.exec(url.pathname);
-    if (req.method === "DELETE" && deleteDeviceMatch !== null) {
-      const machineId = deleteDeviceMatch[1]!;
-      const auth = authenticateDaemonHttp(req, machineId);
-      if (!auth.ok) {
-        sendJson(res, auth.status, { error: auth.error });
-        return;
+    if (method === "DELETE") {
+      const deviceId = deviceSegment!;
+      if (!RELAY_ID_PATTERN.test(deviceId)) { refuse({ status: 400, code: "bad_request" }); return; }
+      const pub = room.devices.get(deviceId);
+      if (pub !== undefined) {
+        room.devices.delete(deviceId);
+        addTombstone(room, deviceId, pub, now);
       }
-      let deviceId: string;
-      try {
-        deviceId = decodeURIComponent(deleteDeviceMatch[2]!);
-      } catch {
-        sendJson(res, 400, { error: "invalid_device_id" });
-        return;
+      for (const peer of [...room.peers.values()]) {
+        if (peer.role === "device" && peer.peerId === deviceId) closePeer(room, peer, RelayClose.revoked, "device_revoked", true);
       }
-      auth.room.devices.delete(deviceId);
-      for (const [connId, peer] of auth.room.peers) {
-        if (peer.role === "device" && peer.peerId === deviceId) {
-          cleanupPeer(auth.room, connId, "device_revoked", true);
-        }
-      }
-      sendJson(res, 200, { ok: true, revoked: deviceId });
+      sendJson(res, 200, { ok: true });
       return;
     }
 
-    sendJson(res, 404, { error: "not_found" });
+    if (method === "POST") {
+      const body = await readJsonBody(req, L.postBodyBytes);
+      const deviceId = body?.["deviceId"];
+      const pub = relayKeyOrNull(body?.["deviceRelayPub"]);
+      if (typeof deviceId !== "string" || !RELAY_ID_PATTERN.test(deviceId) || pub === null) { refuse({ status: 400, code: "bad_request" }); return; }
+      if (rooms.get(machineId) !== room) { refuse({ status: 404, code: "machine_unknown" }); return; } // deleted during the body read
+      const current = room.devices.get(deviceId);
+      if (current === undefined && room.devices.size >= L.devicesPerMachine) { refuse({ status: 400, code: "bad_request" }); return; }
+      if (current !== undefined && !current.equals(pub)) supersedeDevice(room, deviceId);
+      room.devices.set(deviceId, pub);
+      room.tombstones.delete(deviceId);
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    // PUT: replace the whole admitted set in one step. Devices that left it get a tombstone with their stored key.
+    const body = await readJsonBody(req, L.putBodyBytes);
+    const list = body?.["devices"];
+    if (!Array.isArray(list) || list.length > L.devicesPerMachine) { refuse({ status: 400, code: "bad_request" }); return; }
+    const next = new Map<string, Buffer>();
+    for (const item of list) {
+      const entry = item !== null && typeof item === "object" && !Array.isArray(item) ? (item as Record<string, unknown>) : null;
+      const deviceId = entry?.["deviceId"];
+      const pub = relayKeyOrNull(entry?.["deviceRelayPub"]);
+      if (typeof deviceId !== "string" || !RELAY_ID_PATTERN.test(deviceId) || pub === null || next.has(deviceId)) {
+        refuse({ status: 400, code: "bad_request" });
+        return;
+      }
+      next.set(deviceId, pub);
+    }
+    if (rooms.get(machineId) !== room) { refuse({ status: 404, code: "machine_unknown" }); return; }
+    for (const [deviceId, pub] of room.devices) {
+      if (!next.has(deviceId)) addTombstone(room, deviceId, pub, now);
+    }
+    const previous = room.devices;
+    room.devices = next;
+    for (const deviceId of next.keys()) room.tombstones.delete(deviceId);
+    for (const peer of [...room.peers.values()]) {
+      if (peer.role !== "device") continue;
+      if (!next.has(peer.peerId)) closePeer(room, peer, RelayClose.revoked, "device_revoked", true);
+      else if (!previous.get(peer.peerId)?.equals(next.get(peer.peerId)!)) closePeer(room, peer, RelayClose.superseded, "superseded", true);
+    }
+    sendJson(res, 200, { ok: true, devices: next.size });
   };
+
+  /** A device's key changed: its open sockets were admitted with the old key. */
+  const supersedeDevice = (room: MachineRoom, deviceId: string): void => {
+    for (const peer of [...room.peers.values()]) {
+      if (peer.role === "device" && peer.peerId === deviceId) closePeer(room, peer, RelayClose.superseded, "superseded", true);
+    }
+  };
+
   const httpServer: Server = createServer((req, res) => {
     handleHttp(req, res).catch(() => {
-      if (!res.headersSent) sendJson(res, 400, { error: "bad_request" });
+      if (!res.headersSent) sendRefusal(res, { status: 400, code: "bad_request" });
       else res.destroy();
     });
   });
+  httpServer.headersTimeout = 10_000;
+  httpServer.requestTimeout = 15_000;
+  httpServer.keepAliveTimeout = 5_000;
 
-  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_DAEMON_WS_FRAME_BYTES });
+  // Frames up to twice the cap reach the relay and get its 4400; anything bigger is refused by `ws` itself (1009).
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_DAEMON_WS_FRAME_BYTES * 2 });
 
   httpServer.on("upgrade", (req, socket, head) => {
     try {
       upgrade(req, socket, head);
     } catch {
-      rejectUpgrade(socket, 400, "bad_request");
+      rejectUpgrade(socket, { status: 400, code: "bad_request" });
     }
   });
-  const upgrade = (req: IncomingMessage, socket: Duplex, head: Buffer): void => {
-    if (circuitTripped()) {
-      rejectUpgrade(socket, 503, "relay_budget_exceeded");
-      return;
-    }
-    const url = new URL(req.url ?? "/", "http://relay.invalid"); // never the Host header: a bad one must not throw
-    if (url.pathname !== "/v1/connect") {
-      rejectUpgrade(socket, 404, "not_found");
-      return;
-    }
-    const token = bearerFrom(req);
-    if (token === null) {
-      rejectUpgrade(socket, 401, "missing_token");
-      return;
-    }
-    const unverified = parseRelayTokenUnverified(token);
-    if (unverified === null) {
-      rejectUpgrade(socket, 401, "malformed_token");
-      return;
-    }
-    const { machineId, role, deviceId, pairSessionId } = unverified.claims;
-    const room = rooms.get(machineId);
-    if (room === undefined) {
-      rejectUpgrade(socket, 401, "unknown_machine");
-      return;
-    }
-    let verifyKey: Buffer | undefined;
-    if (role === "daemon" || role === "pair") {
-      verifyKey = room.relayMachinePub;
-    } else if (role === "device" && deviceId !== undefined) {
-      verifyKey = room.devices.get(deviceId);
-    }
-    if (verifyKey === undefined) {
-      rejectUpgrade(socket, 403, "unknown_or_revoked_device");
-      return;
-    }
-    const verified = verifyRelayToken(token, verifyKey, Math.floor(nowMs() / 1000));
-    if (!verified.ok) {
-      rejectUpgrade(socket, 401, verified.reason);
-      return;
-    }
-    if (role !== "daemon" && room.peers.size >= maxPhonesPerMachine) {
-      rejectUpgrade(socket, 429, "too_many_peers");
-      return;
-    }
 
+  /** WS /v1/connect — relay/PROTOCOL.md "Connect order". Everything here is synchronous (Node's Ed25519 verify included),
+   * so the state read before the signature check is still the state when the slot is reserved. */
+  const upgrade = (req: IncomingMessage, socket: Duplex, head: Buffer): void => {
+    const url = new URL(req.url ?? "/", "http://relay.invalid");
+    const reject = (refusal: Refusal, extra: Record<string, unknown> = {}): void => rejectUpgrade(socket, refused("/v1/connect", refusal, extra));
+    if (url.pathname !== "/v1/connect") { reject({ status: 400, code: "bad_request" }); return; }
+    if (breakerOpen()) { reject({ status: 429, code: "rate_limited", retryAfterSec: 60 }); return; }
+    const ip = clientKey(req);
+    if ((socketsByIp.get(ip) ?? 0) >= maxSocketsPerIp) { reject({ status: 429, code: "rate_limited", retryAfterSec: 30 }); return; }
+    const clientLimited = clientLimit.take(ip, nowMs());
+    if (clientLimited !== null) { reject(clientLimited); return; }
+    const token = bearer(req);
+    const parsed = token === null ? null : parseRelayToken(token);
+    if (parsed === null) { reject({ status: 401, code: "token_invalid" }); return; }
+    const tag = { role: parsed.role, machine: idTag(parsed.machineId) };
+    const limited = connectLimit.take(`${parsed.machineId}|${ip}`, nowMs());
+    if (limited !== null) { reject(limited, tag); return; }
+    const room = rooms.get(parsed.machineId);
+    if (room === undefined) { reject({ status: 404, code: "machine_unknown" }, tag); return; }
+
+    let verifyKey: Buffer;
+    let revoked = false;
+    if (parsed.role === "device") {
+      const live = room.devices.get(parsed.deviceId!);
+      const stone = live === undefined ? room.tombstones.get(parsed.deviceId!) : undefined;
+      if (live === undefined && stone === undefined) {
+        reject(liveDaemon(room) === null ? { status: 503, code: "daemon_unavailable" } : { status: 404, code: "device_unknown" }, tag);
+        return;
+      }
+      verifyKey = live ?? stone!.pub;
+      revoked = live === undefined;
+    } else {
+      verifyKey = room.pub;
+    }
+    if (!ed25519Verify(verifyKey, parsed.signingInput, parsed.signature)) { reject({ status: 401, code: "token_invalid" }, tag); return; }
+    const claims = checkClaims(parsed, "ws");
+    if (claims.refusal !== undefined) { reject(claims.refusal, tag); return; }
+    // A revoked device is told so before its jti is consumed: it never writes to the replay cache.
+    if (revoked) { reject({ status: 403, code: "device_revoked" }, tag); return; }
+    const replay = consumeJti(room, parsed, claims.jti, claims.exp);
+    if (replay !== null) { reject(replay, tag); return; }
+
+    if (parsed.role === "daemon") {
+      wss.handleUpgrade(req, socket, head, ws => attachDaemon(room, ws, ip));
+      return;
+    }
+    if (liveDaemon(room) === null) { reject({ status: 503, code: "daemon_unavailable" }, tag); return; }
+    const peerId = parsed.deviceId ?? parsed.pairSessionId!;
+    const others = [...room.peers.values()].filter(peer => !(parsed.role === "device" && peer.role === "device" && peer.peerId === peerId));
+    if (others.length >= L.socketsPerMachine) { reject({ status: 429, code: "too_many_peers", retryAfterSec: 5 }, tag); return; }
+    // `ws` completes an upgrade without verifyClient synchronously, so the slot is taken in this same turn.
     wss.handleUpgrade(req, socket, head, ws => {
-      attachSocket(room, ws, role, deviceId ?? pairSessionId ?? "daemon");
+      if (parsed.role === "device") {
+        for (const peer of [...room.peers.values()]) {
+          if (peer.role === "device" && peer.peerId === peerId) closePeer(room, peer, RelayClose.superseded, "superseded", true);
+        }
+      }
+      attachPeer(room, ws, parsed.role as "pair" | "device", peerId, ip);
     });
   };
 
-  const attachSocket = (room: MachineRoom, ws: WebSocket, role: RelayRole, peerId: string): void => {
-    if (role === "daemon") {
-      // Replace any previous daemon socket cleanly (authenticated by relayMachinePriv).
-      if (room.daemon !== null && room.daemon.readyState === WebSocket.OPEN) {
-        room.daemon.close(1000, "replaced_by_new_daemon");
-      }
-      if (room.daemonIdleTimer !== null) clearTimeout(room.daemonIdleTimer);
-      room.daemon = ws;
+  const trackIp = (ws: WebSocket, ip: string): void => {
+    socketsByIp.set(ip, (socketsByIp.get(ip) ?? 0) + 1);
+    ws.once("close", () => {
+      const left = (socketsByIp.get(ip) ?? 1) - 1;
+      if (left <= 0) socketsByIp.delete(ip); else socketsByIp.set(ip, left);
+    });
+  };
 
-      const resetDaemonIdle = () => {
-        if (room.daemonIdleTimer !== null) clearTimeout(room.daemonIdleTimer);
-        room.daemonIdleTimer = setTimeout(() => {
-          if (room.daemon === ws) ws.close(1000, "idle_timeout");
-        }, idleTimeoutMs);
-        room.daemonIdleTimer.unref?.();
-      };
-      resetDaemonIdle();
-      // A WebSocket ping (the daemon's keepalive; `ws` answers the pong itself) counts as activity, so an idle but
-      // healthy daemon socket isn't closed and phones don't see the Mac flap between Unavailable and back.
-      ws.on("ping", resetDaemonIdle);
-
-      // Notify newly connected daemon of any already-waiting peers
-      for (const peer of room.peers.values()) {
-        const openEnv = encodeRelayEnvelope({
-          op: RelayOp.PEER_OPEN,
-          connId: peer.connId,
-          payload: Buffer.from(JSON.stringify({ role: peer.role, id: peer.peerId }), "utf8"),
-        });
-        ws.send(openEnv, { binary: true });
-      }
-
-      ws.on("message", (raw, isBinary) => {
-        resetDaemonIdle();
-        if (!isBinary) {
-          ws.close(1003, "binary_required");
-          return;
-        }
-        const buf = rawDataToBuffer(raw);
-        if (buf.length > MAX_DAEMON_WS_FRAME_BYTES) {
-          ws.close(1009, "frame_too_large");
-          return;
-        }
-        let env;
-        try {
-          env = decodeRelayEnvelope(buf);
-        } catch {
-          ws.close(1002, "invalid_envelope");
-          return;
-        }
-        if (env.op === RelayOp.PEER_CLOSE) {
-          cleanupPeer(room, env.connId, "closed_by_daemon", false);
-          return;
-        }
-        if (env.op === RelayOp.PEER_DATA) {
-          if (circuitTripped()) {
-            ws.close(1013, "relay_budget_exceeded");
-            return;
-          }
-          // What the daemon sends each phone is charged to that phone's own bucket (phones can't drain the daemon's, and
-          // one phone can't get another closed); over it, only that phone is closed.
-          const peer = room.peers.get(env.connId);
-          if (peer !== undefined && !peer.downBucket.tryConsume(env.payload.length, nowMs())) {
-            cleanupPeer(room, env.connId, "rate_limited", true);
-            return;
-          }
-          // A total for the machine too (reconnecting a phone doesn't refill it), set at four phones' worth so a phone's own
-          // budget closes a heavy one first. Over it, this frame's phone is closed (an unsent frame would leave its Noise
-          // stream broken anyway) — never the daemon.
-          if (peer !== undefined && !room.daemonByteBucket.tryConsume(env.payload.length, nowMs())) {
-            cleanupPeer(room, env.connId, "rate_limited", true);
-            return;
-          }
-          if (peer !== undefined && peer.ws.readyState === WebSocket.OPEN) {
-            totalForwardedFrames += 1;
-            peer.ws.send(env.payload, { binary: true });
-          }
-        }
-      });
-
-      ws.on("close", () => {
-        if (room.daemon === ws) {
-          room.daemon = null;
-          if (room.daemonIdleTimer !== null) {
-            clearTimeout(room.daemonIdleTimer);
-            room.daemonIdleTimer = null;
-          }
-          // Close waiting peers cleanly so phones immediately enter truthful Unavailable state (ADR 0004).
-          for (const connId of [...room.peers.keys()]) {
-            cleanupPeer(room, connId, "daemon_disconnected", false);
-          }
-        }
-      });
-      return;
-    }
-
-    // Peer socket (`role=pair` or `role=device`)
-    const connId = room.nextConnId++;
-    const t0 = nowMs();
-    const firstFrameTimer = setTimeout(() => {
-      const p = room.peers.get(connId);
-      if (p !== undefined && !p.receivedFirstFrame) {
-        cleanupPeer(room, connId, "first_frame_timeout", true);
-      }
-    }, firstFrameDeadlineMs);
-    firstFrameTimer.unref?.();
-
-    const makeIdleTimer = () => {
-      const timer = setTimeout(() => {
-        cleanupPeer(room, connId, "idle_timeout", true);
-      }, idleTimeoutMs);
-      timer.unref?.();
-      return timer;
-    };
-
-    const peer: PeerConn = {
-      connId,
-      ws,
-      role,
-      peerId,
-      receivedFirstFrame: false,
-      firstFrameTimer,
-      idleTimer: makeIdleTimer(),
-      frameBucket: new TokenBucket(phoneFramesPerMin, phoneFrameBurst, t0),
-      byteBucket: new TokenBucket(phoneBytesPerMin, phoneByteBurst, t0),
-      downBucket: new TokenBucket(phoneBytesPerMin * 4, phoneByteBurst * 4, t0),
-    };
-    room.peers.set(connId, peer);
-
-    if (room.daemon !== null && room.daemon.readyState === WebSocket.OPEN) {
-      const openEnv = encodeRelayEnvelope({
-        op: RelayOp.PEER_OPEN,
-        connId,
-        payload: Buffer.from(JSON.stringify({ role, id: peerId }), "utf8"),
-      });
-      room.daemon.send(openEnv, { binary: true });
-    }
+  const attachDaemon = (room: MachineRoom, ws: WebSocket, ip: string): void => {
+    trackIp(ws, ip);
+    // A newer daemon proved the machine key: the old one gets 4409 and its phones go with it.
+    if (room.daemon !== null) retireDaemon(room, RelayClose.superseded, "superseded");
+    room.epoch += 1;
+    const daemon: DaemonConn = { ws, epoch: room.epoch, retired: false, timer: null };
+    room.daemon = daemon;
+    room.lastDaemonAtMs = nowMs();
+    room.lastActiveMs = room.lastDaemonAtMs;
+    armDaemonTimer(room, daemon);
 
     ws.on("message", (raw, isBinary) => {
-      // A peer the relay already dropped can keep sending while its close handshake runs: none of it is forwarded.
-      if (room.peers.get(connId) !== peer) return;
-      clearTimeout(peer.idleTimer);
-      peer.idleTimer = makeIdleTimer();
-      if (!peer.receivedFirstFrame) {
-        peer.receivedFirstFrame = true;
-        clearTimeout(peer.firstFrameTimer);
-      }
-      if (!isBinary) {
-        cleanupPeer(room, connId, "binary_required", true);
-        return;
-      }
+      if (daemon.retired) return;
+      armDaemonTimer(room, daemon);
+      if (!isBinary) { ws.close(RelayClose.protocol, "binary_only"); return; }
       const buf = rawDataToBuffer(raw);
-      if (buf.length > MAX_NOISE_MESSAGE_BYTES) {
-        cleanupPeer(room, connId, "frame_too_large", true);
+      if (buf.length < RELAY_ENVELOPE_HEADER_BYTES || buf.length > MAX_DAEMON_WS_FRAME_BYTES) { ws.close(RelayClose.protocol, "oversize"); return; }
+      const op = buf[0]!;
+      const connId = buf.readUInt32BE(1);
+      const payload = buf.subarray(RELAY_ENVELOPE_HEADER_BYTES);
+      if (op === RelayOp.HEARTBEAT) {
+        if (connId !== 0 || payload.length !== HEARTBEAT_PAYLOAD_BYTES) { ws.close(RelayClose.protocol, "protocol"); return; }
+        ws.send(encodeRelayEnvelope({ op: RelayOp.HEARTBEAT_ACK, connId: 0, payload }), { binary: true });
         return;
       }
-      if (circuitTripped()) {
-        cleanupPeer(room, connId, "relay_budget_exceeded", true);
+      if (op === RelayOp.PEER_CLOSE) {
+        const peer = room.peers.get(connId);
+        if (peer !== undefined) closePeer(room, peer, RelayClose.normal, "closed_by_daemon", false);
         return;
       }
+      if (op !== RelayOp.PEER_DATA) { ws.close(RelayClose.protocol, "protocol"); return; }
+      const peer = room.peers.get(connId);
+      if (peer === undefined || peer.closed) return; // a late frame for a phone that is gone
       const t = nowMs();
-      if (
-        !peer.frameBucket.tryConsume(1, t)
-        || !peer.byteBucket.tryConsume(buf.length, t)
-        || !room.machineFrameBucket.tryConsume(1, t)
-        || !room.machineByteBucket.tryConsume(buf.length, t)
-      ) {
-        cleanupPeer(room, connId, "rate_limited", true);
+      // Over its own downstream budget or the machine's, only that phone is closed (the frame isn't sent; an unsent
+      // frame would break its Noise stream anyway). Never the daemon.
+      if (!peer.down.take(payload.length, t) || !room.down.take(payload.length, t)) {
+        closePeer(room, peer, RelayClose.rateLimited, "rate_limited", true);
         return;
       }
-      if (room.daemon === null || room.daemon.readyState !== WebSocket.OPEN) {
-        cleanupPeer(room, connId, "daemon_unavailable", false);
-        return;
-      }
-      totalForwardedFrames += 1;
-      const env = encodeRelayEnvelope({ op: RelayOp.PEER_DATA, connId, payload: buf });
-      room.daemon.send(env, { binary: true });
+      countForwarded();
+      armPeerTimer(room, peer); // idle counts traffic in either direction
+      peer.ws.send(payload, { binary: true });
     });
 
     ws.on("close", () => {
-      cleanupPeer(room, connId, "peer_closed", true);
+      if (daemon.timer !== null) clearTimeout(daemon.timer);
+      if (room.daemon !== daemon) return; // superseded or deleted: the room already moved on
+      log({ event: "close", leg: "daemon", machine: idTag(room.machineId) });
+      retireDaemon(room, null, "daemon_gone");
     });
+    ws.on("error", () => {});
+  };
+
+  const attachPeer = (room: MachineRoom, ws: WebSocket, role: "pair" | "device", peerId: string, ip: string): void => {
+    trackIp(ws, ip);
+    const connId = room.nextConnId;
+    room.nextConnId = room.nextConnId >= 0xffff_fff0 ? 1 : room.nextConnId + 1;
+    const t0 = nowMs();
+    const peer: PeerConn = {
+      connId, ws, role, peerId, closed: false, firstFrame: false, timer: null,
+      frames: new TokenBucket(L.phoneUp.framesPerMin, L.phoneUp.framesBurst, t0),
+      bytes: new TokenBucket(L.phoneUp.bytesPerMin, L.phoneUp.bytesBurst, t0),
+      down: new TokenBucket(L.phoneDown.bytesPerMin, L.phoneDown.bytesBurst, t0),
+    };
+    room.peers.set(connId, peer);
+    armPeerTimer(room, peer);
+    liveDaemon(room)?.ws.send(encodeRelayEnvelope({
+      op: RelayOp.PEER_OPEN,
+      connId,
+      payload: Buffer.from(JSON.stringify({ role, id: peerId }), "utf8"),
+    }), { binary: true });
+
+    ws.on("message", (raw, isBinary) => {
+      if (peer.closed) return; // dropped while its close handshake runs: nothing more is forwarded
+      peer.firstFrame = true;
+      armPeerTimer(room, peer);
+      if (!isBinary) { closePeer(room, peer, RelayClose.protocol, "binary_only", true); return; }
+      const buf = rawDataToBuffer(raw);
+      if (buf.length > MAX_NOISE_MESSAGE_BYTES) { closePeer(room, peer, RelayClose.protocol, "oversize", true); return; }
+      if (breakerOpen()) { closePeer(room, peer, RelayClose.rateLimited, "rate_limited", true); return; }
+      const t = nowMs();
+      if (!peer.frames.take(1, t) || !peer.bytes.take(buf.length, t) || !room.up.take(buf.length, t)) {
+        closePeer(room, peer, RelayClose.rateLimited, "rate_limited", true);
+        return;
+      }
+      const daemon = liveDaemon(room);
+      if (daemon === null) { closePeer(room, peer, RelayClose.daemonGone, "daemon_gone", false); return; }
+      countForwarded();
+      daemon.ws.send(encodeRelayEnvelope({ op: RelayOp.PEER_DATA, connId, payload: buf }), { binary: true });
+    });
+
+    ws.on("close", () => {
+      if (peer.closed) return;
+      peer.closed = true;
+      if (peer.timer !== null) clearTimeout(peer.timer);
+      room.peers.delete(connId);
+      sendPeerClose(room, connId, "peer_closed");
+    });
+    ws.on("error", () => {});
   };
 
   await new Promise<void>((resolve, reject) => {
@@ -660,21 +862,29 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
   const addr = httpServer.address();
   const port = typeof addr === "object" && addr !== null ? addr.port : 0;
   const bindHost = opts.host ?? "127.0.0.1";
+  if (publicHost.length === 0) publicHost = `${bindHost}:${port}`.toLowerCase();
 
   return {
     url: `http://${bindHost}:${port}`,
     wsUrl: `ws://${bindHost}:${port}/v1/connect`,
     port,
-    stats: () => ({ machines: rooms.size, totalForwardedFrames }),
+    publicHost,
+    sweep,
+    stats: () => ({ machines: rooms.size, forwardedThisWindow }),
+    replayRows: machineId => rooms.get(machineId)?.replay.size ?? null,
     close: async () => {
+      clearInterval(sweepTimer);
       for (const room of rooms.values()) {
-        if (room.daemonIdleTimer !== null) clearTimeout(room.daemonIdleTimer);
-        for (const connId of [...room.peers.keys()]) {
-          cleanupPeer(room, connId, "relay_shutdown", false);
+        for (const peer of [...room.peers.values()]) closePeer(room, peer, 1001, "relay_shutdown", false);
+        if (room.daemon !== null) {
+          room.daemon.retired = true;
+          if (room.daemon.timer !== null) clearTimeout(room.daemon.timer);
+          room.daemon.ws.close(1001, "relay_shutdown");
         }
-        room.daemon?.close(1001, "relay_shutdown");
       }
+      for (const client of wss.clients) client.terminate();
       await new Promise<void>(resolve => wss.close(() => resolve()));
+      httpServer.closeAllConnections();
       await new Promise<void>(resolve => httpServer.close(() => resolve()));
     },
   };
