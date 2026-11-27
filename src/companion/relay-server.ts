@@ -73,12 +73,6 @@ class TokenBucket {
     this.tokens -= cost;
     return true;
   }
-
-  /** Share of the bucket used right now (0 = full, 1 = empty): who's spending the most. */
-  usedFraction(nowMs: number): number {
-    const tokens = Math.min(this.capacity, this.tokens + Math.max(0, nowMs - this.lastRefillMs) * this.ratePerMs);
-    return 1 - tokens / this.capacity;
-  }
 }
 
 interface PeerConn {
@@ -309,7 +303,7 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
           nextConnId: 1,
           machineFrameBucket: new TokenBucket(machineFramesPerMin, Math.max(phoneFrameBurst * 2, 240), t),
           machineByteBucket: new TokenBucket(machineBytesPerMin, Math.max(phoneByteBurst * 2, 4 * 1024 * 1024), t),
-          daemonByteBucket: new TokenBucket(machineBytesPerMin * 2, Math.max(phoneByteBurst * 4, 8 * 1024 * 1024), t),
+          daemonByteBucket: new TokenBucket(phoneBytesPerMin * 16, phoneByteBurst * 16, t),
         });
       }
       sendJson(res, 200, { machineId: checked.machineId });
@@ -537,12 +531,11 @@ export async function startReferenceRelay(opts: ReferenceRelayOptions = {}): Pro
             cleanupPeer(room, env.connId, "rate_limited", true);
             return;
           }
-          // A total for the machine too (reconnecting doesn't refill it): over it, the phone that has used the most of its
-          // own budget is closed — never the daemon, and not whichever phone happened to be next.
+          // A total for the machine too (reconnecting a phone doesn't refill it), set at four phones' worth so a phone's own
+          // budget closes a heavy one first. Over it, this frame's phone is closed (an unsent frame would leave its Noise
+          // stream broken anyway) — never the daemon.
           if (peer !== undefined && !room.daemonByteBucket.tryConsume(env.payload.length, nowMs())) {
-            const t = nowMs();
-            const heaviest = [...room.peers.entries()].sort((a, b) => b[1].downBucket.usedFraction(t) - a[1].downBucket.usedFraction(t))[0];
-            if (heaviest !== undefined) cleanupPeer(room, heaviest[0], "rate_limited", true);
+            cleanupPeer(room, env.connId, "rate_limited", true);
             return;
           }
           if (peer !== undefined && peer.ws.readyState === WebSocket.OPEN) {
