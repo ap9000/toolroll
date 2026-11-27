@@ -13,10 +13,14 @@ import type { Store } from "../store.js";
 import type { CompanionReadHandlers } from "./daemon.js";
 import { CompanionService, relayAddressesOf, type CompanionRelayChoice } from "./service.js";
 
-/** The built-in relay's loopback port unless the environment says otherwise (`TOOLROLL_PHONE_RELAY_PORT`). */
-export const DEFAULT_BUILT_IN_RELAY_PORT = 4190;
+/** The built-in relay's loopback port unless the environment says otherwise (`TOOLROLL_PHONE_RELAY_PORT`). Not 4190:
+ * that is on the Fetch standard's bad-port list (Sieve), which Node's fetch refuses outright. */
+export const DEFAULT_BUILT_IN_RELAY_PORT = 4199;
 
 type Db = Store["handle"];
+
+/** The Fetch standard's bad ports at or above 1024 (https://fetch.spec.whatwg.org/#bad-port): fetch and browsers refuse them. */
+const FETCH_BAD_PORTS = new Set([1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080]);
 
 function ensureAccessTable(db: Db): void {
   db.exec(`CREATE TABLE IF NOT EXISTS companion_access (
@@ -54,6 +58,7 @@ export function relayChoiceOf(env: NodeJS.ProcessEnv): { ok: true; choice: Compa
   const rawPort = env["TOOLROLL_PHONE_RELAY_PORT"]?.trim();
   const port = rawPort === undefined || rawPort.length === 0 ? DEFAULT_BUILT_IN_RELAY_PORT : Number(rawPort);
   if (!Number.isInteger(port) || port < 1024 || port > 65_535) return { ok: false, problem: "TOOLROLL_PHONE_RELAY_PORT must be a port from 1024 to 65535." };
+  if (FETCH_BAD_PORTS.has(port)) return { ok: false, problem: `TOOLROLL_PHONE_RELAY_PORT ${port} is a port web clients refuse to connect to; choose another.` };
   return { ok: true, choice: { kind: "built-in", port } };
 }
 

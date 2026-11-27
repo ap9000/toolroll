@@ -246,6 +246,12 @@ export class CompanionService {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal: AbortSignal.timeout(10_000),
       redirect: "error",
+    }).catch((error: unknown) => {
+      // fetch's own message is only "fetch failed"; the reason (refused, reset, TLS, a timeout) is its cause.
+      const cause = error instanceof Error && error.cause instanceof Error ? error.cause : null;
+      const rawCode = cause === null ? undefined : (cause as Error & { code?: unknown }).code;
+      const code = typeof rawCode === "string" ? ` (${rawCode})` : "";
+      throw new Error(`couldn't reach ${this.addresses!.http}: ${cause?.message ?? (error instanceof Error ? error.message : String(error))}${code}`);
     });
     const text = await response.text();
     if (!response.ok) throw new Error(`the relay answered ${response.status}${text.length > 0 && text.length < 200 ? ` ${text}` : ""}`);
