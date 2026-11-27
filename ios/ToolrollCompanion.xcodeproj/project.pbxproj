@@ -14,6 +14,9 @@
 		AA0000050000000000000001 /* WorkInboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000050000000000000001 /* WorkInboxView.swift */; };
 		AA0000060000000000000001 /* TaskDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000060000000000000001 /* TaskDetailView.swift */; };
 		AA0000070000000000000001 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000070000000000000001 /* SettingsView.swift */; };
+		AA00000B0000000000000001 /* Presentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000B0000000000000001 /* Presentation.swift */; };
+		AA00000C0000000000000001 /* DiffFileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000C0000000000000001 /* DiffFileView.swift */; };
+		AA00000D0000000000000001 /* LiveWatchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000D0000000000000001 /* LiveWatchView.swift */; };
 		AA0000080000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BB0000080000000000000001 /* Assets.xcassets */; };
 		AA0000090000000000000001 /* ToolrollCompanionCore in Frameworks */ = {isa = PBXBuildFile; productRef = PP0000010000000000000001 /* ToolrollCompanionCore */; };
 		AA0000100000000000000001 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000100000000000000001 /* NotificationService.swift */; };
@@ -53,6 +56,9 @@
 		BB0000050000000000000001 /* WorkInboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkInboxView.swift; sourceTree = "<group>"; };
 		BB0000060000000000000001 /* TaskDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskDetailView.swift; sourceTree = "<group>"; };
 		BB0000070000000000000001 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		BB00000B0000000000000001 /* Presentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Presentation.swift; sourceTree = "<group>"; };
+		BB00000C0000000000000001 /* DiffFileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffFileView.swift; sourceTree = "<group>"; };
+		BB00000D0000000000000001 /* LiveWatchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveWatchView.swift; sourceTree = "<group>"; };
 		BB0000080000000000000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		BB0000090000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		BB00000A0000000000000001 /* ToolrollCompanion.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ToolrollCompanion.entitlements; sourceTree = "<group>"; };
@@ -102,6 +108,9 @@
 				BB0000050000000000000001 /* WorkInboxView.swift */,
 				BB0000060000000000000001 /* TaskDetailView.swift */,
 				BB0000070000000000000001 /* SettingsView.swift */,
+				BB00000B0000000000000001 /* Presentation.swift */,
+				BB00000C0000000000000001 /* DiffFileView.swift */,
+				BB00000D0000000000000001 /* LiveWatchView.swift */,
 				BB0000080000000000000001 /* Assets.xcassets */,
 				BB0000090000000000000001 /* Info.plist */,
 				BB00000A0000000000000001 /* ToolrollCompanion.entitlements */,
@@ -235,6 +244,9 @@
 				AA0000050000000000000001 /* WorkInboxView.swift in Sources */,
 				AA0000060000000000000001 /* TaskDetailView.swift in Sources */,
 				AA0000070000000000000001 /* SettingsView.swift in Sources */,
+				AA00000B0000000000000001 /* Presentation.swift in Sources */,
+				AA00000C0000000000000001 /* DiffFileView.swift in Sources */,
+				AA00000D0000000000000001 /* LiveWatchView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -271,6 +283,7 @@
 				MARKETING_VERSION = 0.1.0;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 6.0;
 			};

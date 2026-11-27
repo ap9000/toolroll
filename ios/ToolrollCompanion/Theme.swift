@@ -1,58 +1,189 @@
 import SwiftUI
 
+/// Signal (DESIGN.md) for the phone: warm paper, ink for every act and for what waits on a person,
+/// colour kept for status (failed vermilion, live blue, done green). No amber anywhere.
 enum ToolrollTheme {
-    static let paper = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.067, green: 0.071, blue: 0.078, alpha: 1) // #111214
-            : UIColor(red: 0.980, green: 0.976, blue: 0.965, alpha: 1) // #FAF9F6
-    })
+    private static func dynamic(light: UIColor, dark: UIColor) -> Color {
+        Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? dark : light })
+    }
 
-    static let surface = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.106, green: 0.114, blue: 0.125, alpha: 1) // #1B1D20
-            : UIColor.white
-    })
+    private static func hex(_ value: UInt32, alpha: CGFloat = 1) -> UIColor {
+        UIColor(
+            red: CGFloat((value >> 16) & 0xff) / 255,
+            green: CGFloat((value >> 8) & 0xff) / 255,
+            blue: CGFloat(value & 0xff) / 255,
+            alpha: alpha
+        )
+    }
 
-    static let subtleFill = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.149, green: 0.157, blue: 0.173, alpha: 1)
-            : UIColor(red: 0.949, green: 0.941, blue: 0.922, alpha: 1) // #F2F0EB
-    })
+    static let paper = dynamic(light: hex(0xFAF9F6), dark: hex(0x111214))
+    static let surface = dynamic(light: .white, dark: hex(0x1B1D20))
+    static let subtleFill = dynamic(light: hex(0xF2F0EB), dark: hex(0x26282C))
+    static let hairline = dynamic(light: UIColor(white: 0, alpha: 0.08), dark: UIColor(white: 1, alpha: 0.10))
+    static let ink = dynamic(light: hex(0x171717), dark: hex(0xEDEDED))
+    static let onInk = dynamic(light: .white, dark: hex(0x0A0A0A))
+    static let muted = dynamic(light: hex(0x666666), dark: hex(0xA1A1A1))
 
-    static let hairline = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(white: 1, alpha: 0.10)
-            : UIColor(white: 0, alpha: 0.08)
-    })
+    static let neutralInk = dynamic(light: hex(0x525252), dark: hex(0xB4B4B4))
+    static let neutralSoft = dynamic(light: hex(0xF0EFEC), dark: hex(0x26282C))
 
-    static let ink = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.953, green: 0.949, blue: 0.937, alpha: 1)
-            : UIColor(red: 0.102, green: 0.106, blue: 0.118, alpha: 1) // #1A1B1E
-    })
-
-    static let muted = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.620, green: 0.635, blue: 0.663, alpha: 1)
-            : UIColor(red: 0.412, green: 0.420, blue: 0.443, alpha: 1)
-    })
-
-    static let vermilion = Color(red: 0.831, green: 0.267, blue: 0.180) // #D4442E
-    static let forest = Color(red: 0.180, green: 0.490, blue: 0.310)    // #2E7D4F
-    static let cobalt = Color(red: 0.145, green: 0.388, blue: 0.922)    // #2563EB
-    static let amber = Color(red: 0.788, green: 0.486, blue: 0.075)
+    static let danger = dynamic(light: hex(0xC4320A), dark: hex(0xFF977D))
+    static let dangerSoft = dynamic(light: hex(0xFEEBE7), dark: hex(0xFF977D, alpha: 0.14))
+    static let success = dynamic(light: hex(0x218358), dark: hex(0x3DD68C))
+    static let successSoft = dynamic(light: hex(0xE6F6EB), dark: hex(0x3DD68C, alpha: 0.14))
+    static let info = dynamic(light: hex(0x0D74CE), dark: hex(0x70B8FF))
+    static let infoSoft = dynamic(light: hex(0xE6F4FE), dark: hex(0x70B8FF, alpha: 0.14))
 }
 
-struct StatusPill: View {
-    let label: String
-    let tint: Color
+/// The one state word a row or task wears. Needs-you states are a solid ink chip; status keeps its hue.
+enum StateTone {
+    case needs
+    case live
+    case done
+    case failed
+    case neutral
+
+    var foreground: Color {
+        switch self {
+        case .needs: return ToolrollTheme.onInk
+        case .live: return ToolrollTheme.info
+        case .done: return ToolrollTheme.success
+        case .failed: return ToolrollTheme.danger
+        case .neutral: return ToolrollTheme.neutralInk
+        }
+    }
+
+    var background: Color {
+        switch self {
+        case .needs: return ToolrollTheme.ink
+        case .live: return ToolrollTheme.infoSoft
+        case .done: return ToolrollTheme.successSoft
+        case .failed: return ToolrollTheme.dangerSoft
+        case .neutral: return ToolrollTheme.neutralSoft
+        }
+    }
+
+    /// The hue for an icon or a line of status text (needs-you text stays ink).
+    var hue: Color {
+        switch self {
+        case .needs: return ToolrollTheme.ink
+        default: return foreground
+        }
+    }
+}
+
+struct StateChip: View {
+    let word: String
+    let tone: StateTone
 
     var body: some View {
-        Text(label)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(tint)
+        Text(word)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(tone.foreground)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .background(tint.opacity(0.13), in: Capsule())
+            .background(tone.background, in: Capsule())
+    }
+}
+
+/// A card on paper: white surface, hairline edge, or a full 1px ink outline when it waits on a person.
+struct CardBackground: ViewModifier {
+    var needsYou = false
+    var radius: CGFloat = 14
+
+    func body(content: Content) -> some View {
+        content
+            .background(ToolrollTheme.surface, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(needsYou ? ToolrollTheme.ink : ToolrollTheme.hairline, lineWidth: 1)
+            )
+    }
+}
+
+extension View {
+    func card(needsYou: Bool = false, radius: CGFloat = 14) -> some View {
+        modifier(CardBackground(needsYou: needsYou, radius: radius))
+    }
+}
+
+/// The primary act: ink fill, paper words.
+struct InkButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.headline)
+            .frame(maxWidth: .infinity, minHeight: 50)
+            .padding(.horizontal, 16)
+            .foregroundStyle(ToolrollTheme.onInk)
+            .background(ToolrollTheme.ink, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .opacity(configuration.isPressed ? 0.82 : 1)
+    }
+}
+
+/// A secondary act: a paper pill with an ink label.
+struct OutlineButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.headline)
+            .frame(maxWidth: .infinity, minHeight: 50)
+            .padding(.horizontal, 16)
+            .foregroundStyle(ToolrollTheme.ink)
+            .background(ToolrollTheme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(ToolrollTheme.hairline, lineWidth: 1)
+            )
+            .opacity(configuration.isPressed ? 0.7 : 1)
+    }
+}
+
+/// The brand mark: three skewed bars, the middle one taller (DESIGN.md).
+struct BrandMark: View {
+    var size: CGFloat = 64
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
+                .fill(ToolrollTheme.ink)
+            HStack(alignment: .center, spacing: size * 0.07) {
+                bar(height: size * 0.30)
+                bar(height: size * 0.46)
+                bar(height: size * 0.30)
+            }
+            .transformEffect(CGAffineTransform(a: 1, b: 0, c: -0.18, d: 1, tx: size * 0.04, ty: 0))
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+
+    private func bar(height: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: size * 0.03)
+            .fill(ToolrollTheme.paper)
+            .frame(width: size * 0.08, height: height)
+    }
+}
+
+/// Renders an agent's sentence with `code` and *emphasis* (inline markdown only).
+func markdownText(_ string: String) -> Text {
+    let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+    if let attributed = try? AttributedString(markdown: string, options: options) {
+        return Text(attributed)
+    }
+    return Text(string)
+}
+
+enum RelativeTime {
+    static func date(_ string: String?) -> Date? {
+        guard let string else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: string) ?? ISO8601DateFormatter().date(from: string)
+    }
+
+    static func ago(_ date: Date, now: Date = Date()) -> String {
+        if now.timeIntervalSince(date) < 60 { return "just now" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: date, relativeTo: now)
     }
 }

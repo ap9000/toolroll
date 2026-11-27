@@ -138,7 +138,7 @@ public enum CompanionDemoFixtures {
                  {"label": "Goal", "words": "Make the refresh cookie strict without signing anyone out", "lines": []},
                  {"label": "Done when", "words": "The cookie is strict, old sessions keep working for 24 hours, and the project's checks pass", "lines": []},
                  {"label": "Agent", "words": "Claude Sonnet 5.5 plans; Claude Opus 5.5 builds", "lines": []},
-                 {"label": "Files", "words": "src/auth/cookies.ts, src/auth/refresh.ts and a new test", "lines": ["src/auth/cookies.ts", "src/auth/refresh.ts", "test/auth-rotation.test.ts"]},
+                 {"label": "Files", "words": "two files and one new test", "lines": ["src/auth/cookies.ts", "src/auth/refresh.ts", "test/auth-rotation.test.ts"]},
                  {"label": "Network", "words": "the agent's provider and npm only", "lines": []},
                  {"label": "Tools", "words": "file edits and routine commands; anything risky stops", "lines": []},
                  {"label": "May cost", "words": "Up to $2.00 · stops after 20 min without progress", "lines": []}

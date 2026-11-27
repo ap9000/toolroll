@@ -141,7 +141,27 @@ public struct DemoCompanionSource: CompanionDataSource {
 
     public func runWindow(run: Int, cursor: String?) async throws -> LiveSessionWindow {
         try await Task.sleep(for: latency)
-        return try CompanionDemoFixtures.liveWindow(run: run)
+        let window = try CompanionDemoFixtures.liveWindow(run: run)
+        // Rebase the sample records onto the last couple of minutes, so they read as live.
+        let records = window.window.records ?? []
+        let formatter = ISO8601DateFormatter()
+        let now = Date()
+        let rebased = records.enumerated().map { index, record in
+            LiveRecord(
+                kind: record.kind, at: formatter.string(from: now.addingTimeInterval(Double(index - records.count) * 20)),
+                text: record.text, stepId: record.stepId, stepKind: record.stepKind, target: record.target,
+                ok: record.ok, out: record.out, stream: record.stream, detail: record.detail, desc: record.desc,
+                dropped: record.dropped
+            )
+        }
+        let w = window.window
+        return LiveSessionWindow(
+            version: window.version, session: window.session, room: window.room, live: window.live, file: window.file,
+            window: LiveWindow(
+                ok: w.ok, records: rebased, cursor: w.cursor, restarted: w.restarted, earlier: w.earlier,
+                quarantined: w.quarantined, skipped: w.skipped, more: w.more, reason: w.reason
+            )
+        )
     }
 
     public func watchRun(run: Int, cursor: String?) async throws -> AsyncThrowingStream<LiveRecord, Error> {
