@@ -401,8 +401,13 @@ public actor CompanionRelayClient {
     /// clock can neither end it at once nor hold the socket for long.
     private func pairingWait(expiresAtMs: Double?) -> Duration {
         guard let expiresAtMs else { return timing.pairingWaitMax }
-        let remaining = Duration.milliseconds(Int64(expiresAtMs - now().timeIntervalSince1970 * 1000))
-        return min(max(remaining, timing.pairingWaitMin), timing.pairingWaitMax)
+        // Clamp in floating point first: `expiresAtMs` comes from a scanned or pasted code, and Int64(_:) traps on a
+        // value out of range.
+        func milliseconds(_ d: Duration) -> Double { Double(d.components.seconds) * 1000 + Double(d.components.attoseconds) / 1e15 }
+        let minMs = milliseconds(timing.pairingWaitMin), maxMs = milliseconds(timing.pairingWaitMax)
+        let ms = expiresAtMs - now().timeIntervalSince1970 * 1000
+        let clamped = ms.isFinite ? min(max(ms, minMs), maxMs) : maxMs
+        return .milliseconds(Int64(clamped))
     }
 
     /// The RES to `pair.ready`: `{ ok, result: { deviceId, recoveryGeneration, pskEntropy } }`.

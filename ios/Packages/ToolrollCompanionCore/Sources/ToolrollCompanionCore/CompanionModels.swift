@@ -133,7 +133,7 @@ public struct PairingQRPayload: Codable, Equatable, Sendable {
         guard !machineId.isEmpty, !workspaceId.isEmpty, !pairSessionId.isEmpty else {
             throw PairingPayloadError.invalid("missing id")
         }
-        if let expiresAtMs, !(expiresAtMs.isFinite && expiresAtMs > 0) { throw PairingPayloadError.invalid("bad expiresAtMs") }
+        if let expiresAtMs, !(expiresAtMs.isFinite && expiresAtMs > 0 && expiresAtMs < 1e15) { throw PairingPayloadError.invalid("bad expiresAtMs") }
         guard CompanionRelayAuth.base64UrlDecode(macStaticPub)?.count == 32,
               CompanionRelayAuth.base64UrlDecode(pairPsk)?.count == 32
         else { throw PairingPayloadError.invalid("bad key length") }

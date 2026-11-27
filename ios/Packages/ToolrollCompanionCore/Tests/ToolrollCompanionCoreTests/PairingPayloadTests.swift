@@ -190,3 +190,14 @@ func cancelledScanIsDropped() {
     #expect(!code && !end)
     #expect(gate.phase == .idle)
 }
+
+@Test("An out-of-range expiry in a scanned code is refused, never converted", arguments: [-1.0, 0.0, 1e15, 1e300])
+func absurdExpiryRejected(expiresAtMs: Double) {
+    #expect(isInvalid(PairingFixtures.json { $0["expiresAtMs"] = expiresAtMs }))
+}
+
+@Test("A plausible expiry parses")
+func plausibleExpiryParses() throws {
+    let qr = try PairingQRPayload.parse(PairingFixtures.json { $0["expiresAtMs"] = 1_800_000_000_000.0 })
+    #expect(qr.expiresAtMs == 1_800_000_000_000)
+}
