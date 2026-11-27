@@ -32,6 +32,8 @@ export interface DirectLimits {
 const DEFAULT_LIMITS: DirectLimits = { sockets: 32, socketsPerAddress: 8, upgradesPerMinute: 30 };
 const RATE_ENTRIES = 512;
 const HEADER_DEADLINE_MS = 5_000;
+/** Bytes queued for one phone that isn't reading before it's dropped (its session budget is 1 MiB). */
+const DIRECT_BACKLOG_LIMIT = 1024 * 1024;
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 function ipv4Of(address: string): number[] | null {
@@ -143,6 +145,8 @@ export function startDirectServer(opts: DirectServerOptions): Promise<RunningDir
       id: `direct#${linkSeq}`,
       send: (_connId, payload) => { if (ws.readyState === WebSocket.OPEN) ws.send(payload, { binary: true }); },
       close: (_connId, reason) => { if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close(4000, reason.slice(0, 100)); },
+      backlog: () => ws.bufferedAmount,
+      backlogLimit: DIRECT_BACKLOG_LIMIT,
     };
     let alive = true;
     const liveness = setInterval(() => {

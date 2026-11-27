@@ -638,3 +638,30 @@ test("a hosted-only change can't turn phone access back on, and an approval does
   expect(moved.service()?.paths().some(path => path.kind === "hosted")).toBe(false);
 });
 
+
+describe("limits a paired phone can't get around (final review)", () => {
+  test("responses waiting on a phone that doesn't take them count against its budget; an oversized ping drops it", async () => {
+    const store = testStore();
+    const { service, direct } = await startBoth(store);
+    const phone = await pairPhone(service, "owner:A", direct);
+    const s = await PhoneSession.connect(phone, direct);
+    expect(await s.call("device.hello")).toMatchObject({ ok: true });
+    // A ~1 MB response is more chunks than the phone's first credit covers, so it's held; another read on top of it
+    // would pass the 1 MiB session budget and is refused rather than buffered.
+    s.open("run.window.read", { run: "1", size: "huge" });
+    const big = s.open("run.window.read", { run: "1" });
+    let refused: string | null = null;
+    for (let i = 0; i < 200 && refused === null; i++) {
+      const f = await s.frame();
+      if (f === null) break;
+      if (f.streamId === big && f.type === FrameType.ERROR) refused = (JSON.parse(f.payload.toString("utf8")) as { code: string }).code;
+    }
+    expect(refused).toBe("memory_limit");
+
+    const t = await PhoneSession.connect(phone, direct);
+    expect(await t.call("device.hello")).toMatchObject({ ok: true });
+    t.socket.send(t.session.encrypt(encodeFrame({ type: FrameType.PING, streamId: 0, seq: 1, payload: Buffer.alloc(1_000) })));
+    await until(() => t.socket.closed);
+    expect(t.socket.closeReason).toBe("ping_too_large");
+  });
+});

@@ -25,6 +25,7 @@ import {
   FrameType,
   GlobalBufferBudget,
   LiveWatchBuffer,
+  WATCH_IDLE_DEADLINE_MS,
   UnaryResponsePacer,
   type CompanionFrame,
 } from "./framing.js";
@@ -139,12 +140,17 @@ export interface PeerLink {
   readonly id: string;
   send(connId: number, payload: Buffer): void;
   close(connId: number, reason: string): void;
+  /** Bytes queued on this link and not yet written to the network (a phone that stops reading grows it). */
+  backlog?(): number;
+  /** The backlog past which a peer sending on this link is dropped rather than queued for. */
+  readonly backlogLimit?: number;
 }
 
 /** A relay socket as a link: frames ride PEER_DATA envelopes, a drop is a PEER_CLOSE. */
-export function relayEnvelopeLink(id: string, sendEnvelope: (envelope: Buffer) => void): PeerLink {
+export function relayEnvelopeLink(id: string, sendEnvelope: (envelope: Buffer) => void, backlog?: { bytes: () => number; limit: number }): PeerLink {
   return {
     id,
+    ...(backlog === undefined ? {} : { backlog: backlog.bytes, backlogLimit: backlog.limit }),
     send: (connId, payload) => sendEnvelope(encodeRelayEnvelope({ op: RelayOp.PEER_DATA, connId, payload })),
     close: (connId, reason) => sendEnvelope(encodeRelayEnvelope({ op: RelayOp.PEER_CLOSE, connId, payload: Buffer.from(JSON.stringify({ reason }), "utf8") })),
   };
@@ -172,7 +178,12 @@ interface ActivePeerConn {
   streamAccess: Map<number, string>;
 }
 
-interface WatchEntry { buffer: LiveWatchBuffer; unsubscribe: () => void; seq: number; ending: boolean }
+interface WatchEntry { buffer: LiveWatchBuffer; unsubscribe: () => void; seq: number; ending: boolean; lastCreditAtMs: number }
+
+/** A PING's payload is echoed back: anything bigger than a keepalive's token is refused. */
+const MAX_PING_PAYLOAD_BYTES = 64;
+/** How often deadlines that no inbound frame would trigger are checked (stuck requests, stalled responses, idle watches). */
+const DEADLINE_SWEEP_MS = 1_000;
 
 export interface CompanionDaemonOptions {
   store: Store;
@@ -204,6 +215,7 @@ export class CompanionDaemonEngine {
   private readonly peers = new Map<string, ActivePeerConn>();
   /** The ways a phone can reach this Mac right now (the QR's and every hello's `paths`), set by the service. */
   private pathsOf: () => CompanionPath[] = () => [];
+  private sweepTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(opts: CompanionDaemonOptions) {
     this.store = opts.store;
@@ -509,6 +521,7 @@ export class CompanionDaemonEngine {
     }, this.handshakeDeadlineMs);
     handshakeTimer.unref?.();
 
+    this.ensureSweep();
     this.peers.set(key, {
       key,
       link,
@@ -727,6 +740,7 @@ export class CompanionDaemonEngine {
     }
 
     if (frame.type === FrameType.PING) {
+      if (frame.payload.length > MAX_PING_PAYLOAD_BYTES) { this.dropPeer(peer, "ping_too_large"); return; }
       this.sendEncryptedFrame(peer, { type: FrameType.PONG, streamId: 0, seq: frame.seq, payload: frame.payload });
       return;
     }
@@ -762,6 +776,7 @@ export class CompanionDaemonEngine {
       const watch = peer.watchStreams.get(frame.streamId);
       if (watch !== undefined) {
         watch.buffer.grantCredit(grant);
+        watch.lastCreditAtMs = this.nowMs();
         this.pumpWatchStream(peer, frame.streamId, watch);
       }
       return;
@@ -857,7 +872,7 @@ export class CompanionDaemonEngine {
           return;
         }
         const buffer = new LiveWatchBuffer();
-        const watchEntry: WatchEntry = { buffer, unsubscribe: () => {}, seq: 0, ending: false };
+        const watchEntry: WatchEntry = { buffer, unsubscribe: () => {}, seq: 0, ending: false, lastCreditAtMs: this.nowMs() };
         const sub = this.handlers.runWatchSubscribe(principal, params, record => {
           if (peer.watchStreams.get(streamId) !== watchEntry) return; // stopped watching, or not admitted yet
           buffer.push(record);
@@ -922,6 +937,11 @@ export class CompanionDaemonEngine {
 
   private sendRpcResult(peer: ActivePeerConn, streamId: number, result: unknown): void {
     const payload = Buffer.from(JSON.stringify({ ok: true, result }), "utf8");
+    // Held until the phone has taken it all: charged to this phone's (1 MiB) and the daemon's (4 MiB) budgets.
+    if (!peer.streamGuard.reserveResponse(streamId, payload.length)) {
+      this.sendRpcError(peer, streamId, "memory_limit", "Too much is waiting for your phone to read. Try again in a moment.");
+      return;
+    }
     const pacer = new UnaryResponsePacer(streamId, payload, this.nowMs());
     peer.unaryPacers.set(streamId, pacer);
     this.pumpUnaryPacer(peer, streamId, pacer);
@@ -983,11 +1003,49 @@ export class CompanionDaemonEngine {
 
   private sendEncryptedFrame(peer: ActivePeerConn, frame: CompanionFrame): void {
     if (peer.session === null) return;
+    // A phone that stops reading leaves what we send queued in memory: past the link's limit it is dropped, not fed.
+    if (peer.link.backlog !== undefined && peer.link.backlogLimit !== undefined && peer.link.backlog() > peer.link.backlogLimit) {
+      this.dropPeer(peer, "not_reading");
+      return;
+    }
     try {
       const ct = peer.session.encrypt(encodeFrame(frame), this.nowMs());
       peer.link.send(peer.connId, ct);
     } catch {
       this.dropPeer(peer, "encrypt_failed");
+    }
+  }
+
+  /** Deadlines no inbound frame would trigger: a request half-sent past 5 s, a response the phone stopped taking past
+   * 30 s, a watch whose buffered output the phone hasn't asked for in 60 s. Runs only while phones are connected. */
+  private ensureSweep(): void {
+    if (this.sweepTimer !== null) return;
+    this.sweepTimer = setInterval(() => this.sweepDeadlines(), DEADLINE_SWEEP_MS);
+    this.sweepTimer.unref?.();
+  }
+
+  private sweepDeadlines(): void {
+    if (this.peers.size === 0) {
+      if (this.sweepTimer !== null) clearInterval(this.sweepTimer);
+      this.sweepTimer = null;
+      return;
+    }
+    const now = this.nowMs();
+    for (const peer of [...this.peers.values()]) {
+      if (peer.state !== "authenticated" || this.peers.get(peer.key) !== peer) continue;
+      for (const streamId of peer.streamGuard.expireAssemblies(now)) {
+        this.sendRpcError(peer, streamId, "deadline_exceeded", "The request didn't arrive in time.");
+      }
+      for (const [streamId, pacer] of [...peer.unaryPacers]) {
+        if (pacer.isTimedOut(now)) this.pumpUnaryPacer(peer, streamId, pacer);
+      }
+      for (const [streamId, watch] of [...peer.watchStreams]) {
+        if (watch.buffer.length > 0 && now - watch.lastCreditAtMs > WATCH_IDLE_DEADLINE_MS) {
+          watch.unsubscribe();
+          peer.watchStreams.delete(streamId);
+          this.sendRpcError(peer, streamId, "idle_timeout", "Stopped watching: your phone stopped reading.");
+        }
+      }
     }
   }
 

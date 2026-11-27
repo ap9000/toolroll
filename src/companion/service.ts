@@ -255,7 +255,9 @@ export class CompanionService {
       if (!current()) return;
       const socket = await this.openSocket();
       if (!current()) { socket.close(1000, "stopping"); return; }
-      const link = relayEnvelopeLink(`hosted#${generation}`, envelope => { if (socket.readyState === WebSocket.OPEN) socket.send(envelope, { binary: true }); });
+      // The relay socket carries every phone: past 8 MiB unsent, whichever phone is being written to is dropped.
+      const link = relayEnvelopeLink(`hosted#${generation}`, envelope => { if (socket.readyState === WebSocket.OPEN) socket.send(envelope, { binary: true }); },
+        { bytes: () => socket.bufferedAmount, limit: 8 * 1024 * 1024 });
       this.socket = socket;
       this.link = link;
       this.attempt = 0;
