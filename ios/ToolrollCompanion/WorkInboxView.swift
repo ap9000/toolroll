@@ -101,6 +101,7 @@ struct WorkInboxView: View {
                 Text(appState.pairingError ?? "")
             }
         }
+        .discardingLinks()
         .onAppear(perform: applyDebugScreen)
     }
 
@@ -132,14 +133,18 @@ struct WorkInboxView: View {
         .accessibilityElement(children: .combine)
     }
 
+    private var macName: String {
+        appState.workspaceLabel == "Your Mac" ? "your Mac" : appState.workspaceLabel
+    }
+
     private var statusText: String {
         switch appState.connection {
         case .demo:
             return "Demo · sample work, nothing leaves this iPhone"
         case .connecting:
-            return "Connecting to \(appState.workspaceLabel)…"
+            return "Connecting to \(macName)…"
         case .connected:
-            return "Connected to \(appState.workspaceLabel)"
+            return "Connected to \(macName)"
         case .unreachable(let lastUpdated):
             if let lastUpdated {
                 return "Can't reach your Mac · last updated \(RelativeTime.ago(lastUpdated))"
@@ -340,7 +345,27 @@ struct WorkInboxView: View {
         }
     }
 
+    @ViewBuilder
     private func failedState(_ message: String) -> some View {
+        if appState.isOffline {
+            // The status line already says the Mac can't be reached and offers Retry.
+            VStack(spacing: 8) {
+                Text("Nothing to show yet")
+                    .font(.headline)
+                    .foregroundStyle(ToolrollTheme.ink)
+                Text("Your work shows up here once this iPhone can reach your Mac.")
+                    .font(.subheadline)
+                    .foregroundStyle(ToolrollTheme.muted)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 40)
+        } else {
+            failedCard(message)
+        }
+    }
+
+    private func failedCard(_ message: String) -> some View {
         VStack(spacing: 10) {
             Text("Couldn't load your work")
                 .font(.headline)

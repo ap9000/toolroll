@@ -40,4 +40,18 @@ public struct PairedWorkspaceRecord: Codable, Equatable, Sendable {
     public let deviceId: String
     public let recoveryGeneration: String
     public let pairedAt: Date
+
+    public init(
+        workspaceId: String, workspaceLabel: String, machineId: String, relayUrl: String,
+        macStaticPubBase64Url: String, deviceId: String, recoveryGeneration: String, pairedAt: Date
+    ) {
+        self.workspaceId = workspaceId
+        self.workspaceLabel = workspaceLabel
+        self.machineId = machineId
+        self.relayUrl = relayUrl
+        self.macStaticPubBase64Url = macStaticPubBase64Url
+        self.deviceId = deviceId
+        self.recoveryGeneration = recoveryGeneration
+        self.pairedAt = pairedAt
+    }
 }

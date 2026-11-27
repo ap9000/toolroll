@@ -1,4 +1,5 @@
 import SwiftUI
+import ToolrollCompanionCore
 
 /// Signal (DESIGN.md) for the phone: warm paper, ink for every act and for what waits on a person,
 /// colour kept for status (failed vermilion, live blue, done green). No amber anywhere.
@@ -163,13 +164,17 @@ struct BrandMark: View {
     }
 }
 
-/// Renders an agent's sentence with `code` and *emphasis* (inline markdown only).
+/// Renders an agent's sentence with `code`, **bold** and *italic*. Links are stripped (CompanionText), so agent
+/// text is never tappable; screens showing it also discard any URL open.
 func markdownText(_ string: String) -> Text {
-    let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-    if let attributed = try? AttributedString(markdown: string, options: options) {
-        return Text(attributed)
+    Text(CompanionText.inlineMarkdown(string))
+}
+
+extension View {
+    /// Nothing in agent- or server-written text opens a URL.
+    func discardingLinks() -> some View {
+        environment(\.openURL, OpenURLAction { _ in .discarded })
     }
-    return Text(string)
 }
 
 enum RelativeTime {

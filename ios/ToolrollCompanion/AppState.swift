@@ -84,6 +84,8 @@ final class CompanionAppState {
     @ObservationIgnored private var connectTask: Task<Bool, Never>?
     /// Bumped whenever a mode or pairing changes: work started under an older one never publishes.
     @ObservationIgnored private var epoch = 0
+    /// Bumped on background: a connect that finishes after the app left the foreground is dropped.
+    @ObservationIgnored private var connectEpoch = 0
     @ObservationIgnored private var pairingTask: Task<Void, Never>?
     @ObservationIgnored private var isActive = true
 
@@ -104,6 +106,11 @@ final class CompanionAppState {
             debugScreen = args[i + 1]
         }
         #endif
+        #if DEBUG
+        if args.contains("--debug-unreachable") {
+            Self.installUnreachablePairingForDebug()
+        }
+        #endif
         if args.contains("--demo") {
             enterDemoMode()
         } else {
@@ -117,6 +124,24 @@ final class CompanionAppState {
             }
         }
     }
+
+    #if DEBUG
+    /// DEBUG only: a pairing whose relay is a closed localhost port, to exercise the offline path.
+    private static func installUnreachablePairingForDebug() {
+        func random(_ n: Int) -> Data { Data((0..<n).map { _ in UInt8.random(in: 0...255) }) }
+        let record = PairedWorkspaceRecord(
+            workspaceId: "ws-debug", workspaceLabel: "Studio Mac", machineId: "m-debug",
+            relayUrl: "ws://127.0.0.1:9/v1/connect",
+            macStaticPubBase64Url: CompanionRelayAuth.base64UrlEncode(X25519KeyPair.generate().publicKey),
+            deviceId: "dev-debug", recoveryGeneration: String(repeating: "0", count: 32), pairedAt: Date()
+        )
+        try? CompanionKeychain.save(random(32), account: "device.psk")
+        try? CompanionKeychain.save(X25519KeyPair.generate().privateKey, account: "phone.noise.priv")
+        try? CompanionKeychain.save(random(32), account: "device.relay.priv")
+        UserDefaults.standard.set(try? JSONEncoder().encode(record), forKey: recordStorageKey)
+        UserDefaults.standard.set("Studio Mac", forKey: labelStorageKey)
+    }
+    #endif
 
     var isDemoMode: Bool { connection == .demo }
     var isPaired: Bool { pairedRecord != nil }
@@ -272,7 +297,7 @@ final class CompanionAppState {
 
     private func performConnect(quiet: Bool) async -> Bool {
         guard let record = pairedRecord else { return false }
-        let started = epoch
+        let started = epoch, startedConnect = connectEpoch
         guard let keys = loadKeys() else {
             connection = .notRecognized
             return false
@@ -284,7 +309,7 @@ final class CompanionAppState {
             let hello = try await client.connect(
                 record: record, devicePsk: keys.psk, phoneNoisePriv: keys.noise, deviceRelayPriv: keys.relay
             )
-            guard started == epoch, pairedRecord == record, !isDemoMode else {
+            guard started == epoch, startedConnect == connectEpoch, pairedRecord == record, !isDemoMode else {
                 await client.disconnect()
                 return false
             }
@@ -295,7 +320,7 @@ final class CompanionAppState {
             connection = .connected(workspaceLabel: workspaceLabel, since: Date())
             return true
         } catch {
-            guard started == epoch, !isDemoMode, pairedRecord != nil else { return false }
+            guard started == epoch, startedConnect == connectEpoch, !isDemoMode, pairedRecord != nil else { return false }
             if case CompanionConnectionError.handshakeFailed = error {
                 connection = .notRecognized
             } else {
@@ -331,7 +356,8 @@ final class CompanionAppState {
     func handleBackground() async {
         isActive = false
         guard !isDemoMode, pairing == .idle else { return }
-        epoch += 1
+        // Reads in flight fail with `closed` and keep their last good state (see failurePhase).
+        connectEpoch += 1
         await client.disconnect()
     }
 

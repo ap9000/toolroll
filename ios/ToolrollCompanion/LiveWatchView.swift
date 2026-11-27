@@ -60,6 +60,7 @@ struct LiveWatchView: View {
                 }
             }
             .task { await watch() }
+            .discardingLinks()
         }
     }
 

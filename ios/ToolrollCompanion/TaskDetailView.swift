@@ -47,6 +47,7 @@ struct TaskDetailView: View {
                 bottomBar(proxy: proxy)
             }
         }
+        .discardingLinks()
         .navigationTitle(row?.project ?? steps.value?.task.project.map(projectName) ?? "Task")
         .navigationBarTitleDisplayMode(.inline)
         .task(id: appState.refreshTick) {
@@ -111,12 +112,12 @@ struct TaskDetailView: View {
             sectionTitle("What you'd approve")
             VStack(alignment: .leading, spacing: 14) {
                 if let revision = terms.revision {
-                    Text(revision)
+                    Text(verbatim: revision)
                         .font(.subheadline)
                         .foregroundStyle(ToolrollTheme.muted)
                 }
                 ForEach(terms.warnings, id: \.self) { warning in
-                    Label(warning, systemImage: "exclamationmark.triangle")
+                    Label { Text(verbatim: warning) } icon: { Image(systemName: "exclamationmark.triangle") }
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(ToolrollTheme.ink)
                         .padding(10)
@@ -125,15 +126,15 @@ struct TaskDetailView: View {
                 }
                 ForEach(Array(terms.rows.enumerated()), id: \.offset) { _, row in
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(row.label)
+                        Text(verbatim: row.label)
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(ToolrollTheme.muted)
-                        markdownText(row.words)
+                        Text(verbatim: row.words)
                             .font(.subheadline)
                             .foregroundStyle(ToolrollTheme.ink)
                             .fixedSize(horizontal: false, vertical: true)
                         ForEach(row.lines, id: \.self) { line in
-                            Text(line)
+                            Text(verbatim: line)
                                 .font(.footnote.monospaced())
                                 .foregroundStyle(ToolrollTheme.ink)
                         }
@@ -145,10 +146,10 @@ struct TaskDetailView: View {
                         VStack(alignment: .leading, spacing: 10) {
                             ForEach(Array(terms.usual.enumerated()), id: \.offset) { _, item in
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(item.label)
+                                    Text(verbatim: item.label)
                                         .font(.caption.weight(.semibold))
                                         .foregroundStyle(ToolrollTheme.muted)
-                                    Text(item.words)
+                                    Text(verbatim: item.words)
                                         .font(.subheadline)
                                         .foregroundStyle(ToolrollTheme.ink)
                                 }
@@ -158,7 +159,7 @@ struct TaskDetailView: View {
                         .padding(.top, 8)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     } label: {
-                        Text(terms.usualLabel)
+                        Text(verbatim: terms.usualLabel)
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(ToolrollTheme.ink)
                     }
