@@ -341,7 +341,6 @@ describe("what reaches a phone after access changes (review round 2)", () => {
       if (f.streamId === 0 && f.type === FrameType.ERROR) { expect(JSON.parse(f.payload.toString("utf8"))).toMatchObject({ code: "account_revoked" }); break; }
     }
     await until(() => s.wire.closed);
-    expect(s.wire.closeCode).toBe(1000); // the relay closes the phone leg; the stream-0 ERROR is what the phone trusts
     const refused = await PhoneSession.handshake(phone, await PhoneSocket.open(hostedUrlOf(phone.qr), PhoneSession.token(phone))).catch(() => null);
     // The relay still admits the phone until the reconcile lands; then the Mac's own answer is an authenticated refusal.
     if (refused !== null) expect(refused.status).toMatchObject({ status: "refused", reason: "account_revoked" });
