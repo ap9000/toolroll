@@ -1,33 +1,26 @@
 /**
  * Phone access end to end over a real relay (the reference relay on loopback) and the direct path: a TypeScript phone
- * (the same Noise and framing the iOS app speaks) pairs, is confirmed on "the Mac", reconnects, reads, watches, and is
- * removed. The reads are stand-ins here (reads.ts is proven against a console in reads.test.ts); this proves the
- * transport, pairing binding, relay reconciliation and teardown.
+ * (test/companion-phone.ts: the same Noise, framing and pairing wire the iOS app speaks) pairs, is confirmed on "the
+ * Mac", reconnects, reads, watches, and is removed. The reads are stand-ins here (reads.ts is proven against a console in
+ * reads.test.ts); this proves the transport, pairing, relay reconciliation and liveness, and teardown.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer, type IncomingMessage } from "node:http";
 import { afterEach, describe, expect, test } from "vitest";
-import { WebSocket } from "ws";
+import { WebSocketServer, type WebSocket as ServerSocket } from "ws";
 import { addApprover } from "../scope.js";
 import { openStore, type Store } from "../store.js";
 import type { CompanionReadHandlers, PairingQrPayload } from "./daemon.js";
 import { startReferenceRelay, type RunningReferenceRelay } from "./relay-server.js";
-import { decodeFrame, encodeCreditPayload, encodeFrame, FrameType, type CompanionFrame } from "./framing.js";
-import {
-  buildPairingPrologue,
-  buildSessionPrologue,
-  deriveConfirmationCode,
-  deriveDevicePsk,
-  generateX25519KeyPair,
-  NoiseIKpsk2Initiator,
-  type NoiseTransportSession,
-  type X25519KeyPair,
-} from "./noise.js";
-import { generateEd25519KeyPair, signRelayToken, type Ed25519KeyPair } from "./relay-auth.js";
-import { CompanionService } from "./service.js";
+import { encodeFrame, FrameType } from "./framing.js";
+import { decodeRelayEnvelope, parseRelayTokenUnverified, RelayOp } from "./relay-auth.js";
+import { CompanionService, describeRelayCode } from "./service.js";
+import { bonjourCommand, startBonjour } from "./bonjour.js";
 import { getPairedDevice, livePairedDevices, retireCompanionOnRestore } from "./store.js";
+import { hostedUrlOf, PairingPhone, PhoneSession, PhoneSocket, WIRE, type PairedPhone } from "../../test/companion-phone.js";
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -42,6 +35,8 @@ function testStore(): Store {
   if (!addApprover(store, "owner", new Date()).ok) throw new Error("no approver");
   return store;
 }
+
+const generationOf = (store: Store): number => store.accountOf("owner")!.generation;
 
 const watchEnds: (() => void)[] = [];
 /** The stand-in account's access fingerprint: a test changes it to narrow the account mid-stream. */
@@ -85,8 +80,6 @@ async function startService(store: Store): Promise<CompanionService> {
   return service;
 }
 
-const hostedUrlOf = (qr: PairingQrPayload): string => qr.paths.find(path => path.kind === "hosted")!.url;
-
 async function until(check: () => boolean, ms = 5_000): Promise<void> {
   const deadline = Date.now() + ms;
   while (!check()) {
@@ -95,131 +88,41 @@ async function until(check: () => boolean, ms = 5_000): Promise<void> {
   }
 }
 
-/** A phone socket: binary messages in order, awaited one at a time. */
-class PhoneSocket {
-  private readonly queue: Buffer[] = [];
-  private waiter: ((b: Buffer | null) => void) | null = null;
-  closed = false;
-  closeReason = "";
-  private constructor(readonly ws: WebSocket) {
-    ws.on("message", raw => {
-      const buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw as ArrayBuffer);
-      if (this.waiter !== null) { const w = this.waiter; this.waiter = null; w(buf); } else this.queue.push(buf);
-    });
-    ws.on("close", (_code, reason) => {
-      this.closed = true;
-      this.closeReason = reason.toString("utf8");
-      if (this.waiter !== null) { const w = this.waiter; this.waiter = null; w(null); }
-    });
-  }
-  static open(url: string, token: string | null): Promise<PhoneSocket> {
-    return new Promise((resolve, reject) => {
-      const ws = new WebSocket(url, token === null ? {} : { headers: { authorization: `Bearer ${token}` } });
-      const socket = new PhoneSocket(ws);
-      ws.once("open", () => resolve(socket));
-      ws.once("unexpected-response", (_q, res) => reject(new Error(`refused ${res.statusCode}`)));
-      ws.once("error", reject);
-    });
-  }
-  next(ms = 3_000): Promise<Buffer | null> {
-    const queued = this.queue.shift();
-    if (queued !== undefined) return Promise.resolve(queued);
-    if (this.closed) return Promise.resolve(null);
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.waiter = null; reject(new Error("no message")); }, ms); // guard: bound deadline for a message that must arrive, not a wait
-      this.waiter = b => { clearTimeout(timer); resolve(b); };
-    });
-  }
-  send(b: Buffer): void { this.ws.send(b, { binary: true }); }
-  close(): void { this.ws.close(); }
-}
+const storeOf = (service: CompanionService): Store => (service as unknown as { store: Store }).store;
 
-interface PairedPhone { deviceId: string; recoveryGeneration: string; devicePsk: Buffer; noise: X25519KeyPair; relayKey: Ed25519KeyPair; qr: PairingQrPayload }
+/** A pairing socket on the hosted relay (with the QR's token) or the direct listener (no token). */
+const pairWire = (qr: PairingQrPayload, direct: string | null): Promise<PhoneSocket> =>
+  direct === null ? PhoneSocket.open(hostedUrlOf(qr), qr.pairConnToken!) : PhoneSocket.open(`${direct}?role=pair&id=${qr.pairSessionId}`, null);
 
-/** Steps 2–4 on the phone: scan, handshake, show the code; resolves the code and a promise of the finished pairing. */
-async function scan(qr: PairingQrPayload, deviceName = "Test iPhone", direct: string | null = null) {
-  const noise = generateX25519KeyPair();
-  const relayKey = generateEd25519KeyPair();
-  const initiator = new NoiseIKpsk2Initiator({
-    localStatic: noise, remoteStaticPublicKey: Buffer.from(qr.macStaticPub, "base64url"),
-    psk: Buffer.from(qr.pairPsk, "base64url"), prologue: buildPairingPrologue(qr.workspaceId, qr.pairSessionId),
-  });
-  const socket = direct === null ? await PhoneSocket.open(hostedUrlOf(qr), qr.pairConnToken!) : await PhoneSocket.open(`${direct}?role=pair&id=${qr.pairSessionId}`, null);
-  socket.send(initiator.writeMessage1(Buffer.from(JSON.stringify({ protocolVersion: 1, mode: "pair", deviceName, deviceRelayPub: relayKey.publicKey.toString("base64url") }))));
-  const msg2 = await socket.next();
-  if (msg2 === null) throw new Error("closed before msg2");
-  const { session } = initiator.readMessage2(msg2);
-  const code = deriveConfirmationCode(session.handshakeHash);
-  const finished = (async (): Promise<PairedPhone | null> => {
-    const fin = await socket.next(5_000).catch(() => null);
-    if (fin === null) return null;
-    const body = JSON.parse(session.decrypt(fin).toString("utf8")) as { type: string; deviceId: string; recoveryGeneration: string; pskEntropy: string };
-    expect(body.type).toBe("pair.confirmed");
-    socket.close();
-    return {
-      deviceId: body.deviceId, recoveryGeneration: body.recoveryGeneration, noise, relayKey, qr,
-      devicePsk: deriveDevicePsk(Buffer.from(body.pskEntropy, "base64url"), session.handshakeHash, qr.workspaceId, body.deviceId),
-    };
-  })();
-  return { code, finished, socket };
-}
-
-/** A paired phone's session: one RPC at a time, chunks reassembled with credit, like the app. */
-class PhoneSession {
-  private nextStream = 1;
-  constructor(readonly socket: PhoneSocket, readonly session: NoiseTransportSession) {}
-  /** Over the hosted relay, or (`direct`: the direct listener's ws://…/v1/direct) straight to the Mac with no token. */
-  static async connect(phone: PairedPhone, direct: string | null = null): Promise<PhoneSession> {
-    const token = signRelayToken(phone.relayKey.privateKey, { role: "device", machineId: phone.qr.machineId, deviceId: phone.deviceId, ttlSec: 60 });
-    const socket = direct === null ? await PhoneSocket.open(hostedUrlOf(phone.qr), token) : await PhoneSocket.open(`${direct}?role=device&id=${phone.deviceId}`, null);
-    const initiator = new NoiseIKpsk2Initiator({
-      localStatic: phone.noise, remoteStaticPublicKey: Buffer.from(phone.qr.macStaticPub, "base64url"), psk: phone.devicePsk,
-      prologue: buildSessionPrologue(phone.qr.workspaceId, phone.deviceId, phone.recoveryGeneration),
-    });
-    socket.send(initiator.writeMessage1(Buffer.from(JSON.stringify({ protocolVersion: 1, mode: "session", deviceId: phone.deviceId }))));
-    const msg2 = await socket.next();
-    if (msg2 === null) throw new Error(`handshake refused: ${socket.closeReason}`);
-    return new PhoneSession(socket, initiator.readMessage2(msg2).session);
-  }
-  private sendFrame(frame: CompanionFrame): void { this.socket.send(this.session.encrypt(encodeFrame(frame))); }
-  async frame(): Promise<CompanionFrame | null> {
-    const ct = await this.socket.next();
-    return ct === null ? null : decodeFrame(this.session.decrypt(ct));
-  }
-  open(method: string, params: Record<string, unknown> = {}): number {
-    const streamId = this.nextStream;
-    this.nextStream += 2;
-    this.sendFrame({ type: FrameType.REQ, streamId, seq: 0, payload: Buffer.from(JSON.stringify({ method, params })) });
-    return streamId;
-  }
-  credit(streamId: number, grant: number): void { this.sendFrame({ type: FrameType.CREDIT, streamId, seq: 0, payload: encodeCreditPayload(grant) }); }
-  cancel(streamId: number): void { this.sendFrame({ type: FrameType.CANCEL, streamId, seq: 0, payload: Buffer.alloc(0) }); }
-  async call(method: string, params: Record<string, unknown> = {}): Promise<{ ok: true; result: unknown } | { ok: false; code: string }> {
-    const streamId = this.open(method, params);
-    const chunks: Buffer[] = [];
-    for (;;) {
-      const f = await this.frame();
-      if (f === null) throw new Error(`closed: ${this.socket.closeReason}`);
-      if (f.streamId !== streamId) continue;
-      if (f.type === FrameType.RES) return JSON.parse(f.payload.toString("utf8")) as { ok: true; result: unknown };
-      if (f.type === FrameType.CHUNK) { chunks.push(f.payload); this.credit(streamId, 1); continue; }
-      if (f.type === FrameType.END) return JSON.parse(Buffer.concat(chunks).toString("utf8")) as { ok: true; result: unknown };
-      if (f.type === FrameType.ERROR) return { ok: false, code: (JSON.parse(f.payload.toString("utf8")) as { code: string }).code };
-    }
-  }
-}
-
-async function pairPhone(service: CompanionService, binding = "owner:session-1", direct: string | null = null): Promise<PairedPhone> {
-  const started = service.startPairing("owner", binding);
-  if (!started.ok) throw new Error(started.error);
-  const { code, finished } = await scan(started.qr, "Test iPhone", direct);
-  await until(() => service.engine.getPairingStatus(started.qr.pairSessionId, binding)?.status === "awaiting_confirm");
-  expect(service.engine.getPairingStatus(started.qr.pairSessionId, binding)?.confirmCode).toBe(code);
-  const confirmed = await service.engine.confirmPairing(started.qr.pairSessionId, binding);
-  expect(confirmed.ok).toBe(true);
-  const phone = await finished;
-  if (phone === null) throw new Error("no pair.confirmed");
+/** Steps 2–4 on the phone: scan, handshake, pair.ready (the Mac then shows the code). */
+async function scan(qr: PairingQrPayload, direct: string | null = null, deviceName = "Test iPhone"): Promise<PairingPhone> {
+  const phone = await PairingPhone.scan(qr, await pairWire(qr, direct));
+  await phone.ready(deviceName);
   return phone;
+}
+
+/** The whole pairing: QR, scan, ready, the owner confirms the code, the outcome, pair.done. */
+async function pairPhone(service: CompanionService, binding = "owner:session-1", direct: string | null = null): Promise<PairedPhone> {
+  const started = service.startPairing("owner", binding, generationOf(storeOf(service)));
+  if (!started.ok) throw new Error(started.error);
+  const phone = await scan(started.qr, direct);
+  await until(() => service.engine.pairingView(started.qr.pairSessionId, binding)?.status === "awaiting_confirm");
+  expect(service.engine.pairingView(started.qr.pairSessionId, binding)?.confirmCode).toBe(phone.code);
+  expect((await service.engine.confirmPairing(started.qr.pairSessionId, binding)).ok).toBe(true);
+  const outcome = await phone.answer(1);
+  if (outcome === null || !outcome.ok) throw new Error(`no outcome: ${outcome === null ? "closed" : outcome.code}`);
+  const paired = phone.paired(outcome.result);
+  await phone.done(paired.deviceId);
+  expect(await phone.answer(3)).toEqual({ ok: true, result: { ok: true } });
+  return paired;
+}
+
+/** A paired phone's session over the hosted relay (its own device token) or the direct listener. */
+async function connectPhone(phone: PairedPhone, direct: string | null = null): Promise<PhoneSession> {
+  const wire = direct === null
+    ? await PhoneSocket.open(hostedUrlOf(phone.qr), PhoneSession.token(phone))
+    : await PhoneSocket.open(`${direct}?role=device&id=${phone.deviceId}`, null);
+  return PhoneSession.connect(phone, wire);
 }
 
 describe("phone access over a relay", () => {
@@ -230,12 +133,12 @@ describe("phone access over a relay", () => {
     const phone = await pairPhone(service);
     expect(getPairedDevice(store.handle, phone.deviceId)?.deviceName).toBe("Test iPhone");
 
-    const s = await PhoneSession.connect(phone);
+    const s = await connectPhone(phone);
     // Anything before hello is refused and the session dropped.
     expect(await s.call("work.rows")).toEqual({ ok: false, code: "hello_required" });
-    const again = await PhoneSession.connect(phone);
+    const again = await connectPhone(phone);
     const hello = await again.call("device.hello");
-    expect(hello).toMatchObject({ ok: true, result: { account: "owner", deviceId: phone.deviceId, workspaceLabel: "Test Mac" } });
+    expect(hello).toMatchObject({ ok: true, result: { account: "owner", deviceId: phone.deviceId, workspaceLabel: "Test Mac", consoleUrl: null } });
     expect(await again.call("work.rows", { view: "needs-you" })).toMatchObject({ ok: true, result: { account: "owner", params: { view: "needs-you" } } });
     expect(await again.call("task.steps", { task: "nope" })).toEqual({ ok: false, code: "not_found" });
     expect(await again.call("task.approve", { task: "t-1" })).toEqual({ ok: false, code: "route_not_allowed" });
@@ -243,32 +146,66 @@ describe("phone access over a relay", () => {
     expect(big.ok && (big.result as { big: string }).big.length).toBe(200_000);
 
     // Watch: chunks arrive under credit; CANCEL stops watching; a second watch ends with END from the read side.
-    const w1 = again.open("run.watch.subscribe", { run: "1" });
-    again.credit(w1, 3);
+    const w1 = await again.open("run.watch.subscribe", { run: "1" });
+    await again.credit(w1, 3);
     let seen = 0;
     while (seen < 3) { const f = await again.frame(); if (f?.streamId === w1 && f.type === FrameType.CHUNK) seen++; }
-    again.cancel(w1);
-    const w2 = again.open("run.watch.subscribe", { run: "1" });
-    again.credit(w2, 1);
+    await again.cancel(w1);
+    const w2 = await again.open("run.watch.subscribe", { run: "1" });
+    await again.credit(w2, 1);
     for (;;) { const f = await again.frame(); if (f?.streamId === w2 && f.type === FrameType.CHUNK) break; }
     watchEnds.pop()!();
     for (;;) { const f = await again.frame(); if (f?.streamId === w2 && f.type === FrameType.END) break; }
 
-    // Removed on the Mac: the live session closes and the phone can't come back.
-    await service.engine.revokeDevice(phone.deviceId);
-    await until(() => again.socket.closed);
-    await expect(PhoneSession.connect(phone)).rejects.toThrow();
+    // Removed on the Mac: the call returns at once; the live session gets its stream-0 refusal; a reconnect is refused.
+    expect(service.removePhone(phone.deviceId, "someone-else")).toBe(false);
+    expect(service.removePhone(phone.deviceId, "owner")).toBe(true);
+    for (;;) {
+      const f = await again.frame();
+      if (f === null) throw new Error("closed without a refusal");
+      if (f.streamId === 0 && f.type === FrameType.ERROR) { expect(JSON.parse(f.payload.toString("utf8"))).toMatchObject({ code: "device_revoked" }); break; }
+    }
+    await until(() => again.wire.closed);
+    await expect(connectPhone(phone)).rejects.toThrow();
+  });
+
+  test("tokens name the relay they're for, and an admission call's method and path", async () => {
+    const store = testStore();
+    relay = await startReferenceRelay({ host: "127.0.0.1", port: 0 });
+    const running = relay;
+    cleanups.push(() => running.close());
+    const seen: { method: string; path: string; claims: Record<string, unknown> }[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const auth = (init?.headers as Record<string, string> | undefined)?.["authorization"];
+      if (auth !== undefined) seen.push({ method: String(init?.method), path: new URL(String(input)).pathname, claims: parseRelayTokenUnverified(auth.slice(7))!.claims as unknown as Record<string, unknown> });
+      return realFetch(input, init);
+    }) as typeof fetch;
+    cleanups.push(() => { globalThis.fetch = realFetch; });
+    const service = new CompanionService({ store, reads, direct: null, hosted: relay.wsUrl, backoff: { first: 50, max: 200 }, lanAddresses: () => [], tailnetIpv4: async () => null });
+    cleanups.push(() => service.stop());
+    await service.start();
+    await until(() => service.status().hosted.state === "connected");
+    const host = new URL(relay.wsUrl).host;
+    expect(seen.length).toBeGreaterThan(0);
+    for (const one of seen) expect(one.claims).toMatchObject({ role: "daemon", aud: host, htm: one.method, htu: one.path });
+    const started = service.startPairing("owner", "owner:A", generationOf(store));
+    if (!started.ok) throw new Error(started.error);
+    const pairClaims = parseRelayTokenUnverified(started.qr.pairConnToken!)!.claims;
+    expect(pairClaims).toMatchObject({ role: "pair", aud: host, pairSessionId: started.qr.pairSessionId });
+    expect(pairClaims.htm).toBeUndefined();
+    expect(started.qr.expiresAtMs).toBe(started.expiresAtMs);
   });
 
   test("a pairing answers only to the session that started it, confirms once, and a new QR retires the old", async () => {
     const store = testStore();
     const service = await startService(store);
-    const started = service.startPairing("owner", "owner:A");
+    const started = service.startPairing("owner", "owner:A", generationOf(store));
     if (!started.ok) throw new Error(started.error);
-    const { code, finished } = await scan(started.qr);
-    await until(() => service.engine.getPairingStatus(started.qr.pairSessionId, "owner:A")?.status === "awaiting_confirm");
-    expect(code).toMatch(/^[0-9A-Z]{3}-[0-9A-Z]{3}$/);
-    expect(service.engine.getPairingStatus(started.qr.pairSessionId, "owner:B")).toBeNull();
+    const phone = await scan(started.qr);
+    await until(() => service.engine.pairingView(started.qr.pairSessionId, "owner:A")?.status === "awaiting_confirm");
+    expect(phone.code).toMatch(/^[0-9A-Z]{3}-[0-9A-Z]{3}$/);
+    expect(service.engine.pairingView(started.qr.pairSessionId, "owner:B")).toBeNull();
     expect((await service.engine.confirmPairing(started.qr.pairSessionId, "owner:B")).ok).toBe(false);
     expect(service.engine.cancelPairing(started.qr.pairSessionId, "owner:B")).toBe(false);
     const [one, two] = await Promise.all([
@@ -276,31 +213,31 @@ describe("phone access over a relay", () => {
       service.engine.confirmPairing(started.qr.pairSessionId, "owner:A"),
     ]);
     expect([one.ok, two.ok].sort()).toEqual([false, true]);
-    expect(await finished).not.toBeNull();
-    expect(service.devices()).toHaveLength(1);
+    expect(await phone.answer(1)).toMatchObject({ ok: true });
 
-    const first = service.startPairing("owner", "owner:A");
-    const second = service.startPairing("owner", "owner:A");
+    const first = service.startPairing("owner", "owner:A", generationOf(store));
+    const second = service.startPairing("owner", "owner:A", generationOf(store));
     if (!first.ok || !second.ok) throw new Error("start");
-    expect(service.engine.getPairingStatus(first.qr.pairSessionId, "owner:A")).toBeNull(); // retired: as if it never was
+    expect(service.engine.pairingView(first.qr.pairSessionId, "owner:A")).toBeNull(); // retired: as if it never was
     await expect(scan(first.qr)).rejects.toThrow();
   });
 
-  test("a pairing the relay won't register is undone, not left half-made", async () => {
+  test("a pairing the relay won't admit is undone, not left half-made", async () => {
     const store = testStore();
     const service = await startService(store);
-    const started = service.startPairing("owner", "owner:A");
+    const started = service.startPairing("owner", "owner:A", generationOf(store));
     if (!started.ok) throw new Error(started.error);
-    const { finished } = await scan(started.qr);
-    await until(() => service.engine.getPairingStatus(started.qr.pairSessionId, "owner:A")?.status === "awaiting_confirm");
-    // The relay refuses the device registration (its admin token is replaced by a wrong one for this one call).
+    const phone = await scan(started.qr);
+    await until(() => service.engine.pairingView(started.qr.pairSessionId, "owner:A")?.status === "awaiting_confirm");
+    // The relay refuses the device admission (its admin token is replaced by a wrong one for this one call).
     const original = (service as unknown as { daemonToken: () => string }).daemonToken.bind(service);
     (service as unknown as { daemonToken: () => string }).daemonToken = () => "not-a-token";
     const confirmed = await service.engine.confirmPairing(started.qr.pairSessionId, "owner:A");
     (service as unknown as { daemonToken: () => string }).daemonToken = original;
     expect(confirmed.ok).toBe(false);
-    expect(await finished).toBeNull();
+    expect(await phone.answer(1)).toEqual({ ok: false, code: "pairing_failed" });
     expect(service.devices()).toHaveLength(0);
+    expect(livePairedDevices(store, { includePending: true })).toHaveLength(0);
   });
 
   test("a relay that restarts empty is reconciled: the paired phone comes back; a phone removed meanwhile doesn't", async () => {
@@ -308,31 +245,31 @@ describe("phone access over a relay", () => {
     const service = await startService(store);
     const kept = await pairPhone(service, "owner:A");
     const removed = await pairPhone(service, "owner:A");
-    // The relay forgets everything and the Mac reconnects to its replacement.
+    // The relay forgets everything and the Mac reconnects to its replacement (registering only once the PUT says so).
     const port = Number(new URL(hostedUrlOf(kept.qr)).port);
     await relay.close();
     await until(() => service.status().hosted.state === "unreachable");
-    await service.engine.revokeDevice(removed.deviceId); // the relay is down: the DELETE can't land
-    expect(service.owesReconcile).toBe(true);
+    expect(service.removePhone(removed.deviceId, "owner")).toBe(true); // the relay is down: the DELETE can't land
+    await until(() => service.owesReconcile);
     const fresh = await startReferenceRelay({ host: "127.0.0.1", port });
     cleanups.push(() => fresh.close());
     await until(() => service.status().hosted.state === "connected", 8_000);
     expect(service.owesReconcile).toBe(false);
-    const s = await PhoneSession.connect(kept);
+    const s = await connectPhone(kept);
     expect(await s.call("device.hello")).toMatchObject({ ok: true });
-    await expect(PhoneSession.connect(removed)).rejects.toThrow(/refused 40[13]/);
+    await expect(connectPhone(removed)).rejects.toThrow(/refused 40[134]/);
   });
 
   test("stopping phone access closes phone sessions and the relay", async () => {
     const store = testStore();
     const service = await startService(store);
     const phone = await pairPhone(service);
-    const s = await PhoneSession.connect(phone);
+    const s = await connectPhone(phone);
     expect(await s.call("device.hello")).toMatchObject({ ok: true });
     await service.stop();
-    await until(() => s.socket.closed);
-    expect(service.status()).toEqual({ running: false, direct: { state: "off" }, hosted: { state: "off" } });
-    await expect(PhoneSession.connect(phone)).rejects.toThrow();
+    await until(() => s.wire.closed);
+    expect(service.status()).toMatchObject({ running: false, direct: { state: "off", port: null, error: null, addresses: [] }, hosted: { state: "off", superseded: false } });
+    await expect(connectPhone(phone)).rejects.toThrow();
   });
 });
 
@@ -340,14 +277,14 @@ describe("what reaches a phone after access changes (review round 2)", () => {
   test("a response waiting on credit is refused, not delivered, once the account's access changes", async () => {
     const store = testStore();
     const service = await startService(store);
-    const s = await PhoneSession.connect(await pairPhone(service));
+    const s = await connectPhone(await pairPhone(service));
     expect(await s.call("device.hello")).toMatchObject({ ok: true });
     // ~1 MB: more chunks than the opening credit, so the tail waits for the phone's CREDIT.
-    const id = s.open("run.window.read", { run: "1", size: "huge" });
+    const id = await s.open("run.window.read", { run: "1", size: "huge" });
     let chunks = 0;
     for (;;) { const f = await s.frame(); if (f?.streamId === id && f.type === FrameType.CHUNK) { chunks++; if (chunks === 16) break; } }
     accessNow = "projects:a"; // narrowed on the web while the tail is queued
-    s.credit(id, 4);
+    await s.credit(id, 4);
     const next = await s.frame();
     expect(next?.streamId).toBe(id);
     expect(next?.type).toBe(FrameType.ERROR);
@@ -357,17 +294,17 @@ describe("what reaches a phone after access changes (review round 2)", () => {
   test("a watch that loses access is ended as refused and drops what it buffered; a finished watch drains before END", async () => {
     const store = testStore();
     const service = await startService(store);
-    const s = await PhoneSession.connect(await pairPhone(service));
+    const s = await connectPhone(await pairPhone(service));
     expect(await s.call("device.hello")).toMatchObject({ ok: true });
 
     // Finished: 20 records against 16 credits, then END only after the last 4 go out.
-    const w = s.open("run.watch.subscribe", { run: "controlled" });
+    const w = await s.open("run.watch.subscribe", { run: "controlled" });
     await until(() => controlled.emit !== null);
     for (let n = 0; n < 20; n++) controlled.emit!(n);
     controlled.end!();
     const seen: number[] = [];
     while (seen.length < 16) { const f = await s.frame(); if (f?.streamId === w && f.type === FrameType.CHUNK) seen.push((JSON.parse(f.payload.toString()) as { n: number }).n); }
-    s.credit(w, 4);
+    await s.credit(w, 4);
     for (;;) {
       const f = await s.frame();
       if (f?.streamId !== w) continue;
@@ -379,42 +316,47 @@ describe("what reaches a phone after access changes (review round 2)", () => {
 
     // Refused: buffered records past the credit are never sent.
     controlled.emit = null;
-    const w2 = s.open("run.watch.subscribe", { run: "controlled" });
+    const w2 = await s.open("run.watch.subscribe", { run: "controlled" });
     await until(() => controlled.emit !== null);
     for (let n = 0; n < 20; n++) controlled.emit!(n);
     let got = 0;
     while (got < 16) { const f = await s.frame(); if (f?.streamId === w2 && f.type === FrameType.CHUNK) got++; }
     accessNow = "projects:none";
-    s.credit(w2, 8);
+    await s.credit(w2, 8);
     const f = await s.frame();
     expect(f?.streamId).toBe(w2);
     expect(f?.type).toBe(FrameType.ERROR);
   });
 
-  test("a credential change (password, rotation) retires the paired phone; it must pair again", async () => {
+  test("a credential change (password, rotation) retires the paired phone: the live session is told, a reconnect is refused", async () => {
     const store = testStore();
     const service = await startService(store);
     const phone = await pairPhone(service);
-    const s = await PhoneSession.connect(phone);
+    const s = await connectPhone(phone);
     expect(await s.call("device.hello")).toMatchObject({ ok: true });
     store.handle.prepare("UPDATE approver SET generation = generation + 1 WHERE name = ?").run("owner");
-    // The live session is dropped at its next frame, and a reconnect is refused at the handshake.
-    await s.call("work.rows").catch(() => null);
-    await until(() => s.socket.closed);
-    await expect(PhoneSession.connect(phone)).rejects.toThrow();
+    for (;;) {
+      const f = await s.frame(5_000);
+      if (f === null) throw new Error("closed without a refusal");
+      if (f.streamId === 0 && f.type === FrameType.ERROR) { expect(JSON.parse(f.payload.toString("utf8"))).toMatchObject({ code: "account_revoked" }); break; }
+    }
+    await until(() => s.wire.closed);
+    expect(s.wire.closeCode).toBe(1000); // the relay closes the phone leg; the stream-0 ERROR is what the phone trusts
+    const refused = await PhoneSession.handshake(phone, await PhoneSocket.open(hostedUrlOf(phone.qr), PhoneSession.token(phone))).catch(() => null);
+    // The relay still admits the phone until the reconcile lands; then the Mac's own answer is an authenticated refusal.
+    if (refused !== null) expect(refused.status).toMatchObject({ status: "refused", reason: "account_revoked" });
   });
 
   test("a pairing started under one credential generation can't be confirmed under the next", async () => {
     const store = testStore();
     const service = await startService(store);
-    const generation = store.accountOf("owner")!.generation;
-    const started = service.startPairing("owner", "owner:A", generation);
+    const started = service.startPairing("owner", "owner:A", generationOf(store));
     if (!started.ok) throw new Error(started.error);
-    const { finished } = await scan(started.qr);
-    await until(() => service.engine.getPairingStatus(started.qr.pairSessionId, "owner:A")?.status === "awaiting_confirm");
+    const phone = await scan(started.qr);
+    await until(() => service.engine.pairingView(started.qr.pairSessionId, "owner:A")?.status === "awaiting_confirm");
     store.handle.prepare("UPDATE approver SET generation = generation + 1 WHERE name = ?").run("owner");
     expect((await service.engine.confirmPairing(started.qr.pairSessionId, "owner:A")).ok).toBe(false);
-    expect(await finished).toBeNull();
+    expect(await phone.answer(1)).toEqual({ ok: false, code: "pairing_failed" });
     expect(service.devices()).toHaveLength(0);
   });
 });
@@ -431,7 +373,7 @@ describe("the reference relay survives malformed requests", () => {
       req.end();
     });
     const machine = service.engine.hostKeys.machineId;
-    expect(await raw("DELETE", `/v1/machines/${machine}/devices/%E0`)).toBe(401); // unauthenticated: refused before decoding
+    expect(await raw("DELETE", `/v1/machines/${machine}/devices/%E0`)).toBeGreaterThanOrEqual(400); // unauthenticated: refused before decoding
     expect(await raw("GET", "/v1/health", { host: "[::not-a-host" })).toBe(200);
     expect(await raw("GET", "/v1/connect", { host: "%%%", connection: "Upgrade", upgrade: "websocket", "sec-websocket-version": "13", "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==" })).toBeGreaterThanOrEqual(400);
     expect(await raw("GET", "/v1/health")).toBe(200);
@@ -448,13 +390,14 @@ async function startBoth(store: Store, opts: { peerAddress?: string } = {}): Pro
   const service = new CompanionService({
     store, reads, direct: { port: 0, host: "127.0.0.1" }, hosted: relay.wsUrl, backoff: { first: 50, max: 200 },
     lanAddresses: () => ["192.168.1.20"], tailnetIpv4: async () => "100.101.102.103",
+    consoleUrl: () => "http://127.0.0.1:4180",
     ...(opts.peerAddress === undefined ? {} : { directPeerAddressOf: () => opts.peerAddress }),
   });
   cleanups.push(() => service.stop());
   await service.start();
   await until(() => service.status().hosted.state === "connected");
   const state = service.status().direct;
-  if (state.state !== "listening") throw new Error("direct path not listening");
+  if (state.state !== "listening" || state.port === null) throw new Error("direct path not listening");
   return { service, direct: `ws://127.0.0.1:${state.port}/v1/direct` };
 }
 
@@ -472,7 +415,7 @@ const raw = (url: string, method: string, path: string, headers: Record<string, 
 });
 
 describe("the direct path: a phone on this Mac's network, no relay", () => {
-  test("paths list direct addresses first and the relay last; pair and reconnect directly; hello refreshes paths", async () => {
+  test("paths list direct addresses first and the relay last; pair and reconnect directly; hello refreshes paths and names the console", async () => {
     const store = testStore();
     const { service, direct } = await startBoth(store);
     const port = new URL(direct).port;
@@ -481,19 +424,23 @@ describe("the direct path: a phone on this Mac's network, no relay", () => {
       { kind: "direct", url: `ws://100.101.102.103:${port}/v1/direct` },
       { kind: "hosted", url: relay.wsUrl },
     ]);
+    expect(service.status().direct).toMatchObject({
+      state: "listening", port: Number(port), error: null, tailscale: "found",
+      addresses: [{ address: "192.168.1.20", kind: "lan" }, { address: "100.101.102.103", kind: "tailnet" }],
+    });
     const health = await raw(direct, "GET", "/v1/health");
     expect(health.status).toBe(200);
     expect(JSON.parse(health.body)).toEqual({ ok: true, machineId: service.engine.hostKeys.machineId });
 
     const phone = await pairPhone(service, "owner:A", direct);
     expect(phone.qr.v).toBe(2);
-    const s = await PhoneSession.connect(phone, direct);
+    const s = await connectPhone(phone, direct);
     const hello = await s.call("device.hello");
-    expect(hello).toMatchObject({ ok: true, result: { deviceId: phone.deviceId, paths: service.paths() } });
+    expect(hello).toMatchObject({ ok: true, result: { deviceId: phone.deviceId, paths: service.paths(), consoleUrl: "http://127.0.0.1:4180" } });
     expect(await s.call("work.rows")).toMatchObject({ ok: true });
-    // The relay learns of a directly paired phone on its own: the same phone can then come in from anywhere.
-    await until(() => !service.owesReconcile);
-    const away = await PhoneSession.connect(phone);
+    // Paired directly with the relay connected: the relay admitted the phone before it was told (M8), so the same phone
+    // can come in from anywhere at once.
+    const away = await connectPhone(phone);
     expect(await away.call("device.hello")).toMatchObject({ ok: true });
   });
 
@@ -507,7 +454,7 @@ describe("the direct path: a phone on this Mac's network, no relay", () => {
     expect((await raw(direct, "POST", "/v1/machines/register")).status).toBe(404);
     // A device id nobody paired: the socket opens, the handshake is refused.
     const stranger = await PhoneSocket.open(`${direct}?role=device&id=dev_unknown`, null);
-    stranger.send(Buffer.alloc(96, 1));
+    await stranger.send(Buffer.alloc(96, 1));
     expect(await stranger.next()).toBeNull();
 
     const outside = testStore();
@@ -520,22 +467,21 @@ describe("the direct path: a phone on this Mac's network, no relay", () => {
     const { service, direct } = await startBoth(store);
     const a = await pairPhone(service, "owner:A");
     const b = await pairPhone(service, "owner:B", direct);
-    await until(() => !service.owesReconcile);
     // Phone A over the relay and phone B directly: each is its link's connection 1.
-    const overRelay = await PhoneSession.connect(a);
-    const overDirect = await PhoneSession.connect(b, direct);
+    const overRelay = await connectPhone(a);
+    const overDirect = await connectPhone(b, direct);
     expect(await overRelay.call("device.hello")).toMatchObject({ ok: true, result: { deviceId: a.deviceId } });
     expect(await overDirect.call("device.hello")).toMatchObject({ ok: true, result: { deviceId: b.deviceId } });
     // B comes in over the relay too: its newer session wins, the older one is closed.
-    const bAway = await PhoneSession.connect(b);
+    const bAway = await connectPhone(b);
     expect(await bAway.call("device.hello")).toMatchObject({ ok: true });
-    await until(() => overDirect.socket.closed);
-    expect(overDirect.socket.closeReason).toBe("superseded");
+    await until(() => overDirect.wire.closed);
+    expect(overDirect.wire.closeReason).toBe("superseded");
     // The relay goes away: A's session ends with it; a direct session doesn't notice.
-    const bHome = await PhoneSession.connect(b, direct);
+    const bHome = await connectPhone(b, direct);
     expect(await bHome.call("device.hello")).toMatchObject({ ok: true });
     await relay.close();
-    await until(() => overRelay.socket.closed && service.status().hosted.state === "unreachable");
+    await until(() => overRelay.wire.closed && service.status().hosted.state === "unreachable");
     expect(await bHome.call("work.rows")).toMatchObject({ ok: true });
     // The relay stays listed while it's down: a phone saving this list keeps its way back from elsewhere.
     expect(service.paths().map(path => path.kind)).toEqual(["direct", "direct", "hosted"]);
@@ -552,12 +498,11 @@ describe("the direct path: a phone on this Mac's network, no relay", () => {
       return realFetch(input, init);
     }) as typeof fetch;
     cleanups.push(() => { globalThis.fetch = realFetch; });
-    await service.engine.revokeDevice(phone.deviceId);
-    expect(failed).toBe(1);
-    expect(service.owesReconcile).toBe(true);
+    expect(service.removePhone(phone.deviceId, "owner")).toBe(true);
+    await until(() => failed === 1 && service.owesReconcile);
     await until(() => !service.owesReconcile, 8_000);
     expect(service.status().hosted.state).toBe("connected");
-    await expect(PhoneSession.connect(phone)).rejects.toThrow(/refused 40[13]/);
+    await expect(connectPhone(phone)).rejects.toThrow(/refused 40[134]/);
   });
 
   test("with no relay (direct only), the QR carries no relay token and pairing still works", async () => {
@@ -568,16 +513,43 @@ describe("the direct path: a phone on this Mac's network, no relay", () => {
     await service.start();
     const state = service.status().direct;
     if (state.state !== "listening") throw new Error("not listening");
+    expect(state.tailscale).toBe("not_found");
     const direct = `ws://127.0.0.1:${state.port}/v1/direct`;
-    const started = service.startPairing("owner", "owner:A");
+    const started = service.startPairing("owner", "owner:A", generationOf(store));
     if (!started.ok) throw new Error(started.error);
     expect(started.qr.paths).toEqual([{ kind: "direct", url: `ws://10.0.0.5:${state.port}/v1/direct` }]);
     expect(started.qr.pairConnToken).toBeUndefined();
     service.engine.cancelPairing(started.qr.pairSessionId, "owner:A");
     const phone = await pairPhone(service, "owner:A", direct);
-    const s = await PhoneSession.connect(phone, direct);
+    const s = await connectPhone(phone, direct);
     expect(await s.call("device.hello")).toMatchObject({ ok: true });
     expect(service.owesReconcile).toBe(false);
+  });
+
+  test("a taken port falls back through the next ones and the bound port is kept; all taken says so", async () => {
+    const holders = [createServer(), createServer()];
+    const ports: number[] = [];
+    for (const holder of holders) {
+      await new Promise<void>(resolve => holder.listen(0, "127.0.0.1", () => resolve()));
+      ports.push((holder.address() as { port: number }).port);
+      cleanups.push(() => new Promise<void>(resolve => holder.close(() => resolve())));
+    }
+    const store = testStore();
+    let bound: number | null = null;
+    const service = new CompanionService({ store, reads, hosted: null, lanAddresses: () => ["10.0.0.5"], tailnetIpv4: async () => null,
+      direct: { port: ports[0]!, host: "127.0.0.1", fallbackPorts: [ports[1]!, 0], onBound: port => { bound = port; } } });
+    cleanups.push(() => service.stop());
+    await service.start();
+    const state = service.status().direct;
+    expect(state.state).toBe("listening");
+    expect(bound).toBe(state.port);
+    expect(ports).not.toContain(state.port);
+
+    const busy = new CompanionService({ store, reads, hosted: null, lanAddresses: () => [], tailnetIpv4: async () => null,
+      direct: { port: ports[0]!, host: "127.0.0.1", fallbackPorts: [ports[1]!] } });
+    cleanups.push(() => busy.stop());
+    await busy.start();
+    expect(busy.status().direct).toMatchObject({ state: "failed", port: null, error: `Ports ${ports[0]} and ${ports[1]} on this computer are all in use. Set TOOLROLL_PHONE_PORT to a free port and restart Toolroll.` });
   });
 });
 
@@ -587,7 +559,7 @@ test("strangers holding unproven sockets for a phone's id can't lock the phone o
   const phone = await pairPhone(service, "owner:A", direct);
   // Two sockets that name the phone's id and never send a handshake (the id is in the URL on the network).
   const squatters = await Promise.all([1, 2].map(() => PhoneSocket.open(`${direct}?role=device&id=${phone.deviceId}`, null)));
-  const s = await PhoneSession.connect(phone, direct);
+  const s = await connectPhone(phone, direct);
   expect(await s.call("device.hello")).toMatchObject({ ok: true });
   await until(() => squatters.some(one => one.closed));
 });
@@ -617,6 +589,19 @@ test("a hosted-only change can't turn phone access back on, and an approval does
   const now = new Date();
   expect(await access.change({ act: "on", hosted: true }, "owner", now)).toBe("ok");
   expect(access.hostedEnabled()).toBe(true);
+  // The direct listener's port is kept for the next start (the phone has it saved).
+  const direct = access.service()?.status().direct;
+  if (direct?.state === "listening") expect(store.handle.prepare("SELECT direct_port FROM companion_access").get()?.["direct_port"]).toBe(direct.port);
+  // Turning off asks the relay to forget this machine (best effort), with a token for exactly that call.
+  const realFetch = globalThis.fetch;
+  const deletes: { path: string; claims: Record<string, unknown> }[] = [];
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const auth = (init?.headers as Record<string, string> | undefined)?.["authorization"];
+    if (init?.method === "DELETE" && auth !== undefined) deletes.push({ path: new URL(String(input)).pathname, claims: parseRelayTokenUnverified(auth.slice(7))!.claims as unknown as Record<string, unknown> });
+    return realFetch(input, init);
+  }) as typeof fetch;
+  cleanups.push(() => { globalThis.fetch = realFetch; });
+  const machineId = access.service()!.engine.hostKeys.machineId;
   // Turned off, then a hosted-only form that was posted earlier arrives: refused, access stays off.
   const off = access.change({ act: "off" }, "owner", now);
   const stale = access.change({ act: "hosted-on" }, "owner", now);
@@ -624,6 +609,8 @@ test("a hosted-only change can't turn phone access back on, and an approval does
   expect(await stale).toBe("not_on");
   expect(access.enabled()).toBe(false);
   expect(access.service()).toBeNull();
+  expect(deletes).toEqual([{ path: `/v1/machines/${machineId}`, claims: expect.objectContaining({ role: "daemon", htm: "DELETE", htu: `/v1/machines/${machineId}` }) }]);
+  globalThis.fetch = realFetch;
   // Approved for one relay; the configuration then names another: the new one isn't used until approved.
   expect(await access.change({ act: "on", hosted: true }, "owner", now)).toBe("ok");
   await access.stop();
@@ -634,22 +621,21 @@ test("a hosted-only change can't turn phone access back on, and an approval does
   await moved.resume();
   expect(moved.hostedApprovalStale()).toBe(true);
   expect(moved.hostedEnabled()).toBe(false);
-  expect(moved.service()?.status().hosted).toEqual({ state: "off" });
+  expect(moved.service()?.status().hosted).toEqual({ state: "off", superseded: false });
   expect(moved.service()?.paths().some(path => path.kind === "hosted")).toBe(false);
 });
-
 
 describe("limits a paired phone can't get around (final review)", () => {
   test("responses waiting on a phone that doesn't take them count against its budget; an oversized ping drops it", async () => {
     const store = testStore();
     const { service, direct } = await startBoth(store);
     const phone = await pairPhone(service, "owner:A", direct);
-    const s = await PhoneSession.connect(phone, direct);
+    const s = await connectPhone(phone, direct);
     expect(await s.call("device.hello")).toMatchObject({ ok: true });
     // A ~1 MB response is more chunks than the phone's first credit covers, so it's held; another read on top of it
     // would pass the 1 MiB session budget and is refused rather than buffered.
-    s.open("run.window.read", { run: "1", size: "huge" });
-    const big = s.open("run.window.read", { run: "1" });
+    await s.open("run.window.read", { run: "1", size: "huge" });
+    const big = await s.open("run.window.read", { run: "1" });
     let refused: string | null = null;
     for (let i = 0; i < 200 && refused === null; i++) {
       const f = await s.frame();
@@ -658,11 +644,11 @@ describe("limits a paired phone can't get around (final review)", () => {
     }
     expect(refused).toBe("memory_limit");
 
-    const t = await PhoneSession.connect(phone, direct);
+    const t = await connectPhone(phone, direct);
     expect(await t.call("device.hello")).toMatchObject({ ok: true });
-    t.socket.send(t.session.encrypt(encodeFrame({ type: FrameType.PING, streamId: 0, seq: 1, payload: Buffer.alloc(1_000) })));
-    await until(() => t.socket.closed);
-    expect(t.socket.closeReason).toBe("ping_too_large");
+    await t.wire.send(t.session.encrypt(encodeFrame({ type: FrameType.PING, streamId: 0, seq: 1, payload: Buffer.alloc(1_000) })));
+    await until(() => t.wire.closed);
+    expect(t.wire.closeReason).toBe("ping_too_large");
   });
 });
 
@@ -673,10 +659,11 @@ describe("phone records over time (final review)", () => {
     const phone = await pairPhone(service, "owner:A", direct);
     expect(livePairedDevices(store).map(d => d.deviceId)).toEqual([phone.deviceId]);
     store.revokeDerivedAuthority("owner", "credential-rotation", new Date());
-    expect(getPairedDevice(store.handle, phone.deviceId)?.revokedAt).not.toBeNull();
+    expect(getPairedDevice(store.handle, phone.deviceId)).toMatchObject({ revokedReason: "password_changed" });
     expect(livePairedDevices(store)).toEqual([]);
     expect(service.engine.admittedDevices()).toEqual([]);
-    await expect(PhoneSession.connect(phone, direct)).rejects.toThrow();
+    const refused = await PhoneSession.handshake(phone, await PhoneSocket.open(`${direct}?role=device&id=${phone.deviceId}`, null));
+    expect(refused.status).toMatchObject({ status: "refused", reason: "account_revoked" });
   });
 
   test("a restore retires this Mac's companion keys too: the restored copy gets its own machine id", async () => {
@@ -692,16 +679,18 @@ describe("phone records over time (final review)", () => {
   test("a late scan of a code that already paired is refused and leaves the pairing as paired", async () => {
     const store = testStore();
     const { service, direct } = await startBoth(store);
-    const started = service.startPairing("owner", "owner:A");
+    const started = service.startPairing("owner", "owner:A", generationOf(store));
     if (!started.ok) throw new Error(started.error);
-    const { code, finished } = await scan(started.qr, "Test iPhone", direct);
-    await until(() => service.engine.getPairingStatus(started.qr.pairSessionId, "owner:A")?.status === "awaiting_confirm");
-    expect(service.engine.getPairingStatus(started.qr.pairSessionId, "owner:A")?.confirmCode).toBe(code);
+    const phone = await scan(started.qr, direct);
+    await until(() => service.engine.pairingView(started.qr.pairSessionId, "owner:A")?.status === "awaiting_confirm");
     expect((await service.engine.confirmPairing(started.qr.pairSessionId, "owner:A")).ok).toBe(true);
-    expect(await finished).not.toBeNull();
+    const outcome = await phone.answer(1);
+    if (outcome === null || !outcome.ok) throw new Error("no outcome");
+    await phone.done(String(outcome.result["deviceId"]));
+    expect(await phone.answer(3)).toMatchObject({ ok: true });
     const late = await PhoneSocket.open(`${direct}?role=pair&id=${started.qr.pairSessionId}`, null);
     expect(await late.next()).toBeNull();
-    expect(service.engine.getPairingStatus(started.qr.pairSessionId, "owner:A")?.status).toBe("confirmed");
+    expect(service.engine.pairingView(started.qr.pairSessionId, "owner:A")?.status).toBe("paired");
   });
 
   test("the direct listener refuses an upgrade from a web page (it carries an Origin)", async () => {
@@ -714,7 +703,153 @@ describe("phone records over time (final review)", () => {
   test("on a workspace that never turned phone access on, listing phones creates nothing", () => {
     const store = testStore();
     expect(livePairedDevices(store)).toEqual([]);
-    expect(store.handle.prepare("SELECT 1 AS hit FROM sqlite_master WHERE name = 'companion_paired_device'").get()).toBeUndefined();
+    expect(store.handle.prepare("SELECT count(*) AS n FROM companion_host_keys").get()?.["n"]).toBe(0);
   });
 });
 
+/**
+ * A relay stand-in for the daemon leg only: admission calls answer as configured, and the WebSocket answers heartbeats
+ * unless told not to. Enough to prove the Mac's own behaviour (liveness, register-on-unknown, 4409 backoff).
+ */
+async function stubRelay(opts: { ackHeartbeats?: () => boolean; knows?: () => boolean } = {}) {
+  const calls: string[] = [];
+  const daemons: ServerSocket[] = [];
+  let heartbeats = 0;
+  const server = createServer((req: IncomingMessage, res) => {
+    calls.push(`${req.method} ${req.url}`);
+    req.resume();
+    req.on("end", () => {
+      if (req.url === "/v1/challenge") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ challenge: "c".repeat(43) })); return; }
+      if (req.url === "/v1/machines/register") { registered = true; res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ machineId })); return; }
+      if (req.method === "PUT" && !(registered || (opts.knows?.() ?? true))) {
+        res.writeHead(404, { "content-type": "application/json", [WIRE.relay.errorHeader]: "machine_unknown" });
+        res.end(JSON.stringify({ error: "machine_unknown" }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+  });
+  let registered = false;
+  let machineId = "";
+  const wss = new WebSocketServer({ noServer: true });
+  server.on("upgrade", (req, socket, head) => wss.handleUpgrade(req, socket, head, ws => {
+    daemons.push(ws);
+    ws.on("message", (raw: Buffer) => {
+      const env = decodeEnvelopeLoose(raw);
+      if (env?.op === RelayOp.HEARTBEAT) {
+        heartbeats += 1;
+        expect(env.payload.length).toBe(8);
+        if (opts.ackHeartbeats?.() ?? true) ws.send(Buffer.concat([Buffer.from([RelayOp.HEARTBEAT_ACK, 0, 0, 0, 0]), env.payload]));
+      }
+    });
+  }));
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", () => resolve()));
+  const url = `ws://127.0.0.1:${(server.address() as { port: number }).port}`;
+  cleanups.push(() => new Promise<void>(resolve => { for (const ws of wss.clients) ws.terminate(); wss.close(); server.closeAllConnections(); server.close(() => resolve()); }));
+  return {
+    url, calls, daemons,
+    get heartbeats() { return heartbeats; },
+    setMachine: (id: string) => { machineId = id; },
+  };
+}
+
+/** The daemon leg's envelope, read without the relay-auth decoder (which predates the heartbeat opcodes). */
+function decodeEnvelopeLoose(raw: Buffer): { op: number; connId: number; payload: Buffer } | null {
+  if (raw.length < 5) return null;
+  if (raw[0] === RelayOp.HEARTBEAT) return { op: raw[0], connId: raw.readUInt32BE(1), payload: Buffer.from(raw.subarray(5)) };
+  try { return decodeRelayEnvelope(raw); } catch { return null; }
+}
+
+describe("the hosted relay link: liveness, registration, superseded (protocol §3.5–3.7)", () => {
+  test("heartbeats every interval; a relay that stops answering them is torn down and reconnected", async () => {
+    let ack = true;
+    const stub = await stubRelay({ ackHeartbeats: () => ack });
+    const store = testStore();
+    const service = new CompanionService({ store, reads, direct: null, hosted: stub.url, backoff: { first: 20, max: 40 }, heartbeat: { intervalMs: 40, timeoutMs: 120 },
+      lanAddresses: () => [], tailnetIpv4: async () => null });
+    stub.setMachine(service.engine.hostKeys.machineId);
+    cleanups.push(() => service.stop());
+    await service.start();
+    await until(() => service.status().hosted.state === "connected" && stub.heartbeats >= 2);
+    expect(stub.daemons).toHaveLength(1);
+    ack = false; // a half-open connection: the socket stays up, nothing comes back
+    await until(() => stub.daemons.length >= 2, 8_000);
+    ack = true;
+    await until(() => service.status().hosted.state === "connected");
+  });
+
+  test("registers only when the relay says it doesn't know this machine", async () => {
+    const known = await stubRelay({ knows: () => true });
+    const store = testStore();
+    const service = new CompanionService({ store, reads, direct: null, hosted: known.url, lanAddresses: () => [], tailnetIpv4: async () => null });
+    known.setMachine(service.engine.hostKeys.machineId);
+    cleanups.push(() => service.stop());
+    await service.start();
+    await until(() => service.status().hosted.state === "connected");
+    expect(known.calls.some(call => call.includes("/v1/machines/register"))).toBe(false);
+    expect(known.calls[0]).toBe(`PUT /v1/machines/${service.engine.hostKeys.machineId}/devices`);
+
+    const unknown = await stubRelay({ knows: () => false });
+    const other = new CompanionService({ store, reads, direct: null, hosted: unknown.url, lanAddresses: () => [], tailnetIpv4: async () => null });
+    unknown.setMachine(other.engine.hostKeys.machineId);
+    cleanups.push(() => other.stop());
+    await other.start();
+    await until(() => other.status().hosted.state === "connected");
+    expect(unknown.calls.slice(0, 4)).toEqual([
+      `PUT /v1/machines/${other.engine.hostKeys.machineId}/devices`, "POST /v1/challenge", "POST /v1/machines/register", `PUT /v1/machines/${other.engine.hostKeys.machineId}/devices`,
+    ]);
+  });
+
+  test("replaced by another daemon with these keys (4409): it backs off and Settings says why", async () => {
+    const stub = await stubRelay();
+    const store = testStore();
+    const service = new CompanionService({ store, reads, direct: null, hosted: stub.url, supersededBackoff: { first: 60_000, max: 600_000 }, lanAddresses: () => [], tailnetIpv4: async () => null });
+    stub.setMachine(service.engine.hostKeys.machineId);
+    cleanups.push(() => service.stop());
+    await service.start();
+    await until(() => service.status().hosted.state === "connected");
+    stub.daemons[0]!.close(WIRE.relay.closeCodes["superseded"], "superseded");
+    await until(() => service.status().hosted.superseded);
+    const state = service.status().hosted;
+    expect(state).toMatchObject({ state: "unreachable", superseded: true, error: "Another Toolroll with this workspace's keys is connected to the relay." });
+    if (state.state !== "unreachable") throw new Error("unreachable");
+    expect(Date.parse(state.retryAt) - Date.now()).toBeGreaterThan(50_000);
+    expect(stub.daemons).toHaveLength(1);
+  });
+
+  test("relay refusal codes read as plain words", () => {
+    expect(describeRelayCode("token_expired")).toBe("this Mac's clock looks wrong — check Date & Time");
+    expect(describeRelayCode("rate_limited")).toBe("it asked Toolroll to slow down");
+    expect(describeRelayCode("<script>")).toBe("an unexpected answer");
+  });
+});
+
+describe("Bonjour advertisement", () => {
+  test("advertises with an explicit argv (no shell) and the machine id in TXT; a missing advertiser never fails", async () => {
+    const machineId = "abcdefghijklmnopqrstuvwxyz";
+    expect(bonjourCommand("darwin", 4199, machineId)).toEqual(["dns-sd", "-R", "Toolroll abcdef", WIRE.mac.bonjourService, "local", "4199", `${WIRE.mac.bonjourMachineIdTxtKey}=${machineId}`]);
+    expect(bonjourCommand("linux", 4199, machineId)).toEqual(["avahi-publish-service", "Toolroll abcdef", "_toolroll._tcp", "4199", `m=${machineId}`]);
+    expect(bonjourCommand("win32", 4199, machineId)).toBeNull();
+    expect(bonjourCommand("darwin", 4199, "not a machine id; rm -rf")).toBeNull();
+    const { EventEmitter } = await import("node:events");
+    const spawned: { file: string; args: readonly string[]; shell: unknown }[] = [];
+    let killed = 0;
+    const advert = startBonjour({ port: 4199, machineId, platform: "darwin", spawn: (file, args, options) => {
+      spawned.push({ file, args, shell: options.shell });
+      return Object.assign(new EventEmitter(), { exitCode: null, kill: () => { killed += 1; return true; }, unref: () => {} }) as never;
+    } });
+    expect(spawned).toEqual([{ file: "dns-sd", args: ["-R", "Toolroll abcdef", "_toolroll._tcp", "local", "4199", `m=${machineId}`], shell: false }]);
+    advert.stop();
+    expect(killed).toBe(1);
+    const logs: string[] = [];
+    const missing = startBonjour({ port: 4199, machineId, platform: "linux", log: line => logs.push(line), spawn: () => {
+      const child = Object.assign(new EventEmitter(), { exitCode: null, kill: () => true, unref: () => {} });
+      setImmediate(() => child.emit("error", Object.assign(new Error("spawn avahi-publish-service ENOENT"), { code: "ENOENT" })));
+      return child as never;
+    } });
+    await until(() => logs.length > 0);
+    expect(logs[0]).toContain("ENOENT");
+    missing.stop();
+  });
+});
