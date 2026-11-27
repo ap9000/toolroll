@@ -72,6 +72,10 @@ final class CompanionAppState {
     /// Bumped after a quiet reconnect so visible screens reload.
     private(set) var refreshTick = 0
     var pairingError: String?
+    /// The path the current session runs over (direct or hosted), for Settings.
+    private(set) var connectedPath: CompanionPath?
+    /// Why the Mac can't be reached, when there's something the person can do about it.
+    private(set) var connectionProblem: String?
     /// One-off message for the Welcome screen (for example, how unpairing went).
     var notice: String?
 
@@ -135,12 +139,12 @@ final class CompanionAppState {
     }
 
     #if DEBUG
-    /// DEBUG only: a pairing whose relay is a closed localhost port, to exercise the offline path.
+    /// DEBUG only: a pairing whose only path is a closed localhost port, to exercise the offline path.
     private static func installUnreachablePairingForDebug() {
         func random(_ n: Int) -> Data { Data((0..<n).map { _ in UInt8.random(in: 0...255) }) }
         let record = PairedWorkspaceRecord(
             workspaceId: "ws-debug", workspaceLabel: "Studio Mac", machineId: "m-debug",
-            relayUrl: "ws://127.0.0.1:9/v1/connect",
+            paths: [CompanionPath(kind: .hosted, url: "ws://127.0.0.1:9/v1/connect")],
             macStaticPubBase64Url: CompanionRelayAuth.base64UrlEncode(X25519KeyPair.generate().publicKey),
             deviceId: "dev-debug", recoveryGeneration: String(repeating: "0", count: 32), pairedAt: Date()
         )
@@ -219,9 +223,11 @@ final class CompanionAppState {
     func startPairing(payload: String) {
         pairingError = nil
         notice = nil
-        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let qr = try? JSONDecoder().decode(PairingQRPayload.self, from: Data(trimmed.utf8)), qr.v == 1 else {
-            pairingError = "That isn't a Toolroll pairing code. On your Mac, open Settings → Phone → Pair an iPhone for a new one."
+        let qr: PairingQRPayload
+        do {
+            qr = try PairingQRPayload.parse(payload)
+        } catch {
+            pairingError = (error as? PairingPayloadError ?? .invalid("")).userMessage
             return
         }
         pairingTask?.cancel()
@@ -246,6 +252,8 @@ final class CompanionAppState {
             epoch += 1
             await client.disconnect()
             pairedRecord = result.record
+            connectedPath = nil
+            connectionProblem = nil
             workspaceLabel = result.record.workspaceLabel
             liveCache = CompanionCache()
             demoCache = CompanionCache()
@@ -258,7 +266,12 @@ final class CompanionAppState {
             guard pairing != .idle else { return } // cancelled by the person
             pairing = .idle
             pairingTask = nil
-            pairingError = "Pairing didn't finish. On your Mac, start pairing again for a new code."
+            if case CompanionConnectionError.unreachable(let message) = error,
+               message == CompanionRelayClient.noReachablePathMessage {
+                pairingError = message
+            } else {
+                pairingError = "Pairing didn't finish. On your Mac, start pairing again for a new code."
+            }
         }
     }
 
@@ -315,13 +328,21 @@ final class CompanionAppState {
             connection = .connecting
         }
         do {
-            let hello = try await client.connect(
+            let result = try await client.connect(
                 record: record, devicePsk: keys.psk, phoneNoisePriv: keys.noise, deviceRelayPriv: keys.relay
             )
             guard started == epoch, startedConnect == connectEpoch, pairedRecord == record, !isDemoMode else {
                 await client.disconnect()
                 return false
             }
+            let hello = result.hello
+            // The Mac's current addresses (from a hello that passed the identity checks) are where we dial next time.
+            if result.record != record, let data = try? JSONEncoder().encode(result.record) {
+                UserDefaults.standard.set(data, forKey: Self.recordStorageKey)
+                pairedRecord = result.record
+            }
+            connectedPath = result.path
+            connectionProblem = nil
             if let label = hello.workspaceLabel, !label.isEmpty {
                 workspaceLabel = label
                 UserDefaults.standard.set(label, forKey: Self.labelStorageKey)
@@ -330,6 +351,12 @@ final class CompanionAppState {
             return true
         } catch {
             guard started == epoch, startedConnect == connectEpoch, !isDemoMode, pairedRecord != nil else { return false }
+            connectedPath = nil
+            connectionProblem = nil
+            if case CompanionConnectionError.unreachable(let message) = error,
+               message == CompanionRelayClient.noReachablePathMessage {
+                connectionProblem = message
+            }
             if case CompanionConnectionError.handshakeFailed = error {
                 connection = .notRecognized
             } else {
@@ -539,6 +566,8 @@ final class CompanionAppState {
         UserDefaults.standard.removeObject(forKey: Self.recordStorageKey)
         UserDefaults.standard.removeObject(forKey: Self.labelStorageKey)
         pairedRecord = nil
+        connectedPath = nil
+        connectionProblem = nil
         liveCache = CompanionCache()
         demoCache = CompanionCache()
         lastUpdated = nil

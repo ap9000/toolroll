@@ -28,7 +28,7 @@
 		<true/>
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Toolroll connects to your Mac on this network to show your work. Everything it sends is end-to-end encrypted.</string>
+	<string>Toolroll connects straight to your Mac when you're on the same Wi‑Fi.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Toolroll uses the camera only to scan the pairing QR code displayed on your Mac.</string>
 	<key>UIApplicationSceneManifest</key>

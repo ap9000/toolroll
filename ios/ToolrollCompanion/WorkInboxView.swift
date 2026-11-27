@@ -45,6 +45,12 @@ struct WorkInboxView: View {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     statusLine
                         .padding(.bottom, 2)
+                    if appState.connection.isUnreachable, let problem = appState.connectionProblem {
+                        Text(problem)
+                            .font(.footnote)
+                            .foregroundStyle(ToolrollTheme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     if appState.connection == .notRecognized {
                         notRecognizedCard
                     }

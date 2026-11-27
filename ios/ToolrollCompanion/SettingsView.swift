@@ -42,7 +42,7 @@ struct SettingsView: View {
                 Section {
                     DisclosureGroup("How it's secured") {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("Everything between this iPhone and your Mac is end-to-end encrypted. The relay that carries it can't read it and can't act for you.")
+                            Text("Everything between this iPhone and your Mac is end-to-end encrypted, whether it goes straight over your network or through the relay. The relay can't read it and can't act for you.")
                             Text("This iPhone can only read. Approving and accepting still happen on your Mac.")
                             Text("Keys stay in this iPhone's keychain and are never backed up to iCloud.")
                             Text("Technical details: Noise_IKpsk2_25519_ChaChaPoly_SHA256 with a per-device pre-shared key from pairing, a six-character transcript code to confirm the pairing, and Ed25519-signed relay tokens. The relay sees IP addresses, timing and message sizes only.")
@@ -60,7 +60,9 @@ struct SettingsView: View {
                             detail("This iPhone", record.deviceId)
                             detail("Workspace", record.workspaceId)
                             detail("Machine", record.machineId)
-                            detail("Relay", record.relayUrl)
+                            if let connectionText {
+                                detail("Connection", connectionText)
+                            }
                         }
                         .foregroundStyle(ToolrollTheme.ink)
                     }
@@ -114,11 +116,20 @@ struct SettingsView: View {
 
     private var statusText: String {
         switch appState.connection {
-        case .connected: return "Connected"
+        case .connected: return connectionText ?? "Connected"
         case .connecting: return "Connecting…"
         case .unreachable: return "Can't reach your Mac"
         case .notRecognized: return "Not accepted by your Mac"
         default: return "Not connected"
+        }
+    }
+
+    /// "Connected directly" or "Connected through <the hosted relay's host>", while connected.
+    private var connectionText: String? {
+        guard case .connected = appState.connection, let path = appState.connectedPath else { return nil }
+        switch path.kind {
+        case .direct: return "Connected directly"
+        case .hosted: return path.host.map { "Connected through \($0)" } ?? "Connected through the relay"
         }
     }
 
