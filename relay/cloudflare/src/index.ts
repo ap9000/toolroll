@@ -220,6 +220,10 @@ class MinuteBucket {
     this.tokens -= n;
     return true;
   }
+  /** Share used right now (0 = full, 1 = empty): who's spending the most. */
+  usedFraction(): number {
+    return 1 - Math.min(this.perMinute, this.tokens + ((Date.now() - this.at) / 60_000) * this.perMinute) / this.perMinute;
+  }
 }
 
 export default {
@@ -310,6 +314,8 @@ export class MachineRoomDO {
   private readonly phones = new Map<WebSocket, { frames: MinuteBucket; bytes: MinuteBucket; down: MinuteBucket; lastAt: number }>();
   /** Phones → daemon, all phones of this machine together. */
   private readonly machineBytes = new MinuteBucket(MACHINE_BYTES_PER_MIN);
+  /** Daemon → all phones together (reconnecting a phone doesn't refill it): over it, the heaviest phone is closed. */
+  private readonly daemonBytes = new MinuteBucket(MACHINE_BYTES_PER_MIN * 2);
 
 
   constructor(state: DurableObjectState) {
@@ -516,6 +522,11 @@ export class MachineRoomDO {
         // Each phone has its own budget for what the daemon sends it: over it, that phone alone is closed (the frame isn't
         // sent); the daemon and the other phones are untouched. At most 4 phones, so the total stays bounded.
         if (!this.phoneOf(target).down.take(bytes.length)) { target.close(1008, "rate_limited"); return; }
+        if (!this.daemonBytes.take(bytes.length)) {
+          const heaviest = [...this.phones.entries()].sort((a, b) => b[1].down.usedFraction() - a[1].down.usedFraction())[0];
+          try { heaviest?.[0].close(1008, "rate_limited"); } catch { /* closing */ }
+          return;
+        }
         sendQuietly(target, bytes.subarray(RELAY_ENVELOPE_HEADER_BYTES));
       }
       return;
