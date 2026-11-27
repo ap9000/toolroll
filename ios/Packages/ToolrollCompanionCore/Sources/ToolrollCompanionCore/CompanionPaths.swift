@@ -30,6 +30,8 @@ public enum PairingPayloadError: Error, Equatable, Sendable {
     case olderToolroll
     /// A code from a Toolroll newer than this app understands.
     case newerToolroll
+    /// `expiresAtMs` already passed, or lies implausibly far ahead (this iPhone's clock may be off).
+    case expired
     /// Not a Toolroll pairing code, or one that breaks the rules. The reason is for tests and logs, not people.
     case invalid(String)
 
@@ -40,6 +42,8 @@ public enum PairingPayloadError: Error, Equatable, Sendable {
             return "This QR code is from an older Toolroll — update Toolroll on your Mac."
         case .newerToolroll:
             return "This QR code is from a newer Toolroll. Update this app, then scan again."
+        case .expired:
+            return "This pairing code has expired, or this iPhone's date & time is off. Show a new code on your Mac, and check Settings → General → Date & Time."
         case .invalid:
             return "That isn't a Toolroll pairing code. On your Mac, open Settings → Phone → Pair an iPhone for a new one."
         }

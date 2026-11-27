@@ -101,10 +101,14 @@ public struct PairingQRPayload: Codable, Equatable, Sendable {
     /// When the Mac stops waiting for this pairing (Mac clock, ms). The phone waits at most until then.
     public let expiresAtMs: Double?
 
+    /// How far past `expiresAtMs` (by this iPhone's clock) a code is still tried, and how far ahead it may lie.
+    static let expirySkewMs: Double = 60_000
+    static let maxLifetimeMs: Double = 3_600_000
+
     public var hostedPath: CompanionPath? { paths.first { $0.kind == .hosted } }
 
     /// Decodes and validates a scanned or pasted pairing code.
-    public static func parse(_ text: String) throws -> PairingQRPayload {
+    public static func parse(_ text: String, now: Date = Date()) throws -> PairingQRPayload {
         let data = Data(text.trimmingCharacters(in: .whitespacesAndNewlines).utf8)
         struct Version: Decodable { let v: Int }
         guard let version = try? JSONDecoder().decode(Version.self, from: data) else {
@@ -118,12 +122,14 @@ public struct PairingQRPayload: Codable, Equatable, Sendable {
         } catch {
             throw PairingPayloadError.invalid("missing or malformed fields")
         }
-        try payload.validate()
+        try payload.validate(now: now)
         return payload
     }
 
     /// The contract's rules: valid paths, a token iff there is a hosted path, ids present, 32-byte keys.
-    public func validate() throws {
+    /// `now` is this iPhone's clock: `expiresAtMs` (untrusted, from a scan or a paste) must be a finite time within
+    /// [now − 1 min, now + 1 h].
+    public func validate(now: Date = Date()) throws {
         guard v == Self.version else { throw PairingPayloadError.invalid("wrong version") }
         try CompanionPathRules.validate(paths)
         let hasHosted = hostedPath != nil
@@ -133,7 +139,13 @@ public struct PairingQRPayload: Codable, Equatable, Sendable {
         guard !machineId.isEmpty, !workspaceId.isEmpty, !pairSessionId.isEmpty else {
             throw PairingPayloadError.invalid("missing id")
         }
-        if let expiresAtMs, !(expiresAtMs.isFinite && expiresAtMs > 0 && expiresAtMs < 1e15) { throw PairingPayloadError.invalid("bad expiresAtMs") }
+        if let expiresAtMs {
+            guard expiresAtMs.isFinite else { throw PairingPayloadError.invalid("bad expiresAtMs") }
+            let nowMs = now.timeIntervalSince1970 * 1000
+            guard expiresAtMs >= nowMs - Self.expirySkewMs, expiresAtMs <= nowMs + Self.maxLifetimeMs else {
+                throw PairingPayloadError.expired
+            }
+        }
         guard CompanionRelayAuth.base64UrlDecode(macStaticPub)?.count == 32,
               CompanionRelayAuth.base64UrlDecode(pairPsk)?.count == 32
         else { throw PairingPayloadError.invalid("bad key length") }

@@ -362,8 +362,9 @@ struct TaskDetailView: View {
     /// The count always matches the files listed; a truncated list says so.
     private func filesSummary(_ diff: ResultDiff) -> String {
         let shown = diff.files.count
-        let added = diff.files.reduce(0) { $0 + $1.additions }
-        let removed = diff.files.reduce(0) { $0 + $1.deletions }
+        // Server-written counts: summed without overflow traps.
+        let added = diff.files.reduce(0) { $0.addingReportingOverflow(max($1.additions, 0)).partialValue }
+        let removed = diff.files.reduce(0) { $0.addingReportingOverflow(max($1.deletions, 0)).partialValue }
         let files = shown == 1 ? "1 file" : "\(shown) files"
         if let total = diff.totals?.files, total > shown {
             return "\(shown) of \(total) files · +\(added) −\(removed)"

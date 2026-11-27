@@ -134,7 +134,7 @@ public struct CompanionRelayRefusal: Error, Equatable, Sendable {
             status: status,
             code: code,
             serverDate: header("Date").flatMap(Self.httpDate),
-            retryAfter: header("Retry-After").flatMap { TimeInterval($0.trimmingCharacters(in: .whitespaces)) }
+            retryAfter: header("Retry-After").flatMap(Self.retryAfterSeconds)
         )
     }
 
@@ -152,6 +152,14 @@ public struct CompanionRelayRefusal: Error, Equatable, Sendable {
         case "rate_limited", "too_many_peers", "replay_cache_full": return .rateLimited
         default: return .relayRefused(code ?? "http_\(status)")
         }
+    }
+
+    /// Whole seconds 0…86400 only; anything else (a date form, NaN, 1e300, negative) is ignored.
+    static func retryAfterSeconds(_ value: String) -> TimeInterval? {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        guard trimmed.range(of: #"^[0-9]{1,5}$"#, options: .regularExpression) != nil, let seconds = Int(trimmed),
+              seconds <= 86_400 else { return nil }
+        return TimeInterval(seconds)
     }
 
     private static func httpDate(_ value: String) -> Date? {

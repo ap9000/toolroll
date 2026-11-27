@@ -505,7 +505,9 @@ actor FakeMac {
             object["pairPsk"] = CompanionRelayAuth.base64UrlEncode(pairing.pairPsk)
             if let expires = pairing.expiresAtMs { object["expiresAtMs"] = expires }
         }
-        return try! PairingQRPayload.parse(json)
+        // A test that sets an expiry sets it two minutes after its own clock's start (the manual clock).
+        let now = pairing.expiresAtMs.map { Date(timeIntervalSince1970: ($0 - 120_000) / 1000) } ?? Date()
+        return try! PairingQRPayload.parse(json, now: now)
     }
 }
 

@@ -219,9 +219,11 @@ struct DiffFileView: View {
     /// "Change 2: lines 10 to 25" from "@@ -8,9 +10,16 @@ …", so the rotor jumps hunk to hunk (U20).
     static func hunkLabel(_ header: String, index: Int) -> String {
         let pattern = /@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/
+        // Server-written numbers: parsed without trapping (a huge value is nil) and added without overflow.
         if let match = header.firstMatch(of: pattern), let start = Int(match.1) {
             let count = match.2.flatMap { Int($0) } ?? 1
-            let end = max(start, start + count - 1)
+            let (sum, overflow) = start.addingReportingOverflow(max(count, 1) - 1)
+            let end = overflow ? start : sum
             return "Change \(index + 1): lines \(start) to \(end)"
         }
         return "Change \(index + 1)"

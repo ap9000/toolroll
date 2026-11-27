@@ -236,6 +236,8 @@ public actor CompanionRelayClient {
     private var directHelloPending: UInt64?
     /// The last generation whose direct hello ran out of time (its failure counts as a network one).
     private var directHelloExpired: UInt64?
+    /// The largest clock correction taken from a relay's `Date` header (one day).
+    static let maxClockOffset: TimeInterval = 86_400
     /// Seconds to add to this iPhone's clock for relay tokens, learned once from a relay's `Date` header.
     public private(set) var clockOffset: TimeInterval = 0
 
@@ -281,7 +283,7 @@ public actor CompanionRelayClient {
         onCodeReady: @Sendable (String) async -> Void,
         persist: @Sendable (CompanionPairingKeys) async throws -> Void
     ) async throws -> CompanionPairingCompletion {
-        try qr.validate()
+        try qr.validate(now: now())
         guard let macStaticPub = CompanionRelayAuth.base64UrlDecode(qr.macStaticPub),
               let pairPsk = CompanionRelayAuth.base64UrlDecode(qr.pairPsk)
         else {
@@ -592,8 +594,13 @@ public actor CompanionRelayClient {
                     guard !corrected, let serverDate = refusal.serverDate else {
                         throw CompanionConnectionError.unreachable(.clockSkew)
                     }
+                    // The relay's Date header is unauthenticated: an offset past a day is not a clock to adopt.
+                    let offset = serverDate.timeIntervalSince(now())
+                    guard offset.isFinite, abs(offset) <= Self.maxClockOffset else {
+                        throw CompanionConnectionError.unreachable(.clockSkew)
+                    }
                     corrected = true
-                    clockOffset = serverDate.timeIntervalSince(now())
+                    clockOffset = offset
                     guard epoch == dialEpoch else { throw CompanionConnectionError.closed }
                     continue
                 }

@@ -191,13 +191,34 @@ func cancelledScanIsDropped() {
     #expect(gate.phase == .idle)
 }
 
-@Test("An out-of-range expiry in a scanned code is refused, never converted", arguments: [-1.0, 0.0, 1e15, 1e300])
+private let fixedNow = Date(timeIntervalSince1970: 1_800_000_000)
+private let fixedNowMs = 1_800_000_000_000.0
+
+@Test("An expiry outside [now − 1 min, now + 1 h] is refused as expired, never converted", arguments: [
+    -1.0, 0.0, 1e15, 1e300, -1e300, fixedNowMs - 61_000, fixedNowMs + 3_601_000,
+])
 func absurdExpiryRejected(expiresAtMs: Double) {
-    #expect(isInvalid(PairingFixtures.json { $0["expiresAtMs"] = expiresAtMs }))
+    #expect(throws: PairingPayloadError.expired) {
+        _ = try PairingQRPayload.parse(PairingFixtures.json { $0["expiresAtMs"] = expiresAtMs }, now: fixedNow)
+    }
 }
 
-@Test("A plausible expiry parses")
-func plausibleExpiryParses() throws {
-    let qr = try PairingQRPayload.parse(PairingFixtures.json { $0["expiresAtMs"] = 1_800_000_000_000.0 })
-    #expect(qr.expiresAtMs == 1_800_000_000_000)
+@Test("A non-finite expiry (only reachable past JSON) is invalid", arguments: [Double.nan, .infinity, -.infinity])
+func nonFiniteExpiryRejected(expiresAtMs: Double) throws {
+    let good = try PairingQRPayload.parse(PairingFixtures.json(), now: fixedNow)
+    let bad = PairingQRPayload(
+        v: good.v, paths: good.paths, machineId: good.machineId, workspaceId: good.workspaceId,
+        macStaticPub: good.macStaticPub, pairSessionId: good.pairSessionId, pairPsk: good.pairPsk,
+        pairConnToken: good.pairConnToken, expiresAtMs: expiresAtMs
+    )
+    #expect(throws: PairingPayloadError.invalid("bad expiresAtMs")) { try bad.validate(now: fixedNow) }
+}
+
+@Test("A plausible expiry parses (just past, and the 5-minute pairing window ahead)", arguments: [
+    fixedNowMs - 30_000, fixedNowMs + 300_000, fixedNowMs + 3_600_000,
+])
+func plausibleExpiryParses(expiresAtMs: Double) throws {
+    let qr = try PairingQRPayload.parse(PairingFixtures.json { $0["expiresAtMs"] = expiresAtMs }, now: fixedNow)
+    #expect(qr.expiresAtMs == expiresAtMs)
+    #expect(!PairingPayloadError.expired.userMessage.isEmpty)
 }

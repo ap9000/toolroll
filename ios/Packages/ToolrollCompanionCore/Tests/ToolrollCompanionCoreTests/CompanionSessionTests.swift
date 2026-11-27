@@ -146,6 +146,25 @@ func clockSkewCorrectedOnce() async throws {
     #expect(await h.client.clockOffset == 3600)
 }
 
+@Test("Retry-After is whole seconds up to a day; NaN, 1e300, negative and date forms are ignored")
+func retryAfterParsing() {
+    #expect(CompanionRelayRefusal.retryAfterSeconds("7") == 7)
+    #expect(CompanionRelayRefusal.retryAfterSeconds(" 86400 ") == 86_400)
+    for bad in ["nan", "NaN", "inf", "1e300", "-5", "86401", "99999999999999999999", "Wed, 21 Oct 2015 07:28:00 GMT", ""] {
+        #expect(CompanionRelayRefusal.retryAfterSeconds(bad) == nil, "\(bad)")
+    }
+}
+
+@Test("A relay Date header more than a day off is not adopted as the clock: clockSkew hint, one attempt")
+func absurdRelayDateNotAdopted() async throws {
+    let phoneNow = Date(timeIntervalSince1970: 1_900_000_000)
+    let h = try Harness(now: { phoneNow })
+    h.box.queueMode(.hosted, .relayRefusal(CompanionRelayRefusal(status: 401, code: "token_expired", serverDate: phoneNow.addingTimeInterval(1e12))))
+    await #expect(throws: CompanionConnectionError.unreachable(.clockSkew)) { _ = try await h.connectResult(paths: [hostedRelay]) }
+    #expect(h.box.requests.count == 1)
+    #expect(await h.client.clockOffset == 0)
+}
+
 @Test("A second skew refusal after the correction is the clockSkew hint, with no third attempt")
 func clockSkewTwiceIsHint() async throws {
     let h = try Harness()
