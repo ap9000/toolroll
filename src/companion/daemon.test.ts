@@ -225,5 +225,7 @@ describe("the deadline sweep never takes the process down", () => {
     stores.splice(stores.indexOf(store), 1);
     // Before the fix the timer's callback threw "database is not open" — an uncaught exception in production.
     expect(() => vi.advanceTimersByTime(5_000)).not.toThrow();
+    // And it fails closed: the phone whose standing can no longer be read is disconnected, not left on unchecked.
+    expect(again.wire.closed).toBe(true);
   });
 });

@@ -1464,14 +1464,19 @@ export class CompanionDaemonEngine {
    * its lifetime, pairings that expired or finished a minute ago. */
   private ensureSweep(): void {
     if (this.sweepTimer !== null) return;
-    // A timer callback that throws would take the whole process down. A sweep that fails (the store was closed under
-    // a stopped service) stops itself; the next phone activity arms it again.
+    // A timer callback that throws would take the whole process down. A sweep that fails (say, the store was closed
+    // under a stopped service) fails closed: every connected phone is dropped — none stays on without its standing
+    // being enforced — and the sweep stops. A phone that reconnects proves its standing again at the handshake, and
+    // its activity arms the sweep again.
     this.sweepTimer = setInterval(() => {
       try {
         this.sweepDeadlines();
       } catch {
         if (this.sweepTimer !== null) clearInterval(this.sweepTimer);
         this.sweepTimer = null;
+        for (const peer of [...this.peers.values()]) {
+          try { this.dropPeer(peer, "unavailable"); } catch { this.cleanupPeerLocal(peer); }
+        }
       }
     }, DEADLINE_SWEEP_MS);
     this.sweepTimer.unref?.();
