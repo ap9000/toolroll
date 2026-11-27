@@ -78,6 +78,11 @@ export interface RelayTokenClaims {
   machineId: string;
   deviceId?: string;
   pairSessionId?: string;
+  /** The relay's public host (exact, lowercase). A token minted for one relay is refused by every other. */
+  aud: string;
+  /** HTTP admission calls only: the method and exact path the token is for. WebSocket tokens never carry them. */
+  htm?: "PUT" | "POST" | "DELETE";
+  htu?: string;
   jti: string;
   iat: number; // unix seconds
   exp: number; // unix seconds
@@ -93,6 +98,9 @@ export function signRelayToken(
     v: 1,
     role: claims.role,
     machineId: claims.machineId,
+    aud: claims.aud,
+    ...(claims.htm !== undefined ? { htm: claims.htm } : {}),
+    ...(claims.htu !== undefined ? { htu: claims.htu } : {}),
     ...(claims.deviceId !== undefined ? { deviceId: claims.deviceId } : {}),
     ...(claims.pairSessionId !== undefined ? { pairSessionId: claims.pairSessionId } : {}),
     jti: claims.jti ?? randomUUID(),
@@ -182,6 +190,10 @@ export const RelayOp = {
   PEER_OPEN: 0x01,
   PEER_DATA: 0x02,
   PEER_CLOSE: 0x03,
+  /** Daemon → relay every 20 s: `[4B 0][8B BE ms timestamp]`. */
+  HEARTBEAT: 0x04,
+  /** Relay → daemon, echoing the heartbeat's 8 bytes. */
+  HEARTBEAT_ACK: 0x05,
 } as const;
 
 export type RelayOpCode = (typeof RelayOp)[keyof typeof RelayOp];
