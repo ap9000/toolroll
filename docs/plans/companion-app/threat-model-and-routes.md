@@ -80,6 +80,7 @@ Every Gate 2 mutation RPC stores `(deviceId, idempotencyKey, method, requestHash
 - **`in_flight`:** Recorded before executing an async/external operation (`land`, `ship`); a retry arriving while `in_flight` returns `{ ok: false, code: "in_progress" }` and never starts a second execution.
 - **`completed`:** Stores the deterministic outcome (`ok`, `result` / `error`); retries with matching `requestHash` return the stored outcome without re-executing.
 - **`unknown`:** Recorded if the daemon crashes, restarts, or loses contact mid-external side effect before settlement; retries return `{ ok: false, code: "outcome_unknown" }` prompting the client to refresh state (ADR 0004 — never blindly re-runs an uncertain external mutation).
+- **Startup reconciliation & retention:** On daemon startup, a sweep unconditionally transitions every lingering `in_flight` row to `unknown` (a crashed process can no longer settle it). Settled (`completed` and `unknown`) rows are pruned after **24 hours** (with a hard ceiling of 1,000 rows per paired device, evicting oldest settled rows first) so the table stays strictly bounded.
 
 ### Explicitly Blocked in V1
 - `/term/*` (Live Terminals, PTY start/attach/input)
