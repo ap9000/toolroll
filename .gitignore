@@ -36,6 +36,10 @@ output/
 # A test run's fake outer home (test/temp-root.ts), removed with the run
 /.test-outer/
 
-# Native macOS app SwiftPM build artifacts and packaged .app bundle
+# Native macOS & iOS app SwiftPM / Xcode build artifacts
 mac/.build/
 mac/build/
+ios/**/.build/
+ios/build/
+ios/DerivedData/
+*.xcuserstate

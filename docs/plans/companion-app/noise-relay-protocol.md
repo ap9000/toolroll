@@ -26,7 +26,7 @@ No specific Noise library is pre-selected or claimed Revision-34-compatible here
    - **Pairing mode:**
      `prologue = "toolroll-noise-v1\0pair\0" || utf8(workspaceId) || "\0" || utf8(pairSessionId)`
    - **Session reconnect mode:**
-     `prologue = "toolroll-noise-v1\0session\0" || utf8(workspaceId) || "\0" || utf8(deviceId) || "\0" || uint32_be(recoveryGeneration)`
+     `prologue = "toolroll-noise-v1\0session\0" || utf8(workspaceId) || "\0" || utf8(deviceId) || "\0" || utf8(recoveryGeneration)` *(where `recoveryGeneration` is Toolroll's 32-lowercase-hex-char `workspace_identity.recovery_generation`)*
    - Both sides pass identical `prologue` bytes to `Initialize("Noise_IKpsk2_25519_ChaChaPoly_SHA256", prologue, ...)`. Any mismatch in version, mode, workspace, device, or `recoveryGeneration` causes handshake authentication to fail cryptographically.
 2. **Never act on handshake message 1 (`-> e, es, s, ss`).** Noise `IK` message 1 is replayable before responder ephemeral entropy (`ee`, `se`, `psk`) enters in message 2. The daemon MUST NOT execute any RPC or mutate durable state from message 1; message 1 payload carries only `{ protocolVersion: 1, mode: "pair" | "session", deviceId?, deviceName? }`.
 3. **Key confirmation before RPCs.** A session enters `AUTHENTICATED` only after message 2 (`<- e, ee, se, psk`) completes AND the phone sends its first encrypted transport message (`device.hello`) verified under the initiator→responder transport cipher key.
