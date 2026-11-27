@@ -16,8 +16,11 @@ import { EngineWire, PairingPhone, PhoneSession, WIRE, type PairedPhone } from "
 
 const dirs: string[] = [];
 const stores: Store[] = [];
+const engines: CompanionDaemonEngine[] = [];
 afterEach(() => {
   vi.useRealTimers();
+  // Engines first: a running engine's sweep reads its store, so it stops before the store closes.
+  while (engines.length > 0) engines.pop()!.handleRelayDisconnected();
   while (stores.length > 0) stores.pop()!.close();
   while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
@@ -45,6 +48,7 @@ function engineOf(handlers: Partial<CompanionReadHandlers> = {}, extra: Partial<
     },
     ...extra,
   });
+  engines.push(engine);
   const start = () => {
     const started = engine.startPairing("owner", BINDING, store.accountOf("owner")!.generation);
     if (!started.ok) throw new Error(started.error);
@@ -201,5 +205,25 @@ describe("pairing deadlines and lifetime (§1.2, L10)", () => {
     start();
     expect(await phone.answer(1)).toEqual({ ok: false, code: "pairing_cancelled" });
     expect(engine.pairingView(qr.pairSessionId, BINDING)).toBeNull();
+  });
+});
+
+describe("the deadline sweep never takes the process down", () => {
+  test("a sweep whose store was closed stops itself instead of throwing from its timer", async () => {
+    const { store, engine, pair } = engineOf();
+    const phone = await pair();
+    // A connected phone: the sweep re-reads its standing from the store every pass.
+    const s = await PhoneSession.connect(phone, EngineWire.open(engine, "device", phone.deviceId));
+    await s.open("device.hello");
+    await s.frame();
+    vi.useFakeTimers();
+    engine.handleRelayDisconnected(); // stop the real-timer sweep, then arm one under fake timers
+    const again = await PhoneSession.connect(phone, EngineWire.open(engine, "device", phone.deviceId));
+    await again.open("device.hello");
+    await again.frame();
+    store.close();
+    stores.splice(stores.indexOf(store), 1);
+    // Before the fix the timer's callback threw "database is not open" — an uncaught exception in production.
+    expect(() => vi.advanceTimersByTime(5_000)).not.toThrow();
   });
 });

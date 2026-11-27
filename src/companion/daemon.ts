@@ -1464,7 +1464,16 @@ export class CompanionDaemonEngine {
    * its lifetime, pairings that expired or finished a minute ago. */
   private ensureSweep(): void {
     if (this.sweepTimer !== null) return;
-    this.sweepTimer = setInterval(() => this.sweepDeadlines(), DEADLINE_SWEEP_MS);
+    // A timer callback that throws would take the whole process down. A sweep that fails (the store was closed under
+    // a stopped service) stops itself; the next phone activity arms it again.
+    this.sweepTimer = setInterval(() => {
+      try {
+        this.sweepDeadlines();
+      } catch {
+        if (this.sweepTimer !== null) clearInterval(this.sweepTimer);
+        this.sweepTimer = null;
+      }
+    }, DEADLINE_SWEEP_MS);
     this.sweepTimer.unref?.();
   }
 

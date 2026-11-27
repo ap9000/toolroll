@@ -26,7 +26,10 @@ import { EngineWire, PairingPhone, PhoneSession, WIRE, type PairedPhone } from "
 
 const dirs: string[] = [];
 const stores: Store[] = [];
+const engines: CompanionDaemonEngine[] = [];
 afterEach(() => {
+  // Engines first: a running engine's sweep reads its store, so it stops before the store closes.
+  while (engines.length > 0) engines.pop()!.handleRelayDisconnected();
   while (stores.length > 0) stores.pop()!.close();
   while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
@@ -78,6 +81,7 @@ function world(handlers: Partial<CompanionReadHandlers> = {}): World {
       ...handlers,
     },
   });
+  engines.push(engine);
   return { store, engine, clock, principals, registered, revoked, admission, generation: () => store.accountOf("owner")!.generation };
 }
 
