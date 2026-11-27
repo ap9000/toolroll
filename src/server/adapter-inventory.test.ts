@@ -110,8 +110,14 @@ test("exactly one WebSocket upgrade listener exists in the server's source (the 
     }
   };
   walk(join(import.meta.dirname, ".."));
-  expect(found).toHaveLength(1);
-  expect(found[0]).toContain("server/terminals.ts");
+  // The console's own: the terminals'. The other is the phone relay's (companion/relay-server.ts): its own HTTP server,
+  // never the console's, admitting only Ed25519-signed relay tokens, and run by the console on loopback only.
+  expect(found).toHaveLength(2);
+  expect(found.filter(one => one.includes("server/terminals.ts"))).toHaveLength(1);
+  expect(found.filter(one => one.includes("companion/relay-server.ts"))).toHaveLength(1);
+  const service = readFileSync(join(import.meta.dirname, "..", "companion", "service.ts"), "utf8");
+  expect(service.match(/startReferenceRelay\(/g)).toHaveLength(1);
+  expect(service).toContain('startReferenceRelay({ host: "127.0.0.1", port: this.choice.port })');
 });
 
 test("every lead proposal kind and chat operation is decided, and the decisions agree", () => {

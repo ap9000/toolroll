@@ -1,0 +1,227 @@
+/**
+ * Settings → Phone: turn phone access on or off, pair an iPhone (the Toolroll app), and remove paired phones.
+ *
+ * Every act is the signed-in approver's own, from a full browser session (route-table.ts: approver, self). Turning
+ * access on or off and removing a phone take the password again (a step-up); pairing is a credential act — the typed
+ * password, always (settings-proofs.ts phone-pair, as Telegram's pairing). The pairing QR carries one-time secrets, so
+ * it is drawn only on that POST's answer (sensitive, never cached), never on a GET: after scanning, this page shows the
+ * six-character code to compare and Confirm / Cancel. A pairing answers only to the session that started it.
+ */
+
+import { createHash } from "node:crypto";
+import type { ServerResponse } from "node:http";
+import { CONSOLE_FORMS, readForm } from "../contracts/console-api.js";
+import type { PhoneAccess } from "../companion/access.js";
+import { encodeQr } from "../qr.js";
+import { html, joinHtml, postForm, type Html } from "../html.js";
+import { authenticateAccount } from "../scope.js";
+import { settingsSubPage } from "../settings-groups-ui.js";
+import { kitSectionForm } from "../settings-kit.js";
+import { refuse, relativeAge, screen } from "./chrome.js";
+import type { HandlerContext } from "./handler-context.js";
+import { handlersOf } from "./handler-registry.js";
+import { redirect } from "./http.js";
+import { acts, btn, codeLine, note, notice, settingsRecord, settingsSection } from "./kit.js";
+import type { ServerRuntime } from "./runtime.js";
+import { browserCaller, type Who } from "./session.js";
+
+type CookieWho = Extract<Who, { via: "cookie" }>;
+
+/** The session a pairing belongs to: the person, their account generation, and a hash of this session's form token
+ * (never the token). Another tab of the same session shares it; another session doesn't. */
+function bindingOf(who: CookieWho): string {
+  return `${who.name}:${who.session.generation}:${createHash("sha256").update(who.session.csrf).digest("base64url").slice(0, 22)}`;
+}
+
+/** The QR as an inline SVG drawn through the escaping templates (path data is digits and h/v/M/z only). */
+function qrFigure(text: string, label: string): Html {
+  const code = encodeQr(text, "M");
+  const border = 4, dim = code.size + border * 2;
+  let path = "";
+  for (let y = 0; y < code.size; y++) for (let x = 0; x < code.size; x++) if (code.dark(x, y)) path += `M${x + border},${y + border}h1v1h-1z`;
+  return html`<figure class="phone-qr" style="margin:0;max-width:280px"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${dim} ${dim}" shape-rendering="crispEdges" role="img" aria-label="${label}" style="width:100%;height:auto;background:#fff;border-radius:8px"><rect width="${dim}" height="${dim}" fill="#fff"/><path d="${path}" fill="#000"/></svg></figure>`;
+}
+
+export interface PhoneSettingsDeps {
+  access: PhoneAccess;
+}
+
+export function createPhoneSettingsHandlers(runtime: Pick<ServerRuntime, "store" | "clock" | "sendScreen" | "chromeFor">, deps: PhoneSettingsDeps) {
+  const { store } = runtime;
+  /** The pairing each session has open (its id), so this page can show its code; the engine holds the pairing itself. */
+  const openPairings = new Map<string, string>();
+
+  const show = (response: ServerResponse, status: number, body: Html, options: { sensitive?: boolean; refresh?: boolean } = {}) =>
+    runtime.sendScreen(response, status, screen("Phone", body, {
+      chrome: runtime.chromeFor(null, "settings"),
+      ...(options.sensitive === true ? { forceSensitive: true } : {}),
+      ...(options.refresh === true ? { refreshSeconds: 5 } : {}),
+    }));
+
+  /** The typed password proves this very person and session (Telegram's rule): an approver, at this generation. */
+  const passwordHolds = (who: CookieWho, password: string): boolean => {
+    const proved = authenticateAccount(store, who.name, password);
+    return proved.ok && proved.role === "approver" && proved.generation === who.session.generation;
+  };
+  const passwordProblem = (who: CookieWho): string =>
+    store.accountOf(who.name)?.passwordSet === true
+      ? "Enter your Toolroll password."
+      : "Phone access needs a Toolroll password. Set one in Settings → General → Your password, then come back.";
+
+  function page(who: CookieWho, options: { problem?: string; qr?: { payload: string; expiresAtMs: number } } = {}): { body: Html; refresh: boolean } {
+    const access = deps.access, on = access.enabled(), service = access.service(), now = runtime.clock();
+    const status = service?.status() ?? null;
+    const problem = options.problem === undefined ? "" : notice(options.problem);
+
+    // 1. Access: off, on and connected, or on with a problem.
+    const reach = access.relayKind() === "built-in"
+      ? note("The built-in relay runs on this Mac only, so the iOS Simulator here can connect. To use your iPhone anywhere, run Toolroll with TOOLROLL_RELAY_URL set to a wss:// relay.")
+      : access.relayKind() === "external" && status !== null && status.state !== "stopped"
+        ? note(html`Phones connect through ${codeLine(status.relay)}. Everything is end-to-end encrypted: the relay can't read your work or act for you.`)
+        : "";
+    const state = !on ? " · Off" : access.problem() !== null ? " · Not running" : status?.state === "connected" ? " · On" : status?.state === "unreachable" ? " · Can't reach the relay" : " · Starting";
+    const accessSection = settingsSection({
+      id: "phone-access", title: "Phone access", state,
+      lead: on ? "Your paired iPhone can see what needs you, read plans, steps and changes, and watch agents work. Approving still happens here." : "Let the Toolroll iPhone app see your work. Nothing is shared until you pair a phone.",
+      body: joinHtml([
+        access.problem() === null ? "" : notice(access.problem()!),
+        status?.state === "unreachable" ? notice(html`The relay didn't answer: ${status.error}. Toolroll keeps trying.`) : "",
+        on ? reach : "",
+        kitSectionForm({ proof: "phone-access", action: "/settings/phone/access", id: "phone-access-form", native: true,
+          hidden: { act: on ? "off" : "on" },
+          save: on ? { label: "Turn off phone access", variant: "danger" } : { label: "Turn on phone access" },
+          confirm: on ? "Turn off phone access" : "Turn on phone access",
+          body: on ? note("Paired phones stay paired but can't connect until you turn it back on.") : "" }),
+      ]),
+    });
+
+    // 2. Pair: the QR (only on the pair POST's answer), the code to compare, or the button.
+    let pairBody: Html;
+    let refresh = false;
+    const binding = bindingOf(who);
+    const openId = openPairings.get(binding);
+    const open = openId === undefined || service === null ? null : service.engine.getPairingStatus(openId, binding);
+    if (options.qr !== undefined) {
+      pairBody = joinHtml([
+        html`<ol class="k-note" style="padding-left:1.2em;margin:0 0 12px"><li>Open the Toolroll app on your iPhone and tap <strong>Pair with your Mac</strong>.</li><li>Scan this code.</li><li>Come back here to compare a short code.</li></ol>`,
+        qrFigure(options.qr.payload, "Pairing code for the Toolroll iPhone app"),
+        html`<details style="margin-top:12px"><summary class="k-note">Can't scan? Copy the pairing code instead (Simulator)</summary><textarea readonly rows="5" style="width:100%;font:12px ui-monospace,monospace" aria-label="Pairing code">${options.qr.payload}</textarea></details>`,
+        note(`This code works once, for 5 minutes. Treat it like your password: anyone who scans it before you can try to pair.`),
+        acts(btn("I've scanned it", { sm: true, href: "/settings/phone#phone-pair" })),
+      ]);
+    } else if (open !== null && open.status === "awaiting_confirm") {
+      pairBody = joinHtml([
+        html`<p class="k-note">Your iPhone (“${open.deviceName ?? "iPhone"}”) should be showing this code:</p>`,
+        html`<p style="font:600 32px/1.2 ui-monospace,monospace;letter-spacing:.08em;margin:8px 0 12px">${open.confirmCode ?? ""}</p>`,
+        note("Only confirm if your iPhone shows exactly this code. If it doesn't, cancel — someone else may have scanned your QR."),
+        html`<div class="k-acts">${postForm("/settings/phone/confirm", html`<button type="submit" class="k-btn k-btn-primary k-btn-sm"><span class="k-face">Codes match — pair</span></button>`, { hidden: { pairing: openId! } })}${postForm("/settings/phone/cancel", html`<button type="submit" class="k-btn k-btn-outline k-btn-sm"><span class="k-face">Cancel</span></button>`, { hidden: { pairing: openId! } })}</div>`,
+      ]);
+    } else if (open !== null && open.status === "awaiting_scan") {
+      refresh = true;
+      pairBody = joinHtml([
+        note("Waiting for your iPhone to scan the code… This page checks every few seconds."),
+        acts(postForm("/settings/phone/cancel", html`<button type="submit" class="k-btn k-btn-outline k-btn-sm"><span class="k-face">Cancel</span></button>`, { hidden: { pairing: openId! } })),
+      ]);
+    } else {
+      const last = open === null ? "" : open.status === "confirmed" ? notice("Your iPhone is paired.") : open.status === "expired" ? notice("That pairing code expired. Pair again.")
+        : open.status === "aborted_race" ? notice("Two phones tried the same code, so pairing stopped. Pair again and keep the code to yourself.") : open.status === "failed" || open.status.startsWith("aborted") ? notice("Pairing stopped. Pair again.") : "";
+      pairBody = joinHtml([
+        last,
+        on && status?.state === "connected"
+          ? kitSectionForm({ proof: "phone-pair", action: "/settings/phone/pair", id: "phone-pair-form", native: true, save: { label: "Pair an iPhone" },
+            confirm: "Pair an iPhone with Toolroll", body: note("You'll get a code to scan with the Toolroll app.") })
+          : note(on ? "Phone access is starting. Pairing opens once it's connected." : "Turn on phone access first."),
+      ]);
+    }
+    const pairSection = settingsSection({ id: "phone-pair", title: "Pair an iPhone", body: pairBody });
+
+    // 3. Paired phones: this person's own (an approver sees and removes only their own).
+    const mine = (service?.devices() ?? []).filter(device => device.accountName === who.name);
+    const devices = settingsSection({
+      id: "phone-devices", title: "Your paired phones", state: mine.length === 0 ? " · None" : ` · ${mine.length}`,
+      body: mine.length === 0 ? note("No phones are paired.") : joinHtml(mine.map(device => settingsRecord({
+        title: device.deviceName,
+        sub: `Paired ${relativeAge(device.createdAt, now)}${device.lastSeenAt === null ? "" : ` · last connected ${relativeAge(device.lastSeenAt, now)}`}`,
+        more: kitSectionForm({ proof: "phone-remove", action: "/settings/phone/remove", id: `phone-remove-${device.deviceId}`, hidden: { device: device.deviceId },
+          save: { label: "Remove", variant: "danger" }, confirm: `Remove ${device.deviceName}`, body: note("It's disconnected now and can't connect again until you pair it.") }),
+      }))),
+    });
+
+    return { body: settingsSubPage("access", "Phone", joinHtml([problem, accessSection, pairSection, devices]), { lead: "The Toolroll iPhone app: what needs you, in your pocket." }), refresh };
+  }
+
+  async function phonePage(ctx: HandlerContext): Promise<void> {
+    const who = browserCaller(ctx.who);
+    const built = page(who);
+    return show(ctx.response, 200, built.body, { refresh: built.refresh });
+  }
+
+  async function accessAct(ctx: HandlerContext): Promise<void> {
+    const who = browserCaller(ctx.who);
+    const body = readForm(ctx.posted, CONSOLE_FORMS.phoneAccess);
+    if (body.getAll("password").length > 1 || body.getAll("act").length !== 1) return show(ctx.response, 400, page(who, { problem: "Submit one value for each field." }).body);
+    const act = body.get("act");
+    if (act !== "on" && act !== "off") return show(ctx.response, 400, page(who, { problem: "Choose on or off." }).body);
+    if (!passwordHolds(who, body.get("password") ?? "")) return show(ctx.response, 403, page(who, { problem: passwordProblem(who) }).body);
+    await deps.access.turn(act === "on", who.name, runtime.clock());
+    return redirect(ctx.response, "/settings/phone");
+  }
+
+  async function pairAct(ctx: HandlerContext): Promise<void> {
+    const who = browserCaller(ctx.who);
+    const body = readForm(ctx.posted, CONSOLE_FORMS.phonePair);
+    if (body.getAll("password").length > 1) return show(ctx.response, 400, page(who, { problem: "Submit one value for each field." }).body);
+    // Pairing a phone is a credential act: the password, typed, every time.
+    if (!passwordHolds(who, body.get("password") ?? "")) return show(ctx.response, 403, page(who, { problem: passwordProblem(who) }).body);
+    const service = deps.access.service();
+    if (service === null) return show(ctx.response, 409, page(who, { problem: "Turn on phone access first." }).body);
+    const binding = bindingOf(who);
+    const started = service.startPairing(who.name, binding);
+    if (!started.ok) return show(ctx.response, 409, page(who, { problem: started.error }).body);
+    openPairings.set(binding, started.qr.pairSessionId);
+    const built = page(who, { qr: { payload: JSON.stringify(started.qr), expiresAtMs: started.expiresAtMs } });
+    return show(ctx.response, 200, built.body, { sensitive: true });
+  }
+
+  const pairingAct = (op: "confirm" | "cancel") => async (ctx: HandlerContext): Promise<void> => {
+    const who = browserCaller(ctx.who);
+    const body = readForm(ctx.posted, CONSOLE_FORMS.phonePairing);
+    const pairing = body.getAll("pairing").length === 1 ? body.get("pairing") ?? "" : "";
+    const binding = bindingOf(who);
+    const service = deps.access.service();
+    // Only this session's own open pairing, by its id.
+    if (service === null || pairing === "" || openPairings.get(binding) !== pairing) return refuse(ctx.response, who, 409, "That pairing isn't open any more. Pair again.", "/settings/phone");
+    if (op === "cancel") {
+      service.engine.cancelPairing(pairing, binding);
+      return redirect(ctx.response, "/settings/phone");
+    }
+    const confirmed = await service.engine.confirmPairing(pairing, binding);
+    if (!confirmed.ok) return show(ctx.response, 409, page(who, { problem: confirmed.error }).body);
+    return redirect(ctx.response, "/settings/phone#phone-devices");
+  };
+
+  async function removeAct(ctx: HandlerContext): Promise<void> {
+    const who = browserCaller(ctx.who);
+    const body = readForm(ctx.posted, CONSOLE_FORMS.phoneRemove);
+    if (body.getAll("password").length > 1 || body.getAll("device").length !== 1) return show(ctx.response, 400, page(who, { problem: "Submit one value for each field." }).body);
+    if (!passwordHolds(who, body.get("password") ?? "")) return show(ctx.response, 403, page(who, { problem: passwordProblem(who) }).body);
+    const service = deps.access.service();
+    const deviceId = body.get("device") ?? "";
+    // Only the person's own phone (a teammate's is never named here, and an unknown one is the same answer).
+    const device = service?.devices().find(one => one.deviceId === deviceId && one.accountName === who.name);
+    if (service === null || device === undefined) return show(ctx.response, 404, page(who, { problem: "That phone isn't paired." }).body);
+    await service.engine.revokeDevice(device.deviceId);
+    return redirect(ctx.response, "/settings/phone#phone-devices");
+  }
+
+  return {
+    registrations: handlersOf("settings", {
+      "settings.phone": phonePage,
+      "settings.phone-access": accessAct,
+      "settings.phone-pair": pairAct,
+      "settings.phone-confirm": pairingAct("confirm"),
+      "settings.phone-cancel": pairingAct("cancel"),
+      "settings.phone-remove": removeAct,
+    }),
+  };
+}

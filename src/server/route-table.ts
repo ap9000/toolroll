@@ -647,6 +647,7 @@ get("settings", "settings.flows", "/settings/flows", { limited: "collection", ..
 get("settings", "settings.knowledge", "/settings/knowledge", { limited: "unscoped", ...free });
 get("settings", "settings.learning", "/settings/learning", { limited: "unscoped", ...free });
 get("settings", "settings.telegram", "/settings/telegram", { limited: "self", ...free, ...approver("An approver can pair their own phone.", "/settings") });
+get("settings", "settings.phone", "/settings/phone", { limited: "self", ...free, ...approver("An approver can pair their own phone.", "/settings") });
 get("settings", "settings.page", "/settings", { limited: "unscoped", ...free });
 // The Settings groups (docs/plans/settings-revamp.md §3): one read-only page each, drawn by the overview's handler.
 // Anyone signed in may open one; the page shows only the sections this person can use, and every form's own route
@@ -858,6 +859,11 @@ post("settings", "settings.telegram-retry", "/settings/telegram/retry", { limite
 for (const one of ["confirm", "save", "off"]) post("settings", `settings.chat-approval-${one}`, `/settings/chat-approval/${one}`, { limited: "self", callers: ["cookie"], ...(one === "save" ? { scope: "step-up" as const } : {}), ...approver("An approver turns on approving from their own chat.", "/settings") });
 post("settings", "settings.telegram-pair", "/settings/telegram/pair", { limited: "self", scope: "step-up", ...approver("An approver can pair their own phone.", "/settings") });
 post("settings", "settings.telegram-unpair", "/settings/telegram/unpair", { limited: "self", scope: "step-up", ...approver("An approver can pair their own phone.", "/settings") });
+post("settings", "settings.phone-access", "/settings/phone/access", { limited: "self", scope: "step-up", ...approver("An approver can turn phone access on or off.", "/settings") });
+post("settings", "settings.phone-pair", "/settings/phone/pair", { limited: "self", scope: "step-up", ...approver("An approver can pair their own phone.", "/settings") });
+post("settings", "settings.phone-confirm", "/settings/phone/confirm", { limited: "self", ...approver("An approver can pair their own phone.", "/settings") });
+post("settings", "settings.phone-cancel", "/settings/phone/cancel", { limited: "self", ...approver("An approver can pair their own phone.", "/settings") });
+post("settings", "settings.phone-remove", "/settings/phone/remove", { limited: "self", scope: "step-up", ...approver("An approver can remove their own phone.", "/settings") });
 for (const one of ["messaging", "permission-default", "quality-default", "notifications", "notifications/mute", "telegram-digest", "provider-key-clear", "email-test", "email-read-test", "google/disconnect"]) {
   post("settings", `settings.${one.replaceAll("/", "-")}-send`, `/settings/${one}`);
 }

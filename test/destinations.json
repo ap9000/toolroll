@@ -6,7 +6,7 @@
     "destinations = page rows + mixed rows. It must stay at or under ceiling.destinations: a slice that removes a page lowers the ceiling in the same change. Ceremonies are counted apart and are never in-place pages.",
     "src/server/destinations.test.ts fails when a route row has no entry here (declare new pages), when an entry names no row, and when a demo or an operator console answers a row differently from its kind."
   ],
-  "ceiling": {"destinations":79,"ceremonies":12},
+  "ceiling": {"destinations":80,"ceremonies":12},
   "routes": {
     "code.page": {"kind":"page","path":"/code"},
     "code.session": {"kind":"page","path":"/code/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
@@ -146,6 +146,7 @@
     "settings.knowledge": {"kind":"page","path":"/settings/knowledge"},
     "settings.learning": {"kind":"page","path":"/settings/learning"},
     "settings.telegram": {"kind":"page","path":"/settings/telegram"},
+    "settings.phone": {"kind":"page","path":"/settings/phone"},
     "settings.page": {"kind":"page","path":"/settings"},
     "settings.group-general": {"kind":"page","path":"/settings/general"},
     "settings.group-agents": {"kind":"page","path":"/settings/agents"},
