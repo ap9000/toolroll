@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import { CONSOLE_FORMS, readForm } from "../contracts/console-api.js";
 import type { PhoneAccess } from "../companion/access.js";
+import { livePairedDevices, revokePairedDeviceRecord } from "../companion/store.js";
 import { encodeQr } from "../qr.js";
 import { html, joinHtml, postForm, type Html } from "../html.js";
 import { authenticateAccount } from "../scope.js";
@@ -148,6 +149,8 @@ export function createPhoneSettingsHandlers(runtime: Pick<ServerRuntime, "store"
         acts(postForm("/settings/phone/cancel", html`<button type="submit" class="k-btn k-btn-outline k-btn-sm"><span class="k-face">Cancel</span></button>`, { hidden: { pairing: openId! } })),
       ]);
     } else {
+      // A finished pairing's outcome is shown once, then forgotten.
+      if (open !== null) openPairings.delete(binding);
       const last = open === null ? "" : open.status === "confirmed" ? infoLine("Your iPhone is paired. Open the Toolroll app to see your work.") : open.status === "expired" ? notice("That pairing code expired. Pair again.")
         : open.status === "aborted_race" ? notice("Two phones tried the same code, so pairing stopped. Pair again and keep the code to yourself.") : open.status === "failed" || open.status.startsWith("aborted") ? notice("Pairing stopped. Pair again.") : "";
       pairBody = joinHtml([
@@ -160,8 +163,9 @@ export function createPhoneSettingsHandlers(runtime: Pick<ServerRuntime, "store"
     }
     const pairSection = settingsSection({ id: "phone-pair", title: "Pair an iPhone", body: pairBody });
 
-    // 3. Paired phones: this person's own (an approver sees and removes only their own).
-    const mine = (service?.devices() ?? []).filter(device => device.accountName === who.name);
+    // 3. Paired phones: this person's own (an approver sees and removes only their own) — read from the workspace, so a
+    // lost phone can be seen and removed with phone access off, without turning it back on first.
+    const mine = livePairedDevices(store).filter(device => device.accountName === who.name);
     const devices = settingsSection({
       id: "phone-devices", title: "Your paired phones", state: mine.length === 0 ? " · None" : ` · ${mine.length}`,
       body: mine.length === 0 ? note("No phones are paired.") : joinHtml(mine.map(device => settingsRecord({
@@ -241,9 +245,13 @@ export function createPhoneSettingsHandlers(runtime: Pick<ServerRuntime, "store"
     const service = deps.access.service();
     const deviceId = body.get("device") ?? "";
     // Only the person's own phone (a teammate's is never named here, and an unknown one is the same answer).
-    const device = service?.devices().find(one => one.deviceId === deviceId && one.accountName === who.name);
-    if (service === null || device === undefined) return show(ctx.response, 404, page(who, { problem: "That phone isn't paired." }).body);
-    await service.engine.revokeDevice(device.deviceId);
+    const device = livePairedDevices(store).find(one => one.deviceId === deviceId && one.accountName === who.name);
+    if (device === undefined) return show(ctx.response, 404, page(who, { problem: "That phone isn't paired." }).body);
+    // Running: its sessions end now and the relay is told. Off: the record is enough — the relay's set is replaced
+    // on the next connect.
+    if (service !== null) await service.engine.revokeDevice(device.deviceId);
+    else revokePairedDeviceRecord(store.handle, device.deviceId, runtime.clock());
+    openPairings.delete(bindingOf(who));
     return redirect(ctx.response, "/settings/phone#phone-devices");
   }
 

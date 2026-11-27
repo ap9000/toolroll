@@ -238,6 +238,11 @@ export class CompanionStreamGuard {
     this.globalBudget = globalBudget;
   }
 
+  /** Whether a client stream is still open (not cancelled, ended or refused). */
+  isOpen(streamId: number): boolean {
+    return this.openUnaryStreams.has(streamId) || this.openWatchStreams.has(streamId);
+  }
+
   get openStreamCount(): number {
     return this.openUnaryStreams.size + this.openWatchStreams.size;
   }

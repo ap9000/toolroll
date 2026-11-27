@@ -2496,7 +2496,8 @@ function buildDecisionServer(options: ServeOptions, leaveRehearsal: (() => void)
     log: line => console.error(line),
   });
   phoneAccessRef = phoneAccess;
-  void phoneAccess.resume();
+  // A failure to resume phone access is reported, never a crash of the console.
+  phoneAccess.resume().catch(error => console.error(`phone access: couldn't resume: ${error instanceof Error ? error.message : String(error)}`));
   const phoneSettingsHandlers = createPhoneSettingsHandlers(handlerRuntime, { access: phoneAccess });
   const engineHandlers = createEngineHandlers(handlerRuntime);
   const flowsHandlers = createFlowsHandlers(handlerRuntime);

@@ -27,7 +27,7 @@ import {
 } from "./noise.js";
 import { generateEd25519KeyPair, signRelayToken, type Ed25519KeyPair } from "./relay-auth.js";
 import { CompanionService } from "./service.js";
-import { getPairedDevice } from "./store.js";
+import { getPairedDevice, livePairedDevices, retireCompanionOnRestore } from "./store.js";
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -665,3 +665,56 @@ describe("limits a paired phone can't get around (final review)", () => {
     expect(t.socket.closeReason).toBe("ping_too_large");
   });
 });
+
+describe("phone records over time (final review)", () => {
+  test("any change to the account's generation retires its phones: the record says so, Settings and the relay stop listing them", async () => {
+    const store = testStore();
+    const { service, direct } = await startBoth(store);
+    const phone = await pairPhone(service, "owner:A", direct);
+    expect(livePairedDevices(store).map(d => d.deviceId)).toEqual([phone.deviceId]);
+    store.revokeDerivedAuthority("owner", "credential-rotation", new Date());
+    expect(getPairedDevice(store.handle, phone.deviceId)?.revokedAt).not.toBeNull();
+    expect(livePairedDevices(store)).toEqual([]);
+    expect(service.engine.admittedDevices()).toEqual([]);
+    await expect(PhoneSession.connect(phone, direct)).rejects.toThrow();
+  });
+
+  test("a restore retires this Mac's companion keys too: the restored copy gets its own machine id", async () => {
+    const store = testStore();
+    const { service } = await startBoth(store);
+    const before = service.engine.hostKeys.machineId;
+    await service.stop();
+    retireCompanionOnRestore(store.handle);
+    const again = new CompanionService({ store, reads, direct: null, hosted: null, lanAddresses: () => [], tailnetIpv4: async () => null });
+    expect(again.engine.hostKeys.machineId).not.toBe(before);
+  });
+
+  test("a late scan of a code that already paired is refused and leaves the pairing as paired", async () => {
+    const store = testStore();
+    const { service, direct } = await startBoth(store);
+    const started = service.startPairing("owner", "owner:A");
+    if (!started.ok) throw new Error(started.error);
+    const { code, finished } = await scan(started.qr, "Test iPhone", direct);
+    await until(() => service.engine.getPairingStatus(started.qr.pairSessionId, "owner:A")?.status === "awaiting_confirm");
+    expect(service.engine.getPairingStatus(started.qr.pairSessionId, "owner:A")?.confirmCode).toBe(code);
+    expect((await service.engine.confirmPairing(started.qr.pairSessionId, "owner:A")).ok).toBe(true);
+    expect(await finished).not.toBeNull();
+    const late = await PhoneSocket.open(`${direct}?role=pair&id=${started.qr.pairSessionId}`, null);
+    expect(await late.next()).toBeNull();
+    expect(service.engine.getPairingStatus(started.qr.pairSessionId, "owner:A")?.status).toBe("confirmed");
+  });
+
+  test("the direct listener refuses an upgrade from a web page (it carries an Origin)", async () => {
+    const store = testStore();
+    const { direct } = await startBoth(store);
+    const upgrade = { connection: "Upgrade", upgrade: "websocket", "sec-websocket-version": "13", "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==" };
+    expect((await raw(direct, "GET", "/v1/direct?role=device&id=dev_x", { ...upgrade, origin: "http://evil.example" })).status).toBe(404);
+  });
+
+  test("on a workspace that never turned phone access on, listing phones creates nothing", () => {
+    const store = testStore();
+    expect(livePairedDevices(store)).toEqual([]);
+    expect(store.handle.prepare("SELECT 1 AS hit FROM sqlite_master WHERE name = 'companion_paired_device'").get()).toBeUndefined();
+  });
+});
+

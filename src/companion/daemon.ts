@@ -415,7 +415,7 @@ export class CompanionDaemonEngine {
   admittedDevices(): { deviceId: string; deviceRelayPub: string }[] {
     const generation = this.store.workspaceIdentity().recoveryGeneration;
     return listPairedDevices(this.store.handle)
-      .filter(d => d.revokedAt === null && d.recoveryGeneration === generation)
+      .filter(d => d.revokedAt === null && d.recoveryGeneration === generation && deviceAccountStands(d, this.store.accountOf(d.accountName)))
       .map(d => ({ deviceId: d.deviceId, deviceRelayPub: d.deviceRelayPub.toString("base64url") }));
   }
 
@@ -423,15 +423,14 @@ export class CompanionDaemonEngine {
    * session and attached pairing riding it is gone too. Nothing is kept that a reconnect could resurrect (a phone
    * reconnects with a fresh handshake; a pairing starts over). A pairing nobody has scanned yet survives a link. */
   handleRelayDisconnected(link?: PeerLink): void {
-    const gone = new Set<string>();
+    // Each peer's own cleanup ends a pairing it was confirming (cleanupPeerLocal); stopping everything ends the rest.
     for (const peer of [...this.peers.values()]) {
       if (link !== undefined && peer.link !== link) continue;
-      gone.add(peer.key);
       this.cleanupPeerLocal(peer);
     }
+    if (link !== undefined) return;
     for (const p of this.pairings.values()) {
-      const attachedHere = p.peerKey !== null && gone.has(p.peerKey);
-      if ((link === undefined && (p.status === "awaiting_scan" || p.status === "awaiting_confirm")) || (attachedHere && p.status === "awaiting_confirm")) {
+      if (p.status === "awaiting_scan" || p.status === "awaiting_confirm") {
         p.pairPsk.fill(0);
         p.session?.close();
         p.session = null;
@@ -493,7 +492,9 @@ export class CompanionDaemonEngine {
     const reject = (reason: string) => link.close(connId, reason);
     if (role === "pair") {
       const pairing = this.pairings.get(peerId);
-      if (pairing === undefined || this.nowMs() > pairing.expiresAtMs || pairing.status === "aborted_race" || pairing.status === "aborted_rejected") {
+      // Only a pairing still open to a scan or a code comparison: a late scan of a finished (or failed) one is refused
+      // without touching it, so "paired" never turns into "two phones tried the same code".
+      if (pairing === undefined || this.nowMs() > pairing.expiresAtMs || (pairing.status !== "awaiting_scan" && pairing.status !== "awaiting_confirm")) {
         reject("invalid_pairing");
         return;
       }
@@ -936,6 +937,8 @@ export class CompanionDaemonEngine {
   }
 
   private sendRpcResult(peer: ActivePeerConn, streamId: number, result: unknown): void {
+    // The phone cancelled (or the stream was closed) while the read ran: nothing is sent or held for it.
+    if (!peer.streamGuard.isOpen(streamId) || this.peers.get(peer.key) !== peer) return;
     const payload = Buffer.from(JSON.stringify({ ok: true, result }), "utf8");
     // Held until the phone has taken it all: charged to this phone's (1 MiB) and the daemon's (4 MiB) budgets.
     if (!peer.streamGuard.reserveResponse(streamId, payload.length)) {
@@ -1032,6 +1035,12 @@ export class CompanionDaemonEngine {
     }
     const now = this.nowMs();
     for (const peer of [...this.peers.values()]) {
+      // A pairing socket outlives its pairing only until the code expires (or a little after it was confirmed).
+      if (peer.role === "pair") {
+        const pairing = this.pairings.get(peer.peerId);
+        if (pairing === undefined || now > pairing.expiresAtMs || pairing.status === "confirmed") this.dropPeer(peer, "pairing_over");
+        continue;
+      }
       if (peer.state !== "authenticated" || this.peers.get(peer.key) !== peer) continue;
       for (const streamId of peer.streamGuard.expireAssemblies(now)) {
         this.sendRpcError(peer, streamId, "deadline_exceeded", "The request didn't arrive in time.");

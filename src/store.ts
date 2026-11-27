@@ -10427,6 +10427,12 @@ export class Store {
         chat.revokeBinding({ id: Number(row["id"]) }, now, by);
       chat.prepare("UPDATE chat_pair SET consumed = ? WHERE provider = :provider AND approver = ? AND consumed IS NULL").run(stamp, approver);
     }
+    // Paired phones (the companion app) are derived authority: each of this person's ends with any change to their
+    // account (every caller has just moved its generation). The engine also refuses them on every frame by generation;
+    // this makes the record say so, so Settings stops listing them and the relay is told on its next reconcile.
+    if (this.db.prepare("SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = 'companion_paired_device'").get() !== undefined) {
+      this.db.prepare("UPDATE companion_paired_device SET revoked_at = ? WHERE account_name = ? AND revoked_at IS NULL").run(stamp, approver);
+    }
     // Push enrollments are derived authority too (arc 3 finding 6): the
     // rotation retires every live subscription of the old credential and
     // terminally settles its delivery pairs — claimed ones included, so an
