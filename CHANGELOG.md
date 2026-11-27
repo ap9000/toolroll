@@ -4,6 +4,25 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.128 — 2026-11-27
+
+Sharper UI craft across Work, diffs, Settings, Flows, and Spend, plus focused `toolroll task --help`.
+
+### Changed
+
+- **Work status pills use semantic colors and steady columns**: `Failed`, `Blocked`, and `Stopped` wear vermilion pills, `Ready` wears green, and `Plan`, `Flow`, and `On hold` wear subtle ink-dot pills; row actions sit in a fixed column so project and age line up vertically down the list.
+- **Desktop diff view widens to 960px** on wide screens so code hunks stop wrapping prematurely.
+- **Flows fit the whole board on load** instead of clipping the rightmost zones.
+- **Mobile filter bar fades cleanly at the right edge** to show horizontal scrollability.
+- **Skills & Models wording and spacing**: detected local tool folders shorten your home directory to `~`, Global Skill Library controls have consistent spacing, `Review changes` stays outline until a preset is selected, and Recent work reads "Set to sonnet (latest) · actual model not reported".
+- **`toolroll task --help`** now prints a focused 15-line task reference instead of the full 435-line command list (`toolroll internals` keeps everything else).
+
+### Fixed
+
+- **Dropdown selects** no longer draw an overlapping double arrow or push text toward the top border.
+- **Blocked plan steps** in a live build show a 2px vermilion ring again instead of blending into plain text.
+- **Spend monthly limits on macOS** canonicalize symlinked project paths (`/var` vs `/private/var`), preventing duplicate project rows, and floor chart bars at $1 so sub-cent spend reads as a small sliver instead of a full-width bar.
+
 ## 0.9.127 — 2026-11-26
 
 Two tasks built from the same main can both land; a thread's leftover edits are saved; accepted work reads accepted.
