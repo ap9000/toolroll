@@ -487,6 +487,23 @@ export type OnboardSeams = Partial<Pick<OnboardIo, "home" | "env" | "cwd" | "int
 
 const STATES: readonly TaskState[] = ["queued", "running", "done", "failed", "cancelled"];
 
+/** Focused help for `toolroll task --help` (and bare `toolroll task`), keeping the task loop scannable. */
+export const TASK_HELP = `toolroll task — create, inspect, and ship tasks
+
+  toolroll task add "<change>" --repo .     queue a task (--plan to review plan first; --checks quick|full|off)
+  toolroll task list [--view <v>]           list tasks (needs-you, ready, running, queued, completed, archived)
+  toolroll task show <id>                   current state, diff summary, checks, and next action
+  toolroll task wait <id> [--timeout <s>]   wait until this attempt finishes or needs you
+  toolroll task accept <id>                 accept a Ready result
+  toolroll task revise <id> --note "<text>" send a result back with feedback (catches up with main automatically)
+  toolroll task land <id>                   fast-forward or merge an accepted result onto your local branch
+  toolroll task stop <id>                   stop a running build
+  toolroll task retry <id>                  retry a failed or stopped task
+  toolroll task archive <id...>             put tasks away (history kept; restore with \`task restore\`)
+  toolroll task evidence <id> [--html]      export a task's evidence pack
+
+Every command supports --json. Everything else: \`toolroll internals\`.`;
+
 export const OPERATE_HELP = `toolroll — operating the queue
 
   toolroll status                    running, queued, ready results, release check and plan windows
@@ -1158,10 +1175,11 @@ async function runOperateLocal(
   // and `serve --help` must print help, never start a server (round-4
   // findings 2/7).
   if (flags.has("help")) {
+    const helpText = command === "task" && positional.length === 0 ? TASK_HELP : OPERATE_HELP;
     if (json) {
-      write(envelopeJson({ ok: true, command: "help", help: OPERATE_HELP }));
+      write(envelopeJson({ ok: true, command: "help", help: helpText }));
     } else {
-      write(OPERATE_HELP);
+      write(helpText);
     }
     return EXIT.ok;
   }
@@ -9624,7 +9642,7 @@ function taskCommand(
 
   // `task` on its own is somebody asking what this can do, not a mistake.
   if (action === undefined) {
-    context.write(OPERATE_HELP);
+    context.write(TASK_HELP);
     return EXIT.ok;
   }
 

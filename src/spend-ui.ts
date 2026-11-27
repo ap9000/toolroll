@@ -109,11 +109,13 @@ const sec = (id: string, title: string, state: string, body: Html, attrs: Html |
 
 /** A breakdown as quiet bars of API dollars; plan usage and unknown cost stay on the line, never added in. */
 function bars(head: string, lines: readonly SpendLine[], name: (key: string) => string, max: number, top = 12, detail: (line: SpendLine) => string = () => ""): Html {
+  // Floor the visual bar scale at $1 so a sub-cent charge (<$0.01) reads as a tiny sliver instead of a full-width bar.
+  const scale = Math.max(max, 1_000_000);
   const rows = lines.slice(0, top).map(line => {
     const sub = [detail(line), line.usageCount > 0 ? `plan usage ${usageWords(line)}` : "", line.unknown > 0 || line.estimatedMicrousd > 0 ? `unknown ${unknownWords(line)}` : ""].filter(Boolean).join(" · ");
-    const width = max > 0 ? Math.max(0, Math.min(100, (line.apiMicrousd / max) * 100)) : 0;
+    const width = line.apiMicrousd > 0 ? Math.max(0, Math.min(100, (line.apiMicrousd / scale) * 100)) : 0;
     return html`<div class="spend-bar" role="row"><span class="spend-bar-n" role="cell">${name(line.key)}${sub === "" ? "" : html`<small data-amount-kind="${line.usageCount > 0 ? "subscription" : "unknown"}">${sub}</small>`}</span>\
-<span class="spend-lane" role="cell" aria-hidden="true">${line.apiMicrousd > 0 ? html`<i style="width:${width.toFixed(1)}%"></i>` : ""}</span><span class="spend-bar-v" role="cell" data-amount-kind="api">${apiWords(line)}</span></div>`;
+<span class="spend-lane" role="cell" aria-hidden="true">${line.apiMicrousd > 0 ? html`<i style="width:${width.toFixed(1)}%" title="${apiWords(line)}"></i>` : ""}</span><span class="spend-bar-v" role="cell" data-amount-kind="api">${apiWords(line)}</span></div>`;
   });
   const total = lines.reduce((sum, line) => sum + line.apiMicrousd, 0);
   return html`<div class="spend-bars" role="table" aria-label="${head}"><div class="spend-bar h" role="row"><span role="columnheader">${head}</span><span role="columnheader"></span><span class="spend-bar-v" role="columnheader">API dollars</span></div>${rows}\

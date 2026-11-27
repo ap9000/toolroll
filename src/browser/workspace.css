@@ -564,7 +564,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-build-steps > li[data-state="completed"] { color: var(--so-ink); }
 .so-build-step-mark { flex: 0 0 22px; box-sizing: border-box; width: 22px; height: 22px; border: 1px solid var(--so-line); border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 400; color: var(--so-muted); font-variant-numeric: tabular-nums; }
 .so-build-steps > li[data-state="current"] .so-build-step-mark { border: 2px solid var(--so-info); color: var(--so-ink); }
-.so-build-steps > li[data-state="blocked"] .so-build-step-mark { border-color: var(--so-danger); color: var(--so-ink); }
+.so-build-steps > li[data-state="blocked"] .so-build-step-mark { border: 2px solid var(--so-danger); background: var(--so-danger-soft); color: var(--so-fail-ink); font-weight: 600; }
 .so-build-steps > li[data-state="completed"] .so-build-step-mark { border-color: var(--so-ink); background: var(--so-ink); }
 .so-build-steps > li[data-state="completed"] .so-build-step-mark::after { content: ""; width: 4px; height: 8px; margin-top: -2px; border: solid var(--so-paper); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
 /* Under the rows: More about this task. */

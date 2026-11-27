@@ -12,6 +12,7 @@
  * tasks it filed), and the whole installation. Budgets are per calendar
  * month (UTC).
  */
+import { realpathSync } from "node:fs";
 import type { Database } from "./store.js";
 import { SUBSCRIPTION_CAPABLE, readAuthMode } from "./keys.js";
 import type { ProviderId } from "./provider.js";
@@ -348,10 +349,12 @@ export function spendItems(db: Database, from: string, to: string, readMode: (pr
   return items;
 }
 
+const canonicalRepoPath = (value: string): string => { try { return realpathSync(value); } catch { return value; } };
+
 /** Whether a piece of spend counts toward a budget. */
 export function countsToward(item: SpendItem, budget: Pick<Budget, "scope" | "key">): boolean {
   if (budget.scope === "installation") return true;
-  if (budget.scope === "project") return item.project === budget.key;
+  if (budget.scope === "project") return item.project !== null && (item.project === budget.key || canonicalRepoPath(item.project) === canonicalRepoPath(budget.key));
   if (budget.scope === "person") return item.person === budget.key;
   return item.subagent !== null && String(item.subagent) === budget.key;
 }
