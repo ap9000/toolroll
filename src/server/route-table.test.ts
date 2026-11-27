@@ -68,7 +68,7 @@ const LIMITED_ACCESS = {
   'settings.telegram-retry': 'self', 'settings.chat-approval-confirm': 'self',
   'settings.chat-approval-save': 'self', 'settings.chat-approval-off': 'self',
   'settings.telegram-pair': 'self', 'settings.telegram-unpair': 'self',
-  'settings.phone': 'self', 'settings.phone-pair': 'self', 'settings.phone-confirm': 'self', 'settings.phone-cancel': 'self', 'settings.phone-remove': 'self',
+  'settings.phone': 'self', 'settings.phone-pairing': 'self', 'settings.phone-rename': 'self', 'settings.phone-pair': 'self', 'settings.phone-confirm': 'self', 'settings.phone-cancel': 'self', 'settings.phone-remove': 'self',
   'projects.select': 'unscoped', 'agents': 'unscoped', 'agents.live': 'unscoped', 'agents.live.read': 'unscoped', 'agents.seen': 'unscoped', 'agents.watch': 'unscoped', 'tasks.add': 'collection', 'tasks.fast': 'collection', 'task.act.keep-grown': 'resource', 'task.act.follow-through': 'resource', 'task.release.go-on': 'resource', 'decision.answer': 'resource',
   'task.act.hold': 'resource', 'task.act.unhold': 'resource', 'task.act.requeue': 'resource',
   'task.act.cancel': 'resource', 'task.act.scope': 'resource', 'task.act.approve': 'resource',
