@@ -39,7 +39,7 @@ const COOKIE_ONLY_POSTS = [
   // The Agents screen: the workbench's own session only (the handler re-proves it), never a token.
   'term.agent-sign-in', 'term.agent-install', 'engine.agents-check',
   // Passwordless: an operator's switch, from a browser (on proves a typed password in the handler; off is one click).
-  'settings.passwordless-send', 'settings.phone-access', 'settings.phone-pair', 'settings.phone-remove',
+  'settings.passwordless-send', 'settings.phone-access', 'settings.phone-pair', 'settings.phone-remove', 'settings.phone-passkey-enable', 'settings.phone-passkey-revoke', 'settings.phone-passkey-window',
   // Easy-start C5: turning local mode off, an operator's step-up from a full browser session.
   'settings.local-mode-off',
   // Solo or team: "It's just me", an operator's credential act from a full browser session.
@@ -102,6 +102,8 @@ const PASSWORD_CEREMONIES = [
   '/chat/config', '/chat', `/chat/file/${'a'.repeat(32)}`, '/chat/ack/1',
   '/connect/pair/ABCD-EFGH',
   '/t/guarded/reopen', '/t/guarded/accept-revision', '/t/guarded/resume', '/t/guarded/approve',
+  // Passkey phone approvals (ADR 0005): set up and revoke are an approver's own; the prompt window is an instance operator's.
+  '/settings/phone/passkey/enable', '/settings/phone/passkey/revoke', '/settings/phone/passkey/window',
 ];
 
 test('every password ceremony has a cookie-only step-up declaration', () => {

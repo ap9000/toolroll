@@ -68,18 +68,28 @@ All methods bind `workspaceId`, `deviceId`, and `recoveryGeneration` in the Nois
 | RPC Method | Proof Required | Idempotency | Backing Code Path |
 |---|---|---|---|
 | `passkey.register.begin` / `.finish` | Active paired device (`approver` role) + explicit signed-in Mac consent window | Single-use challenge (120s) | Verifies & consumes registration challenge, checks expiry/binding/`origin`/`rpIdHash`/`UP=1`/`UV=1`/`AT=1`/ES256/new `credentialId`, writes `account_passkeys` with unique `userHandle`. |
-| `approval.challenge` | Active paired device (`approver` role) | Single-use challenge (120s) | Mints verb-specific challenge (`approve \| accept \| land \| ship`) + `allowCredentials` for `(workspaceId, accountName)`. |
-| `task.approve` | Fresh `passkey` assertion (`approve` challenge) | Required (`idempotencyKey`) | `src/scope.ts:approve()` with `passkey` input (`personProof("passkey") === true`), atomic challenge consume + proof + seal. |
-| `task.accept` | Fresh `passkey` assertion (`accept` challenge) | Required | `src/assignment.ts:acceptAndCompleteAsOperator()` (+ `completeAndOpenPullRequest` if `publish: true`), atomic challenge consume + proof + acceptance + completion. |
-| `task.land` | Fresh `passkey` assertion (`land` challenge) | Required | `src/local-landing.ts:land()` with `LandAuthority = { kind: "passkey", ... }`, atomic challenge consume + proof in `LAND_INTENT` / `LAND_HANDOFF` transaction. |
-| `task.ship` | Fresh `passkey` assertion (`ship` challenge) | Required | `src/pull-request-flow.ts:mergeAsPerson()` with passkey auth, atomic challenge consume + proof before `gh pr merge`. |
+| `approval.challenge` | Active paired device (`approver` role) | Single-use challenge (120s) | Mints verb-specific challenge (`approve \| accept \| land \| ship \| unlock`) + `allowCredentials` for `(workspaceId, accountName)`. |
+| `passkey.unlock` | Fresh `passkey` assertion (`unlock` challenge bound to device + account + the Mac's window minutes) | Single-use challenge | Starts the in-memory approval lease (below). Refused when the Mac's window is `Every approval [0]`. A local-only Face ID check never counts. |
+| `passkey.status` / `passkey.lock` | Active paired device | — | Reads the lease (`freshUntil`); ends it at once (*Lock approvals now*, or the app going to the background). |
+| `task.approve` | Fresh `passkey` assertion (`approve` challenge), or an open approval lease for a routine approve only (see below) | Required (`idempotencyKey`) | `src/scope.ts:approve()` with `passkey` input (`personProof("passkey") === true`), atomic challenge consume + proof + seal. |
+| `task.accept` | Fresh `passkey` assertion (`accept` challenge), or an open approval lease for a clean accept only (no exception, not protected, no publish) | Required | `src/assignment.ts:acceptAndCompleteAsOperator()` (+ `completeAndOpenPullRequest` if `publish: true`), atomic challenge consume + proof + acceptance + completion. |
+| `task.land` | Fresh `passkey` assertion (`land` challenge), always; never a lease | Required | `src/local-landing.ts:land()` with `LandAuthority = { kind: "passkey", ... }`, atomic challenge consume + proof in `LAND_INTENT` / `LAND_HANDOFF` transaction. |
+| `task.ship` | Fresh `passkey` assertion (`ship` challenge), always; never a lease | Required | `src/pull-request-flow.ts:mergeAsPerson()` with passkey auth, atomic challenge consume + proof before `gh pr merge`. |
 | `task.revise` | Active paired device (`approver` role, no passkey) | Required | Send back with typed feedback note (never widens approved scope). |
 | `run.steer` | Active paired device (`approver` role) | Required | Live pause / resume / steer note / stop via `Store.requestPause`, `Store.requestResume`, and `requestTaskStop` (`src/task-control.ts:138`). |
 | `chat.send` | Active paired device (`approver` role) | Required | Sends message to Lead / Direct Chat (never self-approves any proposal). |
 
+#### The approval lease (ADR 0005, *Passkey Prompt Window*)
+- **Setting:** Mac `Settings → Phone → Passkey prompt` — `Every approval [0]` · `Once per 15 minutes [15, default]` · `Once per hour [60]`. Workspace-wide, so an **instance operator's** act only: route role `operator`, step-up, cookie-only; the handler re-proves the operator and password in the same transaction as the write and records an action-ledger row (`passkey prompt changed`, actor, old → new). Not settable from the phone. The 60-minute tier is an owner decision with no Mac precedent (the Mac's fresh-password window is 15 minutes).
+- **Started only by** a live assertion that was verified **and consumed** for a routine `task.approve`, a routine `task.accept`, or `passkey.unlock`; its credential, device and flags come from the verified result, never the payload. Never by `land`, `ship`, publishing, a second-approver vote, a replay, or a refused or failed action.
+- **Covers only** a routine approve (`freshlyApprovable`) and a clean accept (no exception owed, result not protected, `publish: false`). **Always live:** land, ship, publish (accept + open PR), protected scope or result (decided from the work itself, independent of separation-of-duties eligibility), release, exception accept, second-approver vote.
+- **Held** in memory on the Mac daemon only, owned by the passkey gate, keyed to `(deviceId, accountName, credentialId, accountGeneration, recoveryGeneration)`, fixed span from the verified ceremony time. **Ends** at expiry and at once on `passkey.lock`, the app going to the background, passkey revocation, any window change on the Mac, device removal, password change, backup restore, or daemon restart.
+- **Phone may only tighten:** *Always ask on this iPhone* sends `forceFresh: true` on every approval.
+- **Threat accepted:** for the lease's span, someone holding the unlocked phone with the app open (and a live Noise session) can approve routine plans and accept clean results without a new passkey prompt. Mitigations: short default, operator-only widening with audit, background lock, *Lock approvals now*, and *Always ask on this iPhone*.
+
 Push (`push.register`) is not on the Gate 1 allowlist: push isn't built yet (`noise-relay-protocol.md` §5).
 
-### Mutation Idempotency State Machine (`device_idempotency`, Gate 2 — not built; no table exists yet)
+### Mutation Idempotency State Machine (`device_idempotency`, Gate 2 — schema v188)
 Every Gate 2 mutation RPC stores `(deviceId, idempotencyKey, method, requestHash, state, outcomeJson, updatedAt)` where `requestHash = SHA-256(canonicalParamsJson)`:
 - **Conflict refusal:** Reusing an existing `(deviceId, idempotencyKey)` with a different `method` or `requestHash` is unconditionally rejected (`409 idempotency_key_conflict`).
 - **`in_flight`:** Recorded before executing an async/external operation (`land`, `ship`); a retry arriving while `in_flight` returns `{ ok: false, code: "in_progress" }` and never starts a second execution.

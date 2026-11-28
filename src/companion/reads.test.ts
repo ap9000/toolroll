@@ -82,6 +82,14 @@ describe("the phone's reads, as its account", () => {
     expect(await reads.runWindowRead(principal, { run: String(visibleRun) })).toMatchObject({ session: { kind: "run", id: visibleRun } });
   });
 
+  test("step cards carry the phone's passkey hints: protected work and release, from the project's rules", async () => {
+    const plain = await reads.taskSteps(principal, { task: "t-mine" }) as { passkey: unknown };
+    expect(plain.passkey).toEqual({ protectedWork: false, release: false, protectedPaths: [] });
+    store.setApprovalRules(repo, { notRequester: false, protectProject: true, protectedPaths: [] }, "alex", T0);
+    const guarded = await reads.taskSteps(principal, { task: "t-mine" }) as { passkey: unknown };
+    expect(guarded.passkey).toEqual({ protectedWork: true, release: false, protectedPaths: [] });
+  });
+
   test("work rows are the account's own view, with spend and provider limits never sent", async () => {
     const rows = await reads.workRows(principal, {}) as { spend: unknown; limits: unknown; next: unknown } & Record<string, unknown>;
     expect(rows.spend).toBeNull();

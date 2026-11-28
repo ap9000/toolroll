@@ -17,6 +17,7 @@
 		AA00000B0000000000000001 /* Presentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000B0000000000000001 /* Presentation.swift */; };
 		AA00000C0000000000000001 /* DiffFileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000C0000000000000001 /* DiffFileView.swift */; };
 		AA00000D0000000000000001 /* LiveWatchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000D0000000000000001 /* LiveWatchView.swift */; };
+		AA00000F0000000000000001 /* PasskeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000F0000000000000001 /* PasskeyManager.swift */; };
 		AA0000080000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BB0000080000000000000001 /* Assets.xcassets */; };
 		AA00000E0000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = BB00000E0000000000000001 /* PrivacyInfo.xcprivacy */; };
 		AA0000090000000000000001 /* ToolrollCompanionCore in Frameworks */ = {isa = PBXBuildFile; productRef = PP0000010000000000000001 /* ToolrollCompanionCore */; };
@@ -33,6 +34,7 @@
 		BB00000B0000000000000001 /* Presentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Presentation.swift; sourceTree = "<group>"; };
 		BB00000C0000000000000001 /* DiffFileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffFileView.swift; sourceTree = "<group>"; };
 		BB00000D0000000000000001 /* LiveWatchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveWatchView.swift; sourceTree = "<group>"; };
+		BB00000F0000000000000001 /* PasskeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PasskeyManager.swift; sourceTree = "<group>"; };
 		BB0000080000000000000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		BB00000E0000000000000001 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		BB0000090000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -73,6 +75,7 @@
 				BB00000B0000000000000001 /* Presentation.swift */,
 				BB00000C0000000000000001 /* DiffFileView.swift */,
 				BB00000D0000000000000001 /* LiveWatchView.swift */,
+				BB00000F0000000000000001 /* PasskeyManager.swift */,
 				BB0000080000000000000001 /* Assets.xcassets */,
 				BB00000E0000000000000001 /* PrivacyInfo.xcprivacy */,
 				BB0000090000000000000001 /* Info.plist */,
@@ -175,6 +178,7 @@
 				AA00000B0000000000000001 /* Presentation.swift in Sources */,
 				AA00000C0000000000000001 /* DiffFileView.swift in Sources */,
 				AA00000D0000000000000001 /* LiveWatchView.swift in Sources */,
+				AA00000F0000000000000001 /* PasskeyManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

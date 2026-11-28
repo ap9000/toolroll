@@ -6,11 +6,20 @@
 
 import type { CompanionService, DirectAddress, DirectPathState, HostedPathState } from "../companion/service.js";
 import { listPhones as listPhoneRows, renamePhone as renamePhoneRow, revokePairedDeviceRecord, getPairedDevice,
-  type PhoneRow, type PhoneState, type RetiredReason } from "../companion/store.js";
+  listAllAccountPasskeys, revokeAccountPasskey,
+  type AccountPasskeyRow, type PhoneRow, type PhoneState, type RetiredReason } from "../companion/store.js";
 import type { PairingQrPayload, PairingStatus, PairingView } from "../companion/daemon.js";
+import {
+  passkeyApprovalWindowMinutes,
+  setPasskeyApprovalWindowMinutes,
+  parsePasskeyWindowMinutes,
+  PASSKEY_WINDOW_OPTIONS,
+  type PasskeyWindowMinutes,
+} from "../companion/passkey-gate.js";
 import type { Store } from "../store.js";
 
-export type { DirectAddress, DirectPathState, HostedPathState, PairingStatus, PairingView, PhoneRow, PhoneState, RetiredReason };
+export type { AccountPasskeyRow, DirectAddress, DirectPathState, HostedPathState, PairingStatus, PairingView, PasskeyWindowMinutes, PhoneRow, PhoneState, RetiredReason };
+export { parsePasskeyWindowMinutes, PASSKEY_WINDOW_OPTIONS };
 
 /** The running companion service, as the page sees it. */
 export type PhoneService = CompanionService;
@@ -62,4 +71,43 @@ export function removePhone(service: PhoneService | null, store: Store, deviceId
   const device = getPairedDevice(store.handle, deviceId);
   if (device === null || device.accountName !== accountName || device.revokedAt !== null) return false;
   return revokePairedDeviceRecord(store.handle, deviceId, now, "removed");
+}
+
+/** Active & revoked passkeys registered for this account in the current recovery generation (ADR 0005). */
+export function listPasskeys(store: Store, accountName: string): AccountPasskeyRow[] {
+  const identity = store.workspaceIdentity();
+  return listAllAccountPasskeys(store.handle, identity.id, accountName, identity.recoveryGeneration);
+}
+
+/** Opens a 5-minute Mac consent window allowing this approver's iPhone to register a WebAuthn Passkey. */
+export function openPasskeyEnrollment(service: PhoneService, accountName: string): { expiresAtMs: number } | null {
+  return service.engine.actions?.openEnrollmentWindow(accountName) ?? null;
+}
+
+/** Whether a Mac passkey enrollment window is currently open for this account. */
+export function isPasskeyEnrollmentOpen(service: PhoneService | null, accountName: string): boolean {
+  return service?.engine.actions?.isEnrollmentOpen(accountName) ?? false;
+}
+
+/** Independently revokes one passkey credential without removing paired devices (ADR 0005), and clears active fresh leases. */
+export function revokePasskey(store: Store, credentialId: string, accountName: string, now: Date, service: PhoneService | null = null): boolean {
+  const revoked = revokeAccountPasskey(store.handle, credentialId, accountName, now);
+  if (revoked) service?.engine.actions?.clearFreshLeases(accountName);
+  return revoked;
+}
+
+/** Configured Passkey approval window in minutes (`0` = every approval, `15` = once per 15 minutes, `60` = once per hour). */
+export function passkeyWindowMinutes(store: Store): PasskeyWindowMinutes {
+  return passkeyApprovalWindowMinutes(store);
+}
+
+/** Writes the workspace's passkey prompt window. The caller proves an instance operator and records the ledger row in
+ * the same transaction (settings-phone.ts passkeyWindowAct); this only writes. */
+export function savePasskeyWindow(store: Store, minutes: PasskeyWindowMinutes): void {
+  setPasskeyApprovalWindowMinutes(store, minutes);
+}
+
+/** Ends every open approval window on this Mac (after the prompt window changed): the next approval asks again. */
+export function endPasskeyWindows(service: PhoneService | null): void {
+  service?.engine.actions?.clearFreshLeases();
 }

@@ -15,9 +15,10 @@
 import { grantStandsSql } from "./flow-unattended.js";
 import { accountReachesSql } from "./project-access.js";
 import { autoSealSql } from "./release-authority.js";
+import { PERSON_PROOFS as PERSON_PROOF_NAMES } from "./person-proof.js";
 
-/** The proofs a person gives (src/person-proof.ts), as an SQL list. */
-const PERSON_PROOFS = "('password-now', 'sso-now', 'fresh-password', 'fresh-sso', 'session', 'cli-login', 'chat', 'passkey', 'local-owner')";
+/** The proofs a person gives, as an SQL list: built from person-proof.ts's own list, so the two can't disagree. */
+const PERSON_PROOFS = `(${PERSON_PROOF_NAMES.map(name => `'${name.replace(/'/g, "''")}'`).join(", ")})`;
 
 /** SQL over a `task_scope` alias and a repo expression: whether that row's approval authority stands at `now` (an SQL
  * expression, used exactly four times: the mode and grant clauses, the release's expiry and a fast start's window). It never asks whether the row is approved.

@@ -6,6 +6,7 @@ struct WelcomePairingView: View {
     @Bindable var appState: CompanionAppState
     @State private var scanner: ScannerMode?
     @State private var showSecurity = false
+    @Environment(\.toolrollAppearance) private var appearance
 
     enum ScannerMode: String, Identifiable {
         case scan
@@ -20,34 +21,51 @@ struct WelcomePairingView: View {
             ToolrollTheme.paper.ignoresSafeArea()
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 28) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        BrandMark(size: 56)
+                VStack(alignment: .leading, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        BrandMark(size: 52)
                         Text("Toolroll")
                             .font(.largeTitle.weight(.bold))
                             .foregroundStyle(ToolrollTheme.ink)
-                        Text("See what your agents need from you, wherever you are.")
+                        Text("Review plans, inspect diffs, and approve work from your iPhone")
                             .font(.title3)
                             .foregroundStyle(ToolrollTheme.muted)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("To pair")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(ToolrollTheme.muted)
-                        Text("On your Mac, open Toolroll → Settings → Phone and choose **Pair an iPhone**. Then scan the code it shows.")
-                            .font(.body)
-                            .foregroundStyle(ToolrollTheme.ink)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Button("Is this safe?") { showSecurity = true }
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(ToolrollTheme.ink)
-                            .underline()
+                    VStack(spacing: 0) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Pair in two steps")
+                                .font(.footnote.weight(.medium))
+                                .foregroundStyle(ToolrollTheme.muted)
+
+                            pairingStep(number: "1", text: "On your Mac, open **Settings → Phone** and choose **Pair an iPhone**")
+                            pairingStep(number: "2", text: "Scan the QR code and confirm the six-character match on both screens")
+                        }
+                        .padding(16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Divider().overlay(ToolrollTheme.hairline).padding(.leading, 16)
+
+                        Button {
+                            showSecurity = true
+                        } label: {
+                            HStack {
+                                Label("End-to-end encrypted · How it's secured", systemImage: "lock.shield")
+                                    .font(.footnote.weight(.medium))
+                                    .foregroundStyle(ToolrollTheme.ink)
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(ToolrollTheme.subtle)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
                             .frame(minHeight: 44)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                     .card()
 
                     if let error = appState.pairingError {
@@ -136,6 +154,20 @@ struct WelcomePairingView: View {
                 appState.debugScreen = nil
             }
             #endif
+        }
+    }
+
+    private func pairingStep(number: String, text: LocalizedStringKey) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(number)
+                .font(.caption.monospaced().weight(.bold))
+                .foregroundStyle(appearance.onSignal)
+                .frame(width: 20, height: 20)
+                .background(appearance.signal, in: Circle())
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(ToolrollTheme.ink)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -296,71 +328,109 @@ struct DeviceNameField: View {
     @Binding var name: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 8) {
             Text("Name this iPhone")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(ToolrollTheme.muted)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(ToolrollTheme.ink)
             TextField("iPhone", text: $name)
-                .font(.body)
+                .font(.system(size: 15))
                 .textInputAutocapitalization(.words)
                 .autocorrectionDisabled()
                 .submitLabel(.done)
-                .padding(.horizontal, 12)
-                .frame(minHeight: 44)
-                .background(ToolrollTheme.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ToolrollTheme.hairline, lineWidth: 1))
+                .padding(.horizontal, 14)
+                .frame(minHeight: 48)
+                .background(ToolrollTheme.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollTheme.controlLine, lineWidth: 1))
                 .accessibilityLabel("Name this iPhone")
                 .accessibilityHint("Your Mac shows this name in its list of phones.")
                 .onChange(of: name) { _, value in
                     if value.count > CompanionWire.maxDeviceNameLength { name = String(value.prefix(CompanionWire.maxDeviceNameLength)) }
                 }
+            Text("Shown on your Mac under Settings → Phone.")
+                .font(.system(size: 12.5))
+                .foregroundStyle(ToolrollTheme.muted)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
+/// Pair by pasting the code from the Mac (no camera, or the Simulator).
 private struct PastePairingCodeView: View {
     @Binding var deviceName: String
     let onSubmit: (String) -> Void
     @State private var text = ""
 
+    private var hasCode: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
     var body: some View {
-        Form {
-            Section {
-                PasteButton(payloadType: String.self) { strings in
-                    if let first = strings.first { text = first }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("On your Mac, open Toolroll → Settings → Phone → Pair an iPhone. Under the QR code, open **Can't scan?** and copy the code. Paste it here.")
+                    .font(.subheadline)
+                    .foregroundStyle(ToolrollTheme.body)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Pairing code")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(ToolrollTheme.ink)
+                    ZStack(alignment: .topLeading) {
+                        TextEditor(text: $text)
+                            .font(.footnote.monospaced())
+                            .scrollContentBackground(.hidden)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                            .frame(minHeight: 84)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .accessibilityLabel("Pairing code")
+                        if text.isEmpty {
+                            Text("Paste the code from your Mac")
+                                .font(.footnote.monospaced())
+                                .foregroundStyle(ToolrollTheme.subtle)
+                                .padding(.horizontal, 15)
+                                .padding(.vertical, 14)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                    .background(ToolrollTheme.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollTheme.controlLine, lineWidth: 1))
+                    PasteButton(payloadType: String.self) { strings in
+                        if let first = strings.first { text = first }
+                    }
+                    .buttonBorderShape(.capsule)
+                    .tint(ToolrollTheme.ink)
+                    .labelStyle(.titleAndIcon)
+                    .accessibilityHint("Pastes the pairing code you copied on your Mac.")
                 }
-                .tint(ToolrollTheme.ink)
-                .accessibilityHint("Pastes the pairing code you copied on your Mac.")
-                TextEditor(text: $text)
-                    .font(.footnote.monospaced())
-                    .frame(minHeight: 140)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .accessibilityLabel("Pairing code")
-            } footer: {
-                Text("On your Mac, open **Can't scan?** under the QR code, copy the code, and paste it here. It works once, for 5 minutes.")
-            }
-            Section {
+
                 DeviceNameField(name: $deviceName)
-                    .listRowBackground(Color.clear)
-                    .listRowInsets(EdgeInsets())
             }
+            .padding(.horizontal, 20)
+            .padding(.top, 8)
         }
-        .scrollContentBackground(.hidden)
+        .scrollDismissesKeyboard(.interactively)
         .background(ToolrollTheme.paper.ignoresSafeArea())
-        .navigationTitle("Paste pairing code")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
+        .safeAreaInset(edge: .bottom) {
+            VStack(spacing: 8) {
                 Button("Pair") {
                     let payload = text
                     text = ""
                     onSubmit(payload)
                 }
-                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .buttonStyle(SignalButtonStyle())
+                .disabled(!hasCode)
+                Text(hasCode ? "The code works once, for 5 minutes." : "Paste the code from your Mac to continue.")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(ToolrollTheme.muted)
             }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            .background(ToolrollTheme.paper)
         }
+        .navigationTitle("Pair with a code")
+        .navigationBarTitleDisplayMode(.inline)
         .onDisappear { text = "" }
     }
 }
