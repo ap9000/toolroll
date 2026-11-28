@@ -1,29 +1,18 @@
 import SwiftUI
 import ToolrollCompanionCore
 
-/// Unified Signal Settings: Appearance (theme + customizable accent matching Web & Desktop),
-/// paired Mac status, and quiet grouped paper sheets.
+/// Settings, approvals first: Paired Mac → Passkey approvals → Security and details → Appearance → Remove.
 struct SettingsView: View {
     @Bindable var appState: CompanionAppState
     @Environment(\.dismiss) private var dismiss
     @Environment(\.toolrollAppearance) private var appearance
-    @Environment(\.colorScheme) private var colorScheme
     @State private var confirmUnpair = false
     @State private var removing = false
-    @State private var showSecured = false
-    @State private var showDetails = false
-
-    private var customColorBinding: Binding<Color> {
-        Binding(
-            get: { appearance.swiftUIColor },
-            set: { appearance.setCustomColor($0) }
-        )
-    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 8) {
                     if appState.isDemoMode {
                         section("Demo") {
                             VStack(spacing: 0) {
@@ -31,23 +20,18 @@ struct SettingsView: View {
                                     .font(.subheadline)
                                     .foregroundStyle(ToolrollTheme.muted)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(14)
-                                Divider().overlay(ToolrollTheme.hairline).padding(.leading, 14)
+                                    .padding(16)
+                                divider
                                 Button {
                                     appState.exitDemoMode()
                                     dismiss()
                                 } label: {
                                     HStack {
-                                        Text("Exit demo")
-                                            .font(.subheadline.weight(.semibold))
-                                            .foregroundStyle(ToolrollTheme.ink)
+                                        Text("Exit demo").font(.system(size: 15, weight: .medium)).foregroundStyle(ToolrollTheme.ink)
                                         Spacer()
-                                        Image(systemName: "rectangle.portrait.and.arrow.right")
-                                            .font(.footnote)
-                                            .foregroundStyle(ToolrollTheme.muted)
+                                        Image(systemName: "rectangle.portrait.and.arrow.right").font(.footnote).foregroundStyle(ToolrollTheme.muted)
                                     }
-                                    .padding(14)
-                                    .frame(minHeight: 44)
+                                    .padding(16)
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
@@ -55,245 +39,109 @@ struct SettingsView: View {
                         }
                     } else if appState.pairedRecord != nil {
                         section("Paired Mac") {
-                            VStack(spacing: 0) {
-                                keyValueRow("Mac", value: appState.workspaceLabel)
-                                Divider().overlay(ToolrollTheme.hairline).padding(.leading, 14)
-                                keyValueRow("Status", value: statusText, valueColor: statusColor)
-                            }
-                        }
-                    }
-
-                    section("Appearance") {
-                        VStack(spacing: 0) {
-                            // Theme segmented control
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Theme")
-                                    .font(.footnote.weight(.medium))
-                                    .foregroundStyle(ToolrollTheme.muted)
-                                HStack(spacing: 2) {
-                                    ForEach(AppearanceScheme.allCases) { item in
-                                        let selected = appearance.scheme == item
-                                        Button {
-                                            withAnimation(.easeOut(duration: 0.16)) {
-                                                appearance.scheme = item
-                                            }
-                                        } label: {
-                                            Text(item.title)
-                                                .font(.footnote.weight(selected ? .semibold : .medium))
-                                                .foregroundStyle(selected ? ToolrollTheme.ink : ToolrollTheme.muted)
-                                                .frame(maxWidth: .infinity, minHeight: 34)
-                                                .background {
-                                                    if selected {
-                                                        RoundedRectangle(cornerRadius: 7.5, style: .continuous)
-                                                            .fill(ToolrollTheme.surface)
-                                                            .overlay(
-                                                                RoundedRectangle(cornerRadius: 7.5, style: .continuous)
-                                                                    .strokeBorder(ToolrollTheme.hairline, lineWidth: 0.75)
-                                                            )
-                                                    }
-                                                }
-                                                .contentShape(Rectangle())
-                                        }
-                                        .buttonStyle(.plain)
-                                        .accessibilityAddTraits(selected ? .isSelected : [])
-                                    }
+                            HStack(spacing: 12) {
+                                Image(systemName: "laptopcomputer").font(.title3).foregroundStyle(ToolrollTheme.ink).accessibilityHidden(true)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(appState.workspaceLabel).font(.system(size: 16, weight: .medium)).foregroundStyle(ToolrollTheme.ink)
+                                    Text(statusText).font(.footnote).foregroundStyle(statusColor)
                                 }
-                                .padding(3)
-                                .background(ToolrollTheme.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .strokeBorder(ToolrollTheme.hairline, lineWidth: 1)
-                                )
+                                Spacer(minLength: 0)
                             }
-                            .padding(14)
-
-                            Divider().overlay(ToolrollTheme.hairline).padding(.leading, 14)
-
-                            // Accent presets + custom color picker
-                            VStack(alignment: .leading, spacing: 10) {
-                                HStack {
-                                    Text("Accent")
-                                        .font(.footnote.weight(.medium))
-                                        .foregroundStyle(ToolrollTheme.muted)
-                                    Spacer()
-                                    Text(activeAccentLabel)
-                                        .font(.caption.monospaced())
-                                        .foregroundStyle(ToolrollTheme.subtle)
-                                }
-
-                                HStack(spacing: 12) {
-                                    ForEach(AccentPreset.all) { preset in
-                                        accentSwatch(preset)
-                                    }
-                                    Spacer(minLength: 4)
-                                    ColorPicker("", selection: customColorBinding, supportsOpacity: false)
-                                        .labelsHidden()
-                                        .frame(width: 32, height: 32)
-                                        .accessibilityLabel("Pick a custom accent colour")
-                                }
-                            }
-                            .padding(14)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 14)
+                            .accessibilityElement(children: .combine)
                         }
                     }
 
                     if appState.isDemoMode || appState.pairedRecord != nil {
-                        VStack(alignment: .leading, spacing: 6) {
-                            section("Passkey approvals") {
-                                VStack(spacing: 0) {
-                                    keyValueRow("Passkey", value: passkeyStatusText, valueColor: passkeyStatusColor)
-
-                                    if let windowText = passkeyWindowText {
-                                        Divider().overlay(ToolrollTheme.hairline).padding(.leading, 14)
-                                        keyValueRow("Prompt window", value: windowText)
-                                    }
-
-                                    if let unlockedText = passkeyUnlockedText {
-                                        Divider().overlay(ToolrollTheme.hairline).padding(.leading, 14)
-                                        keyValueRow("Session", value: unlockedText, valueColor: ToolrollTheme.success)
-                                        Divider().overlay(ToolrollTheme.hairline).padding(.leading, 14)
-                                        Button {
-                                            Task { _ = await appState.lockPasskeyApprovals() }
-                                        } label: {
-                                            HStack {
-                                                Label("Lock approvals now", systemImage: "lock.fill")
-                                                    .font(.subheadline.weight(.semibold))
-                                                    .foregroundStyle(ToolrollTheme.ink)
-                                                Spacer()
-                                                if appState.actionInFlight {
-                                                    ProgressView()
-                                                }
-                                            }
-                                            .padding(14)
-                                            .frame(minHeight: 44)
-                                            .contentShape(Rectangle())
-                                        }
-                                        .buttonStyle(.plain)
-                                        .disabled(!appState.canRunActions || appState.actionInFlight)
-                                    }
-
-                                    if !appState.isDemoMode {
-                                        Divider().overlay(ToolrollTheme.hairline).padding(.leading, 14)
-                                        Button {
-                                            Task { _ = await appState.enrollPasskey() }
-                                        } label: {
-                                            HStack {
-                                                Label(
-                                                    appState.passkeyStatus?.registered == true ? "Add another passkey" : "Set up passkey",
-                                                    systemImage: "person.badge.key.fill"
-                                                )
-                                                .font(.subheadline.weight(.semibold))
-                                                .foregroundStyle(appState.canRunActions ? appearance.signalText : ToolrollTheme.subtle)
-                                                Spacer()
-                                                if appState.actionInFlight {
-                                                    ProgressView()
-                                                }
-                                            }
-                                            .padding(14)
-                                            .frame(minHeight: 44)
-                                            .contentShape(Rectangle())
-                                        }
-                                        .buttonStyle(.plain)
-                                        .disabled(!appState.canRunActions || appState.actionInFlight)
-                                    }
-
-                                    if let feedback = appState.actionFeedback {
-                                        Divider().overlay(ToolrollTheme.hairline).padding(.leading, 14)
-                                        Text(feedback)
-                                            .font(.footnote)
-                                            .foregroundStyle(ToolrollTheme.success)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .padding(14)
-                                    } else if let error = appState.actionError {
-                                        Divider().overlay(ToolrollTheme.hairline).padding(.leading, 14)
-                                        Text(error)
-                                            .font(.footnote)
-                                            .foregroundStyle(ToolrollTheme.danger)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .padding(14)
-                                    }
-                                }
-                            }
-
-                            Text("Verified locally on your Mac using Passkey user verification. Shipping PRs, landing locally, protected scopes, and exceptions always prompt your passkey.")
-                                .font(.caption)
-                                .foregroundStyle(ToolrollTheme.muted)
-                                .padding(.horizontal, 4)
-                        }
+                        passkeySection
+                        Text("Shipping, landing, protected work and exceptions always ask for your passkey.")
+                            .font(.footnote)
+                            .foregroundStyle(ToolrollTheme.muted)
+                            .padding(.horizontal, 6)
+                            .padding(.top, 2)
                     }
 
                     section("Security and details") {
                         VStack(spacing: 0) {
-                            DisclosureGroup(isExpanded: $showSecured) {
-                                HowItsSecured()
-                                    .padding(.top, 10)
+                            NavigationLink {
+                                ScrollView { HowItsSecured().padding(20) }
+                                    .background(ToolrollTheme.paper.ignoresSafeArea())
+                                    .navigationTitle("How it's secured")
+                                    .navigationBarTitleDisplayMode(.inline)
                             } label: {
-                                Text("How it's secured")
-                                    .font(.subheadline.weight(.medium))
-                                    .foregroundStyle(ToolrollTheme.ink)
+                                linkRow("How it's secured")
                             }
-                            .tint(ToolrollTheme.subtle)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 12)
-
                             if let record = appState.pairedRecord, !appState.isDemoMode {
-                                Divider().overlay(ToolrollTheme.hairline).padding(.leading, 14)
-                                DisclosureGroup(isExpanded: $showDetails) {
-                                    VStack(alignment: .leading, spacing: 10) {
-                                        detail("Paired", record.pairedAt.formatted(date: .abbreviated, time: .shortened))
-                                        detail("This iPhone", record.deviceId)
-                                        detail("Workspace", record.workspaceId)
-                                        detail("Machine", record.machineId)
-                                        if let connectionText {
-                                            detail("Connection", connectionText)
-                                        }
-                                    }
-                                    .padding(.top, 10)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                divider
+                                NavigationLink {
+                                    deviceDetails(record)
                                 } label: {
-                                    Text("Device details")
-                                        .font(.subheadline.weight(.medium))
-                                        .foregroundStyle(ToolrollTheme.ink)
+                                    linkRow("Device details")
                                 }
-                                .tint(ToolrollTheme.subtle)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 12)
                             }
                         }
+                        .buttonStyle(.plain)
+                    }
+
+                    section("Appearance") {
+                        HStack {
+                            Text("Theme").font(.system(size: 15)).foregroundStyle(ToolrollTheme.ink)
+                            Spacer(minLength: 12)
+                            HStack(spacing: 0) {
+                                ForEach(AppearanceScheme.allCases) { item in
+                                    let selected = appearance.scheme == item
+                                    Button {
+                                        withAnimation(.easeOut(duration: 0.16)) { appearance.scheme = item }
+                                    } label: {
+                                        Text(item.title)
+                                            .font(.footnote.weight(selected ? .semibold : .medium))
+                                            .foregroundStyle(selected ? ToolrollTheme.ink : ToolrollTheme.body)
+                                            .padding(.horizontal, 12)
+                                            .frame(minHeight: 32)
+                                            .background {
+                                                if selected { RoundedRectangle(cornerRadius: 8, style: .continuous).fill(ToolrollTheme.surface) }
+                                            }
+                                            .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityAddTraits(selected ? .isSelected : [])
+                                }
+                            }
+                            .padding(3)
+                            .background(ToolrollTheme.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
                     }
 
                     if !appState.isDemoMode && appState.pairedRecord != nil {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Button(role: .destructive) {
-                                confirmUnpair = true
-                            } label: {
-                                HStack {
-                                    Text(appState.isTerminal ? "Remove from this iPhone" : "Remove this iPhone")
-                                        .font(.subheadline.weight(.semibold))
-                                        .foregroundStyle(ToolrollTheme.danger)
-                                    Spacer()
-                                    if removing {
-                                        ProgressView()
-                                            .accessibilityLabel("Removing")
-                                    }
-                                }
-                                .padding(14)
-                                .frame(minHeight: 46)
-                                .contentShape(Rectangle())
+                        Button(role: .destructive) {
+                            confirmUnpair = true
+                        } label: {
+                            HStack(spacing: 8) {
+                                Text(appState.isTerminal ? "Remove from this iPhone…" : "Remove this iPhone…")
+                                    .font(.system(size: 15, weight: .medium))
+                                    .foregroundStyle(ToolrollTheme.danger)
+                                if removing { ProgressView().accessibilityLabel("Removing") }
                             }
-                            .buttonStyle(.plain)
-                            .disabled(removing)
-                            .card()
-
-                            Text(appState.isTerminal
-                                ? "Removes the pairing and its keys from this iPhone. Your Mac already removed it."
-                                : "Removes the keys from this iPhone and asks your Mac to forget it.")
-                                .font(.caption)
-                                .foregroundStyle(ToolrollTheme.muted)
-                                .padding(.horizontal, 4)
+                            .frame(maxWidth: .infinity, minHeight: 52)
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        .disabled(removing)
+                        .card()
+                        .padding(.top, 26)
+                        Text(appState.isTerminal
+                            ? "Removes the pairing and its keys from this iPhone. Your Mac already removed it."
+                            : "Removes the keys from this iPhone and asks your Mac to forget it.")
+                            .font(.footnote)
+                            .foregroundStyle(ToolrollTheme.muted)
+                            .padding(.horizontal, 6)
                     }
                 }
-                .padding(16)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 40)
             }
             .background(ToolrollTheme.paper.ignoresSafeArea())
             .navigationTitle("Settings")
@@ -302,10 +150,11 @@ struct SettingsView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                         .fontWeight(.semibold)
-                        .foregroundStyle(appearance.signalText)
+                        .buttonStyle(.borderedProminent)
+                        .tint(ToolrollTheme.ink)
+                        .foregroundStyle(ToolrollTheme.onInk)
                 }
             }
-            .sensoryFeedback(.selection, trigger: appearance.accentHex)
             .sensoryFeedback(.selection, trigger: appearance.scheme)
             .task {
                 await appState.refreshPasskeyStatus()
@@ -325,77 +174,233 @@ struct SettingsView: View {
         }
     }
 
-    private var activeAccentLabel: String {
-        if let preset = AccentPreset.all.first(where: { $0.hex.uppercased() == appearance.accentHex.uppercased() }) {
-            return preset.name
-        }
-        return appearance.accentHex
-    }
+    // MARK: Passkey approvals
 
-    private func accentSwatch(_ preset: AccentPreset) -> some View {
-        let selected = appearance.accentHex.uppercased() == preset.hex.uppercased()
-        let fill: Color = preset.id == "ink"
-            ? ToolrollTheme.ink
-            : Color(uiColor: ToolrollAppearance.uiColor(hex: preset.hex) ?? .systemBlue)
+    private var registered: Bool { appState.isDemoMode || appState.passkeyStatus?.registered == true }
+    private var macWindow: Int? { appState.passkeyStatus?.windowMinutes }
 
-        return Button {
-            withAnimation(.easeOut(duration: 0.16)) {
-                appearance.accentHex = preset.hex
-            }
-        } label: {
-            ZStack {
-                Circle()
-                    .fill(fill)
-                    .frame(width: 28, height: 28)
-                    .overlay(
-                        Circle()
-                            .strokeBorder(Color.white.opacity(colorScheme == .dark ? 0.22 : 0.12), lineWidth: 1)
-                    )
-                if selected {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(preset.id == "ink" ? ToolrollTheme.onInk : Color.white)
+    private var passkeySection: some View {
+        section("Passkey approvals") {
+            VStack(spacing: 0) {
+                TimelineView(.periodic(from: .now, by: 30)) { context in
+                    unlockRow(now: context.date)
+                }
+                divider
+                HStack(spacing: 12) {
+                    labelStack("Passkey prompt", "Set on your Mac in Settings → Phone")
+                    Spacer(minLength: 8)
+                    Text(windowText).font(.system(size: 15)).foregroundStyle(ToolrollTheme.body)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                .accessibilityElement(children: .combine)
+                divider
+                Toggle(isOn: $appState.unlockOnOpen) {
+                    labelStack("Unlock approvals when I open Toolroll", "One \(DeviceUnlockName.current) when you open the app covers routine approvals")
+                }
+                .tint(ToolrollTheme.toggleOn)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                if appState.unlockOnOpen, let macWindow, macWindow > 0 {
+                    divider
+                    HStack(spacing: 12) {
+                        labelStack("Unlock lasts", "Up to \(macWindow) min, the most your Mac allows")
+                        Spacer(minLength: 8)
+                        Picker("Unlock lasts", selection: Binding(
+                            get: { AppLockPolicy.minutes(chosen: appState.unlockMinutes, macWindow: macWindow) },
+                            set: { appState.unlockMinutes = $0 }
+                        )) {
+                            ForEach(AppLockPolicy.lengths(macWindow: macWindow), id: \.self) { minutes in
+                                Text("\(minutes) min").tag(minutes)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .tint(ToolrollTheme.ink)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                }
+                divider
+                Toggle(isOn: $appState.alwaysAsk) {
+                    labelStack("Always ask on this iPhone", "\(DeviceUnlockName.current) for every approval, whatever the Mac allows")
+                }
+                .tint(ToolrollTheme.toggleOn)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                divider
+                passkeyRows
+                if !appState.isDemoMode {
+                    divider
+                    Button {
+                        Task { _ = await appState.enrollPasskey() }
+                    } label: {
+                        HStack {
+                            Text(registered ? "Add another passkey" : "Set up passkey")
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundStyle(appState.canRunActions ? ToolrollTheme.ink : ToolrollTheme.subtle)
+                            Spacer()
+                            if appState.actionInFlight { ProgressView() }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!appState.canRunActions || appState.actionInFlight)
+                }
+                if let message = appState.passkeyMessage {
+                    divider
+                    Text(message.text)
+                        .font(.footnote)
+                        .foregroundStyle(message.isError ? ToolrollTheme.danger : ToolrollTheme.success)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(16)
                 }
             }
-            .padding(3)
-            .overlay(
-                Circle()
-                    .strokeBorder(selected ? ToolrollTheme.ink : Color.clear, lineWidth: 1.5)
-            )
-            .frame(minWidth: 36, minHeight: 36)
-            .contentShape(Circle())
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(preset.name)
-        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    @ViewBuilder
+    private func unlockRow(now: Date) -> some View {
+        if let until = appState.approvalsUnlockedUntil(now: now) {
+            HStack(spacing: 12) {
+                Image(systemName: "lock.open").font(.body).foregroundStyle(ToolrollTheme.ink).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Approvals unlocked").font(.system(size: 15, weight: .medium)).foregroundStyle(ToolrollTheme.ink)
+                    (Text("until ") + Text(until.formatted(date: .omitted, time: .shortened)).font(.footnote.monospaced()) + Text(" on this iPhone"))
+                        .font(.footnote)
+                        .foregroundStyle(ToolrollTheme.muted)
+                }
+                Spacer(minLength: 8)
+                Button("Lock now") { Task { _ = await appState.lockPasskeyApprovals() } }
+                    .buttonStyle(PillButtonStyle(filled: true))
+                    .disabled(appState.actionInFlight)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+        } else {
+            HStack(spacing: 12) {
+                Image(systemName: "lock").font(.body).foregroundStyle(ToolrollTheme.ink).accessibilityHidden(true)
+                labelStack(registered ? "Approvals locked" : "No passkey yet", lockedDetail)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private var lockedDetail: String {
+        if !registered {
+            return appState.passkeyStatus?.enrollmentOpen == true
+                ? "Your Mac is ready: set up a passkey below."
+                : "On your Mac, open Settings → Phone and choose Enable passkey on iPhone."
+        }
+        if appState.isOffline { return "Approvals are paused until your Mac is back." }
+        if appState.alwaysAsk { return "Each approval asks for your passkey (Always ask is on)." }
+        if macWindow == 0 { return "Each approval asks for your passkey (set on your Mac)." }
+        return "The next approval asks for your passkey."
+    }
+
+    @ViewBuilder
+    private var passkeyRows: some View {
+        if let list = appState.passkeyStatus?.passkeys, !list.isEmpty {
+            ForEach(Array(list.enumerated()), id: \.offset) { index, key in
+                if index > 0 { divider }
+                HStack(spacing: 12) {
+                    labelStack(key.label, addedText(key.createdAt))
+                    Spacer(minLength: 8)
+                    Text("Active").font(.subheadline).foregroundStyle(ToolrollTheme.success)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                .accessibilityElement(children: .combine)
+            }
+        } else {
+            HStack(spacing: 12) {
+                labelStack("Passkeys", passkeyCountText)
+                Spacer(minLength: 8)
+                Text(registered ? "Active" : (appState.passkeyStatus == nil ? "" : "Not set up"))
+                    .font(.subheadline)
+                    .foregroundStyle(registered ? ToolrollTheme.success : ToolrollTheme.muted)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private func addedText(_ iso: String?) -> String {
+        guard let date = RelativeTime.date(iso) else { return "iCloud Keychain" }
+        return "Added \(date.formatted(.dateTime.month(.abbreviated).day())) · iCloud Keychain"
+    }
+
+    private var passkeyCountText: String {
+        guard let status = appState.passkeyStatus else { return appState.isOffline ? "Unavailable offline" : "Checking…" }
+        if status.count == 0 { return "None on your account yet" }
+        return status.count == 1 ? "1 on your account" : "\(status.count) on your account"
+    }
+
+    private var windowText: String {
+        guard let mins = macWindow else { return appState.isOffline ? "—" : "Checking…" }
+        switch mins {
+        case 0: return "Every approval"
+        case 60: return "Once per hour"
+        default: return "Once per \(mins) min"
+        }
+    }
+
+    // MARK: Bits
+
+    private var divider: some View {
+        Divider().overlay(ToolrollTheme.hairline)
+    }
+
+    private func labelStack(_ title: String, _ detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.system(size: 15)).foregroundStyle(ToolrollTheme.ink)
+            Text(detail).font(.footnote).foregroundStyle(ToolrollTheme.muted).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func linkRow(_ title: String) -> some View {
+        HStack {
+            Text(title).font(.system(size: 15)).foregroundStyle(ToolrollTheme.ink)
+            Spacer()
+            Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(ToolrollTheme.ink).accessibilityHidden(true)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .contentShape(Rectangle())
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.footnote.weight(.medium))
-                .foregroundStyle(ToolrollTheme.muted)
+            SectionLabel(title)
                 .padding(.horizontal, 4)
-                .accessibilityAddTraits(.isHeader)
+                .padding(.top, 12)
             content()
                 .card()
         }
     }
 
-    private func keyValueRow(_ label: String, value: String, valueColor: Color = ToolrollTheme.muted) -> some View {
-        HStack {
-            Text(label)
-                .font(.subheadline)
-                .foregroundStyle(ToolrollTheme.ink)
-            Spacer(minLength: 12)
-            Text(value)
-                .font(.subheadline)
-                .foregroundStyle(valueColor)
-                .multilineTextAlignment(.trailing)
+    private func deviceDetails(_ record: PairedWorkspaceRecord) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                detail("Paired", record.pairedAt.formatted(date: .abbreviated, time: .shortened))
+                detail("This iPhone", record.deviceId)
+                detail("Workspace", record.workspaceId)
+                detail("Machine", record.machineId)
+                if let connectionText { detail("Connection", connectionText) }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .card()
+            .padding(16)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .accessibilityElement(children: .combine)
+        .background(ToolrollTheme.paper.ignoresSafeArea())
+        .navigationTitle("Device details")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private var statusText: String {
@@ -417,57 +422,17 @@ struct SettingsView: View {
         }
     }
 
-    private var passkeyStatusText: String {
-        if appState.isDemoMode { return "Active · Demo passkey" }
-        guard let status = appState.passkeyStatus else {
-            return appState.isOffline ? "Unavailable offline" : "Checking…"
-        }
-        if status.registered {
-            let n = status.count
-            return n == 1 ? "Active · 1 passkey" : "Active · \(n) passkeys"
-        }
-        return status.enrollmentOpen ? "Ready to set up" : "Not set up"
-    }
-
-    private var passkeyStatusColor: Color {
-        if appState.isDemoMode || appState.passkeyStatus?.registered == true {
-            return ToolrollTheme.success
-        }
-        if appState.passkeyStatus?.enrollmentOpen == true {
-            return appearance.signalText
-        }
-        return ToolrollTheme.muted
-    }
-
-    private var passkeyWindowText: String? {
-        guard appState.isDemoMode || appState.passkeyStatus?.registered == true,
-              let mins = appState.passkeyStatus?.windowMinutes else { return nil }
-        switch mins {
-        case 0: return "Every time"
-        case 15: return "Once per 15 min"
-        case 60: return "Once per hour"
-        default: return "Once per \(mins) min"
-        }
-    }
-
-    private var passkeyUnlockedText: String? {
-        guard let until = RelativeTime.date(appState.passkeyStatus?.freshUntil), until > Date() else { return nil }
-        return "Unlocked until \(until.formatted(date: .omitted, time: .shortened))"
-    }
-
     private var connectionText: String? {
         guard case .connected = appState.connection, let path = appState.connectedPath else { return nil }
         switch path.kind {
-        case .direct: return "Connected directly"
+        case .direct: return "Connected · same Wi‑Fi"
         case .hosted: return path.host.map { "Connected through \($0)" } ?? "Connected through the relay"
         }
     }
 
     private func detail(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(ToolrollTheme.muted)
+            Text(label).font(.caption).foregroundStyle(ToolrollTheme.muted)
             Text(value)
                 .font(.caption.monospaced())
                 .foregroundStyle(ToolrollTheme.ink)

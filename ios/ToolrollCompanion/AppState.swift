@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Network
 import Observation
 import ToolrollCompanionCore
@@ -102,15 +103,51 @@ final class CompanionAppState {
 
     /// Gate 2 passkey status for this Mac workspace (ADR 0005).
     private(set) var passkeyStatus: PasskeyStatus?
-    /// True while a passkey registration or approval RPC is executing.
+    /// True while a passkey registration, approval or unlock is running.
     private(set) var actionInFlight = false
-    /// Transient confirmation banner text after an in-app approval or passkey enrollment.
-    var actionFeedback: String?
-    /// Human-readable error message from a failed passkey enrollment or approval.
-    var actionError: String?
-    /// Demo-only session state so Approve & Accept respond interactively without mutating fixtures on disk.
-    private(set) var demoApprovedTasks: Set<String> = []
-    private(set) var demoAcceptedTasks: Set<String> = []
+    /// What the last approval on each task said, shown in that task's dock only (one confirmation, or why it failed).
+    private(set) var taskNotices: [String: TaskNotice] = [:]
+    /// The one approval failure that interrupts: the outcome isn't known.
+    var outcomeUnknownMessage: String?
+    /// Passkey setup and lock feedback, shown in Settings only.
+    var passkeyMessage: PasskeyMessage?
+    /// What the passkey ceremony running now signs, in the Mac's words (shown above the system sheet).
+    private(set) var signingWording: String?
+    /// Demo only: tasks approved or accepted in this demo session (the fixtures don't change).
+    private(set) var demoDoneTasks: Set<String> = []
+
+    /// "Always ask on this iPhone": every approval asks for a live passkey, whatever the Mac's window allows.
+    var alwaysAsk: Bool {
+        didSet {
+            UserDefaults.standard.set(alwaysAsk, forKey: Self.alwaysAskKey)
+            if alwaysAsk, approvalsUnlockedUntil(now: Date()) != nil { Task { await lockPasskeyApprovals() } }
+        }
+    }
+    /// "Unlock approvals when I open Toolroll": cover the app on open and unlock with one passkey assertion.
+    var unlockOnOpen: Bool {
+        didSet {
+            UserDefaults.standard.set(unlockOnOpen, forKey: Self.unlockOnOpenKey)
+            if !unlockOnOpen, lockState != .open { lockState = .open }
+        }
+    }
+    /// "Unlock lasts": minutes asked of the Mac (it clamps); nil = the Mac's window.
+    var unlockMinutes: Int? {
+        didSet { UserDefaults.standard.set(unlockMinutes ?? 0, forKey: Self.unlockMinutesKey) }
+    }
+    /// The app cover for "Unlock approvals when I open Toolroll".
+    private(set) var lockState: LockState = .open
+    /// Bumped each time the app is covered again (re-runs the unlock).
+    private(set) var lockGeneration = 0
+    /// Why the last unlock didn't finish (shown on the cover), or nil.
+    private(set) var unlockProblem: String?
+    /// After an unlock: whether approvals are unlocked or viewing only (and why).
+    private(set) var approvalsAccess: ApprovalsAccess?
+
+    enum LockState: Equatable {
+        case open
+        case covered
+        case unlocking
+    }
 
     /// The privacy cover stays off while inactive during a pairing or while a sheet/prompt is up.
     var suppressesPrivacyCover: Bool { presentingSystemUI || pairing != .idle }
@@ -125,6 +162,8 @@ final class CompanionAppState {
     @ObservationIgnored private let demoSource = DemoCompanionSource()
     @ObservationIgnored private let liveSource: LiveCompanionSource
     @ObservationIgnored private let passkeyManager = PasskeyManager()
+    @ObservationIgnored private let approvalKeys = ApprovalKeyLedger()
+    @ObservationIgnored private var noticeClear: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private let snapshots = CompanionSnapshotStore.standard()
     @ObservationIgnored private var snapshotTask: Task<Void, Never>?
     @ObservationIgnored private var connectTask: Task<Bool, Never>?
@@ -145,6 +184,8 @@ final class CompanionAppState {
     @ObservationIgnored var debugScreen: String?
     /// DEBUG-only: a `--debug-state` is on screen; nothing dials, reads come from the demo fixtures, nothing is saved.
     @ObservationIgnored private var debugFrozen = false
+    /// DEBUG-only: JSON fields laid over a task's step cards (protected work, an exception), keyed by task.
+    @ObservationIgnored private var debugPatches: [String: [String: Any]] = [:]
     #endif
 
     private var isDebugFrozen: Bool {
@@ -158,6 +199,9 @@ final class CompanionAppState {
     private static let recordStorageKey = "paired.workspace.record.v1"
     private static let labelStorageKey = "paired.workspace.label.v1"
     private static let deviceNameKey = "device.name.v1"
+    private static let alwaysAskKey = "approvals.alwaysAsk.v1"
+    private static let unlockOnOpenKey = "approvals.unlockOnOpen.v1"
+    private static let unlockMinutesKey = "approvals.unlockMinutes.v1"
     private static let keyAccounts = ["device.psk", "phone.noise.priv", "device.relay.priv"]
 
     init() {
@@ -170,6 +214,10 @@ final class CompanionAppState {
         liveSource = LiveCompanionSource(client: client)
         deviceName = UserDefaults.standard.string(forKey: Self.deviceNameKey)
             ?? CompanionDeviceName.defaultName(identifier: CompanionDeviceName.currentIdentifier(), fallback: UIDevice.current.model)
+        alwaysAsk = UserDefaults.standard.bool(forKey: Self.alwaysAskKey)
+        unlockOnOpen = UserDefaults.standard.object(forKey: Self.unlockOnOpenKey) as? Bool ?? true
+        let minutes = UserDefaults.standard.integer(forKey: Self.unlockMinutesKey)
+        unlockMinutes = minutes > 0 ? minutes : nil
         let args = ProcessInfo.processInfo.arguments
         #if DEBUG
         if let i = args.firstIndex(of: "--screen"), i + 1 < args.count {
@@ -260,11 +308,9 @@ final class CompanionAppState {
         Task { await client.disconnect() }
         pairingError = nil
         notice = nil
-        actionFeedback = nil
-        actionError = nil
-        demoApprovedTasks = []
-        demoAcceptedTasks = []
-        passkeyStatus = PasskeyStatus(registered: true, count: 1, enrollmentOpen: false, rpId: "toolroll.dev", windowMinutes: 15, freshUntil: nil)
+        clearApprovalState()
+        passkeyStatus = DemoCompanionSource.demoPasskeyStatus
+        lockState = .open
         demoCache = CompanionCache()
         connection = .demo
     }
@@ -273,11 +319,8 @@ final class CompanionAppState {
         epoch += 1
         demoCache = CompanionCache()
         liveCache = CompanionCache()
-        demoApprovedTasks = []
-        demoAcceptedTasks = []
+        clearApprovalState()
         passkeyStatus = nil
-        actionFeedback = nil
-        actionError = nil
         connection = pairedRecord == nil ? .unpaired : .connecting
         if let record = pairedRecord {
             restoreSnapshot(for: record)
@@ -296,6 +339,7 @@ final class CompanionAppState {
         workspaceLabel = UserDefaults.standard.string(forKey: Self.labelStorageKey) ?? record.workspaceLabel
         connection = .connecting
         restoreSnapshot(for: record)
+        cover()
     }
 
     // MARK: Offline snapshot (U11)
@@ -689,6 +733,8 @@ final class CompanionAppState {
     func handleForeground() async {
         let wasActive = isActive
         isActive = true
+        // Back in front and covered: run the unlock now (the cover's own task may have fired while in the background).
+        if !wasActive, lockState == .covered, unlocksAutomatically { Task { await unlock() } }
         guard !wasActive, !isDemoMode, pairedRecord != nil, pairing == .idle, !isTerminal else { return }
         cancelRetry()
         if await client.isConnected {
@@ -704,6 +750,7 @@ final class CompanionAppState {
         cancelRetry()
         if let record = pairedRecord, !isDemoMode, !isTerminal, !isDebugFrozen { writeSnapshot(record: record) }
         guard !isDemoMode, pairing == .idle else { return }
+        await lockOnLeave()
         // Reads in flight fail with `closed` and keep their last good state (see failurePhase). A connect still in
         // flight belongs to the old epoch: retire it, so foreground starts a fresh one instead of joining it.
         connectEpoch += 1
@@ -810,7 +857,10 @@ final class CompanionAppState {
         let started = epoch, demo = isDemoMode
         if !quiet { cache.steps[task, default: Loadable()].phase = .loading }
         do {
-            let steps = try await fetch { try await $0.taskSteps(task: task) }
+            var steps = try await fetch { try await $0.taskSteps(task: task) }
+            #if DEBUG
+            steps = debugPatched(steps)
+            #endif
             guard started == epoch, demo == isDemoMode else { return }
             cache.steps[task] = Loadable(value: steps, phase: .loaded)
             noteSuccess()
@@ -865,37 +915,51 @@ final class CompanionAppState {
 
     func refreshPasskeyStatus() async {
         let started = epoch, demo = isDemoMode
-        if demo || isDebugFrozen {
-            passkeyStatus = try? await demoSource.passkeyStatus()
-            return
-        }
+        if demo || isDebugFrozen { return }
         guard connection == .connected else { return }
         if let status = try? await liveSource.passkeyStatus(), started == epoch, demo == isDemoMode {
             passkeyStatus = status
         }
     }
 
+    /// When this iPhone's routine approvals skip the passkey prompt (the Mac's window), or nil. Always nil with
+    /// "Always ask on this iPhone" on: the phone then never uses the window.
+    func approvalsUnlockedUntil(now: Date) -> Date? {
+        guard !alwaysAsk, let until = RelativeTime.date(passkeyStatus?.freshUntil), until > now else { return nil }
+        return until
+    }
+
+    private func clearApprovalState() {
+        taskNotices = [:]
+        noticeClear.values.forEach { $0.cancel() }
+        noticeClear = [:]
+        outcomeUnknownMessage = nil
+        passkeyMessage = nil
+        signingWording = nil
+        demoDoneTasks = []
+        approvalsAccess = nil
+        unlockProblem = nil
+    }
+
     @discardableResult
     func enrollPasskey() async -> Bool {
         guard !actionInFlight else { return false }
-        actionError = nil
-        actionFeedback = nil
-        if isDemoMode || isDebugFrozen {
-            passkeyStatus = PasskeyStatus(registered: true, count: 1, enrollmentOpen: false, rpId: "toolroll.dev", windowMinutes: 15, freshUntil: nil)
-            actionFeedback = "Passkey ready for approvals."
-            return true
+        passkeyMessage = nil
+        guard !isDemoMode, !isDebugFrozen else {
+            passkeyMessage = .init(isError: false, text: "The demo already has a passkey.")
+            return false
         }
         guard canRunActions else {
-            actionError = "Can't reach your Mac. Connect to set up a passkey."
+            passkeyMessage = .init(isError: true, text: "Can't reach your Mac. Connect to set up a passkey.")
             return false
         }
         actionInFlight = true
         defer { actionInFlight = false }
         do {
             let begin = try await liveSource.passkeyRegisterBegin()
-            presentingSystemUI = true
             let reg: PasskeyManager.RegistrationOutput
             do {
+                presentingSystemUI = true
                 defer { presentingSystemUI = false }
                 reg = try await passkeyManager.register(
                     challengeB64Url: begin.challenge,
@@ -903,6 +967,8 @@ final class CompanionAppState {
                     userIdB64Url: begin.user.id,
                     userName: begin.user.displayName
                 )
+            } catch let error as PasskeyManager.PasskeyError {
+                throw error.approvalError
             }
             let label = CompanionDeviceName.sanitized(deviceName) ?? "iPhone"
             _ = try await liveSource.passkeyRegisterFinish(
@@ -913,11 +979,11 @@ final class CompanionAppState {
                 label: label
             )
             await refreshPasskeyStatus()
-            actionFeedback = "Passkey enabled for in-app approvals."
+            passkeyMessage = .init(isError: false, text: "Passkey added. You can approve from this iPhone.")
             return true
         } catch {
-            if let message = actionFailureMessage(error) {
-                actionError = message
+            if let failure = ApprovalCopy.failure(error, verb: .approve) {
+                passkeyMessage = .init(isError: true, text: failure.message)
             }
             return false
         }
@@ -926,328 +992,211 @@ final class CompanionAppState {
     @discardableResult
     func lockPasskeyApprovals() async -> Bool {
         guard !actionInFlight else { return false }
-        actionError = nil
-        actionFeedback = nil
+        passkeyMessage = nil
         if isDemoMode || isDebugFrozen {
-            passkeyStatus = PasskeyStatus(registered: true, count: 1, enrollmentOpen: false, rpId: "toolroll.dev", windowMinutes: 15, freshUntil: nil)
-            actionFeedback = "Approvals locked. Next approval will ask for your passkey."
+            passkeyStatus = passkeyStatus?.with(freshUntil: nil)
+            if case .unlocked = approvalsAccess { approvalsAccess = nil }
             return true
         }
         guard canRunActions else {
-            actionError = "Can't reach your Mac right now."
+            passkeyMessage = .init(isError: true, text: "Can't reach your Mac right now.")
             return false
         }
         actionInFlight = true
         defer { actionInFlight = false }
         do {
             _ = try await liveSource.passkeyLock()
+            passkeyStatus = passkeyStatus?.with(freshUntil: nil)
+            if case .unlocked = approvalsAccess { approvalsAccess = nil }
             await refreshPasskeyStatus()
-            actionFeedback = "Approvals locked. Next approval will ask for your passkey."
             return true
         } catch {
-            if let message = actionFailureMessage(error) {
-                actionError = message
-            }
+            passkeyMessage = .init(isError: true, text: ApprovalCopy.failure(error, verb: .approve)?.message ?? "Couldn't lock approvals.")
             return false
         }
     }
 
+    /// Approve a plan or accept a result: one driver (ApprovalRunner), one idempotency key per intent, the task refreshed
+    /// after every attempt, and one confirmation in that task's dock. `shownTerms`: the plan on screen when the person
+    /// tapped (to highlight what changed if the Mac says it's stale).
     @discardableResult
-    func approveTask(taskId: String, digest: String) async -> Bool {
+    func perform(_ intent: ApprovalIntent, shownTerms: ApprovalTerms? = nil) async -> Bool {
         guard !actionInFlight else { return false }
-        actionError = nil
-        actionFeedback = nil
+        let task = intent.task
+        setNotice(nil, for: task)
+        outcomeUnknownMessage = nil
         guard canRunActions else {
-            actionError = "Approvals require a live connection to your Mac."
+            setNotice(.init(kind: .failed, text: "Approvals are paused until your Mac is back. Nothing is queued."), for: task)
             return false
         }
         actionInFlight = true
         defer { actionInFlight = false }
-        let idempotencyKey = UUID().uuidString.lowercased()
+        let demo = isDemoMode || isDebugFrozen
+        let source: any CompanionDataSource = demo ? demoSource : liveSource
         do {
-            if isDemoMode || isDebugFrozen {
-                let challenge = try await demoSource.approvalChallenge(
-                    verb: .approve, task: taskId, digest: digest, runId: nil, receiptDigest: nil,
-                    note: nil, publish: nil, planKey: nil, into: nil, undo: nil, anyway: nil, forceFresh: nil
-                )
-                let dummy = WebAuthnAssertion(credentialId: "demo-cred-1", clientDataJSON: "demo", authenticatorData: "demo", signature: "demo", userHandle: "demo")
-                let result = try await demoSource.approveTask(
-                    task: taskId, digest: digest, challenge: challenge.challenge, idempotencyKey: idempotencyKey, assertion: dummy, useFreshSession: false
-                )
-                if result.approved {
-                    demoApprovedTasks.insert(taskId)
-                    passkeyStatus = PasskeyStatus(registered: true, count: 1, enrollmentOpen: false, rpId: "toolroll.dev", windowMinutes: 15, freshUntil: result.freshUntil)
-                    actionFeedback = "Plan approved."
-                    return true
-                }
-                return false
+            let result = try await ApprovalRunner.run(intent, source: source, keys: approvalKeys, alwaysAsk: alwaysAsk) { challenge in
+                try await self.confirmWithPasskey(challenge, demo: demo)
             }
-
-            let challenge = try await liveSource.approvalChallenge(
-                verb: .approve, task: taskId, digest: digest, runId: nil, receiptDigest: nil,
-                note: nil, publish: nil, planKey: nil, into: nil, undo: nil, anyway: nil, forceFresh: nil
-            )
-            let result: TaskApproveResponse
-            if challenge.freshApproved == true {
-                do {
-                    result = try await liveSource.approveTask(
-                        task: taskId, digest: digest, challenge: "", idempotencyKey: idempotencyKey, assertion: nil, useFreshSession: true
-                    )
-                } catch let rpc as CompanionRPCError where rpc.code == "passkey_step_up_required" {
-                    // Window expired or task requires a live passkey prompt: transparently step up once.
-                    let freshChallenge = try await liveSource.approvalChallenge(
-                        verb: .approve, task: taskId, digest: digest, runId: nil, receiptDigest: nil,
-                        note: nil, publish: nil, planKey: nil, into: nil, undo: nil, anyway: nil, forceFresh: true
-                    )
-                    let assertion = try await runPasskeyAssertion(challenge: freshChallenge)
-                    result = try await liveSource.approveTask(
-                        task: taskId, digest: digest, challenge: freshChallenge.challenge, idempotencyKey: UUID().uuidString.lowercased(), assertion: assertion, useFreshSession: false
-                    )
-                }
-            } else {
-                let assertion = try await runPasskeyAssertion(challenge: challenge)
-                result = try await liveSource.approveTask(
-                    task: taskId, digest: digest, challenge: challenge.challenge, idempotencyKey: idempotencyKey, assertion: assertion, useFreshSession: false
-                )
-            }
-            if result.secondApprover == true {
-                actionFeedback = "Your approval is recorded (\(result.have ?? 1) of \(result.need ?? 2))."
-            } else {
-                actionFeedback = "Plan approved."
-            }
-            await refreshPasskeyStatus()
-            await loadTask(taskId, quiet: true)
-            await loadInbox(.needsYou, quiet: true)
-            refreshTick += 1
-            return result.ok
+            approvalKeys.settle(intent, error: nil)
+            if demo { demoDoneTasks.insert(task) }
+            setNotice(.init(kind: .confirmed, text: ApprovalCopy.confirmation(result), at: Date()), for: task, clearAfter: .seconds(8))
+            if !demo { await refreshAfterAction(task) }
+            return true
         } catch {
-            if let message = actionFailureMessage(error) {
-                actionError = message
+            approvalKeys.settle(intent, error: error)
+            // Whatever happened, show what the Mac says now (the action may have gone through).
+            if !demo { await refreshAfterAction(task) }
+            guard let failure = ApprovalCopy.failure(error, verb: intent.verb) else { return false }
+            switch failure.kind {
+            case .changed:
+                setNotice(.init(kind: .changed, text: failure.message, shownTerms: shownTerms), for: task)
+            case .outcomeUnknown:
+                outcomeUnknownMessage = failure.message
+            case .failed:
+                setNotice(.init(kind: .failed, text: failure.message), for: task)
             }
             return false
         }
     }
 
-    @discardableResult
-    func acceptTask(taskId: String, runId: Int?, receiptDigest: String, note: String? = nil, publish: Bool = false) async -> Bool {
-        guard !actionInFlight else { return false }
-        actionError = nil
-        actionFeedback = nil
-        guard canRunActions else {
-            actionError = "Accepting work requires a live connection to your Mac."
-            return false
-        }
-        actionInFlight = true
-        defer { actionInFlight = false }
-        let idempotencyKey = UUID().uuidString.lowercased()
-        do {
-            if isDemoMode || isDebugFrozen {
-                let challenge = try await demoSource.approvalChallenge(
-                    verb: .accept, task: taskId, digest: nil, runId: runId, receiptDigest: receiptDigest,
-                    note: note, publish: publish, planKey: nil, into: nil, undo: nil, anyway: nil, forceFresh: nil
-                )
-                let dummy = WebAuthnAssertion(credentialId: "demo-cred-1", clientDataJSON: "demo", authenticatorData: "demo", signature: "demo", userHandle: "demo")
-                let result = try await demoSource.acceptTask(
-                    task: taskId, runId: runId, receiptDigest: receiptDigest, note: note, publish: publish,
-                    challenge: challenge.challenge, idempotencyKey: idempotencyKey, assertion: dummy, useFreshSession: false
-                )
-                if result.accepted {
-                    demoAcceptedTasks.insert(taskId)
-                    passkeyStatus = PasskeyStatus(registered: true, count: 1, enrollmentOpen: false, rpId: "toolroll.dev", windowMinutes: 15, freshUntil: result.freshUntil)
-                    actionFeedback = publish ? "Accepted and PR opened." : "Work accepted."
-                    return true
-                }
-                return false
-            }
+    /// The exception sheet closed because its result was replaced.
+    func noteResultChanged(task: String) {
+        setNotice(.init(kind: .changed, text: "The result changed while you were writing. Nothing was accepted."), for: task)
+    }
 
-            let challenge = try await liveSource.approvalChallenge(
-                verb: .accept, task: taskId, digest: nil, runId: runId, receiptDigest: receiptDigest,
-                note: note, publish: publish, planKey: nil, into: nil, undo: nil, anyway: nil, forceFresh: nil
-            )
-            let result: TaskAcceptResponse
-            if challenge.freshApproved == true {
-                do {
-                    result = try await liveSource.acceptTask(
-                        task: taskId, runId: runId, receiptDigest: receiptDigest, note: note, publish: publish,
-                        challenge: "", idempotencyKey: idempotencyKey, assertion: nil, useFreshSession: true
-                    )
-                } catch let rpc as CompanionRPCError where rpc.code == "passkey_step_up_required" {
-                    let freshChallenge = try await liveSource.approvalChallenge(
-                        verb: .accept, task: taskId, digest: nil, runId: runId, receiptDigest: receiptDigest,
-                        note: note, publish: publish, planKey: nil, into: nil, undo: nil, anyway: nil, forceFresh: true
-                    )
-                    let assertion = try await runPasskeyAssertion(challenge: freshChallenge)
-                    result = try await liveSource.acceptTask(
-                        task: taskId, runId: runId, receiptDigest: receiptDigest, note: note, publish: publish,
-                        challenge: freshChallenge.challenge, idempotencyKey: UUID().uuidString.lowercased(), assertion: assertion, useFreshSession: false
-                    )
-                }
-            } else {
-                let assertion = try await runPasskeyAssertion(challenge: challenge)
-                result = try await liveSource.acceptTask(
-                    task: taskId, runId: runId, receiptDigest: receiptDigest, note: note, publish: publish,
-                    challenge: challenge.challenge, idempotencyKey: idempotencyKey, assertion: assertion, useFreshSession: false
-                )
-            }
-            if let prNumber = result.prNumber {
-                actionFeedback = "Accepted · opened PR #\(prNumber)."
-            } else {
-                actionFeedback = result.published ? "Accepted and published." : "Work accepted."
-            }
-            await refreshPasskeyStatus()
-            await loadTask(taskId, quiet: true)
-            await loadInbox(.needsYou, quiet: true)
-            refreshTick += 1
-            return result.ok
-        } catch {
-            if let message = actionFailureMessage(error) {
-                actionError = message
-            }
-            return false
+    func notice(for task: String) -> TaskNotice? { taskNotices[task] }
+
+    func clearNotice(for task: String) { setNotice(nil, for: task) }
+
+    private func setNotice(_ notice: TaskNotice?, for task: String, clearAfter: Duration? = nil) {
+        noticeClear[task]?.cancel()
+        noticeClear[task] = nil
+        taskNotices[task] = notice
+        guard let clearAfter, let notice else { return }
+        noticeClear[task] = Task { [weak self] in
+            try? await Task.sleep(for: clearAfter)
+            guard !Task.isCancelled, let self, self.taskNotices[task] == notice else { return }
+            self.taskNotices[task] = nil
         }
     }
 
-    @discardableResult
-    func landTask(taskId: String, key: String, into: String? = nil, undo: Bool = false) async -> Bool {
-        guard !actionInFlight else { return false }
-        actionError = nil
-        actionFeedback = nil
-        guard canRunActions else {
-            actionError = "Landing work requires a live connection to your Mac."
-            return false
-        }
-        actionInFlight = true
-        defer { actionInFlight = false }
-        let idempotencyKey = UUID().uuidString.lowercased()
-        do {
-            if isDemoMode || isDebugFrozen {
-                let challenge = try await demoSource.approvalChallenge(
-                    verb: .land, task: taskId, digest: nil, runId: nil, receiptDigest: nil,
-                    note: nil, publish: nil, planKey: key, into: into, undo: undo, anyway: nil, forceFresh: nil
-                )
-                let dummy = WebAuthnAssertion(credentialId: "demo-cred-1", clientDataJSON: "demo", authenticatorData: "demo", signature: "demo", userHandle: "demo")
-                let result = try await demoSource.landTask(
-                    task: taskId, key: key, into: into, undo: undo,
-                    challenge: challenge.challenge, idempotencyKey: idempotencyKey, assertion: dummy
-                )
-                if result.landed {
-                    actionFeedback = "Landed on \(result.branch ?? into ?? "main")."
-                    return true
-                }
-                return false
-            }
-
-            let challenge = try await liveSource.approvalChallenge(
-                verb: .land, task: taskId, digest: nil, runId: nil, receiptDigest: nil,
-                note: nil, publish: nil, planKey: key, into: into, undo: undo, anyway: nil, forceFresh: true
-            )
-            let assertion = try await runPasskeyAssertion(challenge: challenge)
-            let result = try await liveSource.landTask(
-                task: taskId, key: key, into: into, undo: undo,
-                challenge: challenge.challenge, idempotencyKey: idempotencyKey, assertion: assertion
-            )
-            actionFeedback = result.branch.map { "Landed on \($0)." } ?? "Landed."
-            await refreshPasskeyStatus()
-            await loadTask(taskId, quiet: true)
-            await loadInbox(.needsYou, quiet: true)
-            refreshTick += 1
-            return result.ok
-        } catch {
-            if let message = actionFailureMessage(error) {
-                actionError = message
-            }
-            return false
-        }
+    private func refreshAfterAction(_ task: String) async {
+        async let status: Void = refreshPasskeyStatus()
+        async let detail: Void = loadTask(task, quiet: true)
+        async let inbox: Void = loadInbox(.needsYou, quiet: true)
+        _ = await (status, detail, inbox)
     }
 
-    @discardableResult
-    func shipTask(runId: Int, taskId: String? = nil, anyway: Bool = false) async -> Bool {
-        guard !actionInFlight else { return false }
-        actionError = nil
-        actionFeedback = nil
-        guard canRunActions else {
-            actionError = "Shipping a PR requires a live connection to your Mac."
-            return false
+    /// The passkey ceremony for one challenge, with its wording on screen. The demo signs nothing (no real sheet).
+    private func confirmWithPasskey(_ challenge: ApprovalChallengeResponse, demo: Bool) async throws -> WebAuthnAssertion {
+        signingWording = challenge.wording
+        defer { signingWording = nil }
+        if demo {
+            try await Task.sleep(for: .milliseconds(700))
+            return WebAuthnAssertion(credentialId: "ZGVtbw", clientDataJSON: "ZGVtbw", authenticatorData: "ZGVtbw", signature: "ZGVtbw", userHandle: "ZGVtbw")
         }
-        actionInFlight = true
-        defer { actionInFlight = false }
-        let idempotencyKey = UUID().uuidString.lowercased()
-        do {
-            if isDemoMode || isDebugFrozen {
-                let challenge = try await demoSource.approvalChallenge(
-                    verb: .ship, task: nil, digest: nil, runId: runId, receiptDigest: nil,
-                    note: nil, publish: nil, planKey: nil, into: nil, undo: nil, anyway: anyway, forceFresh: nil
-                )
-                let dummy = WebAuthnAssertion(credentialId: "demo-cred-1", clientDataJSON: "demo", authenticatorData: "demo", signature: "demo", userHandle: "demo")
-                let result = try await demoSource.shipTask(
-                    runId: runId, anyway: anyway, challenge: challenge.challenge, idempotencyKey: idempotencyKey, assertion: dummy
-                )
-                if result.shipped {
-                    actionFeedback = "PR merged."
-                    return true
-                }
-                return false
-            }
-
-            let challenge = try await liveSource.approvalChallenge(
-                verb: .ship, task: nil, digest: nil, runId: runId, receiptDigest: nil,
-                note: nil, publish: nil, planKey: nil, into: nil, undo: nil, anyway: anyway, forceFresh: true
-            )
-            let assertion = try await runPasskeyAssertion(challenge: challenge)
-            let result = try await liveSource.shipTask(
-                runId: runId, anyway: anyway, challenge: challenge.challenge, idempotencyKey: idempotencyKey, assertion: assertion
-            )
-            actionFeedback = "PR merged."
-            await refreshPasskeyStatus()
-            if let taskId { await loadTask(taskId, quiet: true) }
-            await loadInbox(.needsYou, quiet: true)
-            refreshTick += 1
-            return result.ok
-        } catch {
-            if let message = actionFailureMessage(error) {
-                actionError = message
-            }
-            return false
-        }
-    }
-
-    private func runPasskeyAssertion(challenge: ApprovalChallengeResponse) async throws -> WebAuthnAssertion {
         presentingSystemUI = true
         defer { presentingSystemUI = false }
-        return try await passkeyManager.assert(
-            challengeB64Url: challenge.challenge,
-            rpId: challenge.rpId,
-            allowCredentialIds: challenge.allowCredentials.map(\.id)
-        )
+        do {
+            return try await passkeyManager.assert(
+                challengeB64Url: challenge.challenge,
+                rpId: challenge.rpId,
+                allowCredentialIds: challenge.allowCredentials.map(\.id)
+            )
+        } catch let error as PasskeyManager.PasskeyError {
+            throw error.approvalError
+        }
     }
 
-    private func actionFailureMessage(_ error: Error) -> String? {
-        if let pkError = error as? PasskeyManager.PasskeyError {
-            if case .cancelled = pkError { return nil }
-            return pkError.errorDescription
-        }
-        if let rpc = error as? CompanionRPCError {
-            switch rpc.code {
-            case "enrollment_closed", "enrollment_not_open":
-                return "Open Settings → Phone on your Mac and click Enable passkey on iPhone first."
-            case "no_passkey", "passkey_required":
-                return "Set up a passkey in Settings before approving from this iPhone."
-            case "stale_digest", "stale_receipt", "stale_plan", "stale_head":
-                return "This task changed on your Mac. Pull to refresh and review the latest version."
-            case "outcome_unknown":
-                return "Your Mac restarted while finishing that action. Refresh to check the result before retrying."
-            case "in_progress":
-                return "That action is already running on your Mac."
-            case "route_not_allowed":
-                return "Update Toolroll on your Mac to approve tasks from this iPhone."
-            default:
-                return rpc.message.isEmpty ? "Your Mac couldn't complete that action." : rpc.message
+    // MARK: App lock ("Unlock approvals when I open Toolroll")
+
+    /// The cover runs the unlock on its own (not behind a DEBUG screenshot state).
+    var unlocksAutomatically: Bool { !isDebugFrozen }
+
+    /// Covers the app (launch, background) when the setting is on for a paired Mac.
+    private func cover() {
+        guard unlockOnOpen, pairedRecord != nil, !isDemoMode, !isDebugFrozen else { return }
+        lockState = .covered
+        lockGeneration += 1
+        unlockProblem = nil
+        approvalsAccess = nil
+    }
+
+    /// One unlock: a live passkey assertion through the Mac when it allows a window, else Face ID / passcode for
+    /// viewing only. Cancel leaves the cover up with its Unlock button.
+    func unlock() async {
+        // Only in front: a passkey or Face ID prompt can't show from the background.
+        guard lockState == .covered, !actionInFlight, isActive else { return }
+        lockState = .unlocking
+        unlockProblem = nil
+        defer { if lockState == .unlocking { lockState = .covered } }
+        let reachable = await reconnect(quiet: true)
+        if reachable { await refreshPasskeyStatus() }
+        let method = AppLockPolicy.method(
+            enabled: unlockOnOpen, paired: pairedRecord != nil, demo: isDemoMode, reachable: reachable, alwaysAsk: alwaysAsk,
+            passkeyRegistered: passkeyStatus?.registered, macWindow: passkeyStatus?.windowMinutes, chosenMinutes: unlockMinutes,
+            macSupportsUnlock: liveSource.supportsApprovalsUnlock
+        )
+        switch method {
+        case .none:
+            lockState = .open
+        case .deviceOwner(let reason):
+            await unlockViewing(reason)
+        case .passkey(let minutes):
+            actionInFlight = true
+            do {
+                let challenge = try await liveSource.approvalsUnlockChallenge(minutes: minutes)
+                let assertion = try await confirmWithPasskey(challenge, demo: false)
+                let response = try await liveSource.approvalsUnlock(minutes: minutes, challenge: challenge.challenge, assertion: assertion)
+                actionInFlight = false
+                if let until = RelativeTime.date(response.freshUntil) {
+                    passkeyStatus = passkeyStatus?.with(freshUntil: response.freshUntil)
+                    approvalsAccess = .unlocked(until: until)
+                } else {
+                    approvalsAccess = .viewingOnly(.macAsksEveryTime)
+                }
+                lockState = .open
+            } catch {
+                actionInFlight = false
+                if error is CancellationError { return }
+                if let reason = AppLockPolicy.fallback(after: error) {
+                    await unlockViewing(reason)
+                } else {
+                    unlockProblem = ApprovalCopy.failure(error, verb: .approve)?.message
+                }
             }
         }
-        if error is OfflineError {
-            return "Can't reach your Mac right now."
+    }
+
+    /// Face ID or the passcode unlocks viewing only. A device with neither can't be locked: it opens.
+    private func unlockViewing(_ reason: ViewingOnlyReason) async {
+        let context = LAContext()
+        var problem: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &problem) else {
+            approvalsAccess = .viewingOnly(reason)
+            lockState = .open
+            return
         }
-        return error.localizedDescription
+        presentingSystemUI = true
+        defer { presentingSystemUI = false }
+        do {
+            try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock Toolroll to see your work.")
+            approvalsAccess = .viewingOnly(reason)
+            lockState = .open
+        } catch {
+            // Cancelled or failed: stay covered; the Unlock button tries again.
+        }
+    }
+
+    /// Leaving the app: lock approvals on the Mac (best effort, before the socket closes) and cover again.
+    private func lockOnLeave() async {
+        guard unlockOnOpen, pairedRecord != nil, !isDemoMode, !isDebugFrozen else { return }
+        if approvalsUnlockedUntil(now: Date()) != nil || RelativeTime.date(passkeyStatus?.freshUntil) != nil,
+           connection == .connected {
+            _ = try? await liveSource.passkeyLock()
+        }
+        passkeyStatus = passkeyStatus?.with(freshUntil: nil)
+        cover()
     }
 
     // MARK: Unpair
@@ -1305,10 +1254,8 @@ final class CompanionAppState {
         connectedPath = nil
         consoleUrl = nil
         passkeyStatus = nil
-        actionFeedback = nil
-        actionError = nil
-        demoApprovedTasks = []
-        demoAcceptedTasks = []
+        clearApprovalState()
+        lockState = .open
         localNetworkDenied = false
         liveCache = CompanionCache()
         demoCache = CompanionCache()
@@ -1321,10 +1268,29 @@ final class CompanionAppState {
     // MARK: DEBUG screenshot states
 
     #if DEBUG
-    /// DEBUG only: `--debug-state refused|refused-account|damaged|unreachable:<hint>|pairing-code|pairing-finishing|
-    /// pairing-error:<cancelled|expired|contested|failed|interrupted>`. Fills the live cache from the demo fixtures so
+    /// DEBUG only: `--debug-state` with one or more (comma-separated) of refused|refused-account|damaged|
+    /// unreachable:<hint>|connected|unlocked|locked|protected:<task>|exception:<task>|notice:<confirmed|changed|failed>:<task>|outcome-unknown|
+    /// pairing-code|pairing-finishing|pairing-error:<cancelled|expired|contested|failed|interrupted>. Fills the live cache from the demo fixtures so
     /// each state renders as it would with real data. Never in release builds.
-    private func applyDebugState(_ state: String) {
+    private func applyDebugState(_ states: String) {
+        lockState = .open
+        for state in states.split(separator: ",").map(String.init) { applyOneDebugState(state) }
+        // Keep the debug state: no live dialing, no keychain reads, no snapshot writes behind it.
+        debugFrozen = true
+    }
+
+    /// Lays `debugPatches` over step cards (round-trip through JSON, so the shapes stay the Mac's).
+    private func debugPatched(_ steps: StepCards) -> StepCards {
+        guard let patch = debugPatches[steps.task.id],
+              let data = try? JSONEncoder().encode(steps),
+              var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return steps }
+        for (key, value) in patch { object[key] = value }
+        guard let patched = try? JSONSerialization.data(withJSONObject: object),
+              let decoded = try? JSONDecoder().decode(StepCards.self, from: patched) else { return steps }
+        return decoded
+    }
+
+    private func applyOneDebugState(_ state: String) {
         let record = PairedWorkspaceRecord(
             workspaceId: "ws-debug", workspaceLabel: "Studio Mac", machineId: "m-debug",
             paths: [CompanionPath(kind: .direct, url: "ws://192.168.1.20:4199/v1/direct")],
@@ -1370,8 +1336,49 @@ final class CompanionAppState {
         case "connected":
             useRecord()
             lastUpdated = Date()
-            passkeyStatus = PasskeyStatus(registered: true, count: 1, enrollmentOpen: false, rpId: "toolroll.dev", windowMinutes: 15, freshUntil: nil)
+            passkeyStatus = DemoCompanionSource.demoPasskeyStatus
             connection = .connected
+        case "unlocked":
+            // Approvals unlocked for the next 15 minutes (the dock's "Approvals unlocked until" line).
+            let until = ISO8601DateFormatter().string(from: Date().addingTimeInterval(15 * 60))
+            passkeyStatus = (passkeyStatus ?? DemoCompanionSource.demoPasskeyStatus).with(freshUntil: until)
+        case "locked":
+            lockState = .covered
+        case "unlock-cancelled":
+            lockState = .covered
+            unlockProblem = nil
+        case "notice" where parts.count >= 3:
+            // notice:<kind>:<task> — confirmed | changed | failed
+            let task = parts[2]
+            switch parts[1] {
+            case "confirmed":
+                taskNotices[task] = TaskNotice(kind: .confirmed, text: "Approved with passkey · build started", at: Date())
+            case "changed":
+                var shown: ApprovalTerms?
+                if let terms = (try? CompanionDemoFixtures.steps(task: task))?.waitingTerms {
+                    shown = ApprovalTerms(
+                        key: terms.key, revision: terms.revision,
+                        rows: terms.rows.map { $0.label == "Done when" ? .init(label: $0.label, words: "Something older", lines: $0.lines) : $0 },
+                        warnings: terms.warnings, usualLabel: terms.usualLabel, usual: terms.usual
+                    )
+                }
+                taskNotices[task] = TaskNotice(kind: .changed, text: ApprovalCopy.changedMessage(.approve), shownTerms: shown)
+            default:
+                taskNotices[task] = TaskNotice(kind: .failed, text: "Your Mac couldn't verify that passkey. Try again, or add a new passkey in Settings.")
+            }
+        case "protected" where parts.count >= 2:
+            debugPatches[parts[1], default: [:]]["passkey"] = [
+                "protectedWork": true, "release": false, "protectedPaths": ["src/companion/framing.ts"],
+            ]
+        case "exception" where parts.count >= 2:
+            if let review = (try? CompanionDemoFixtures.steps(task: parts[1]))?.review {
+                debugPatches[parts[1], default: [:]]["review"] = [
+                    "run": review.run, "receipt": review.receipt, "source": review.source,
+                    "accept": ["owed": "exception", "blockers": ["e2e · login-flow", "lint · 3 warnings as errors"], "needs": NSNull()],
+                ] as [String: Any]
+            }
+        case "outcome-unknown":
+            outcomeUnknownMessage = "Your Mac didn't confirm whether that went through. Check the task before trying again."
         case "pairing-code":
             _ = pairingGate.begin()
             _ = pairingGate.codeReady("HFX-2B0", attempt: pairingGate.current)
@@ -1390,10 +1397,45 @@ final class CompanionAppState {
         default:
             break
         }
-        // Keep the debug state: no live dialing, no keychain reads, no snapshot writes behind it.
-        debugFrozen = true
     }
     #endif
+}
+
+// MARK: - Approval notices
+
+/// What a task's dock says after an approval on it: one confirmation, or why nothing happened.
+struct TaskNotice: Equatable {
+    enum Kind: Equatable {
+        case confirmed
+        /// The plan or result changed on the Mac: nothing was approved.
+        case changed
+        case failed
+    }
+
+    let id = UUID()
+    let kind: Kind
+    let text: String
+    var at: Date?
+    /// The plan that was on screen when it went stale (to highlight what changed).
+    var shownTerms: ApprovalTerms?
+}
+
+struct PasskeyMessage: Equatable {
+    let isError: Bool
+    let text: String
+}
+
+extension PasskeyManager.PasskeyError {
+    /// Plain words for the approval screens (never iOS's own description). Cancel is silent.
+    var approvalError: Error {
+        switch self {
+        case .cancelled: return CancellationError()
+        case .invalidChallenge: return ApprovalLocalRefusal("Your Mac sent a passkey request this iPhone can't read. Update Toolroll on both.")
+        case .noWindow: return ApprovalLocalRefusal("Couldn't show the passkey sheet. Try again.")
+        case .missingUserHandle, .unsupportedResponse: return ApprovalLocalRefusal("iOS didn't return a usable passkey. Try again.")
+        case .authorizationFailed: return ApprovalLocalRefusal("Your passkey couldn't be used. Try again, or add a passkey in Settings.")
+        }
+    }
 }
 
 // MARK: - Local Network access

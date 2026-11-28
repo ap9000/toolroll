@@ -105,6 +105,9 @@ final class PasskeyManager: NSObject {
     }
 }
 
+// AuthenticationServices calls the delegate and the presentation-context provider on the main thread (the controller is
+// created and run from the main actor here), so `MainActor.assumeIsolated` holds. Each continuation is resumed once and
+// cleared right after.
 extension PasskeyManager: ASAuthorizationControllerDelegate {
     nonisolated func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
         MainActor.assumeIsolated {

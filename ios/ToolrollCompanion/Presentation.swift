@@ -1,3 +1,4 @@
+import LocalAuthentication
 import SwiftUI
 import ToolrollCompanionCore
 
@@ -54,6 +55,16 @@ enum RowKind: Equatable {
         case .done: return .done
         case .failed: return .failed
         case .queued, .stopped: return .neutral
+        }
+    }
+
+    /// The ink chip a needs-you row leads with: what the person is asked to do.
+    func chip(for row: WorkRow? = nil) -> String? {
+        switch self {
+        case .decide: return row?.need?.ask == .answer ? "Answer" : "Approve plan"
+        case .review: return "Review result"
+        case .unblock: return "Unblock"
+        default: return nil
         }
     }
 
@@ -156,6 +167,50 @@ enum NextStep: Equatable {
         case .viewChanges: return "Done"
         case .unblockOnMac: return "This task is stuck"
         case .none: return "Nothing needs you"
+        }
+    }
+}
+
+/// Why an approval always asks for a live passkey (never the unlocked window), from what the phone can see. Display
+/// only: the Mac decides again on every act (ADR 0005).
+enum AlwaysAsksReason: Equatable {
+    case protectedWork
+    case release
+    case exception
+
+    var caption: String {
+        switch self {
+        case .protectedWork: return "Always asks for your passkey · protected work"
+        case .release: return "Always asks for your passkey · release"
+        case .exception: return "Always asks for your passkey · exception"
+        }
+    }
+}
+
+extension StepCards {
+    var approveAlwaysAsks: AlwaysAsksReason? {
+        if passkey?.protectedWork == true { return .protectedWork }
+        if passkey?.release == true { return .release }
+        return nil
+    }
+
+    var acceptAlwaysAsks: AlwaysAsksReason? {
+        if review?.accept?.owed == "exception" { return .exception }
+        if passkey?.protectedWork == true { return .protectedWork }
+        return nil
+    }
+}
+
+/// What confirms it's you, named for this iPhone ("Face ID", "Touch ID", or the passcode).
+enum DeviceUnlockName {
+    static var current: String {
+        let context = LAContext()
+        _ = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
+        switch context.biometryType {
+        case .faceID: return "Face ID"
+        case .touchID: return "Touch ID"
+        case .opticID: return "Optic ID"
+        default: return "Your passcode"
         }
     }
 }

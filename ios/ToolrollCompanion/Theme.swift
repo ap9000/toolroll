@@ -2,22 +2,7 @@ import SwiftUI
 import UIKit
 import ToolrollCompanionCore
 
-/// Customizable accent presets matching Web & Desktop (`src/accent-colors.ts`).
-struct AccentPreset: Identifiable, Equatable {
-    let id: String
-    let name: String
-    let hex: String
-
-    static let signalBlue = AccentPreset(id: "signal-blue", name: "Signal Blue", hex: "#3B82F6")
-    static let ink = AccentPreset(id: "ink", name: "Ink", hex: "#171717")
-    static let chartMagenta = AccentPreset(id: "chart-magenta", name: "Chart Magenta", hex: "#C0267E")
-    static let builtMint = AccentPreset(id: "built-mint", name: "Built Mint", hex: "#16A34A")
-    static let violet = AccentPreset(id: "violet", name: "Violet", hex: "#6E56CF")
-
-    static let all: [AccentPreset] = [.signalBlue, .ink, .chartMagenta, .builtMint, .violet]
-}
-
-/// Appearance preference persisted per device (`UserDefaults`), mirroring `so-theme` / `so-accent` on Web & Desktop.
+/// Appearance preference persisted per device (`UserDefaults`), mirroring `so-theme` on Web & Desktop.
 enum AppearanceScheme: String, CaseIterable, Identifiable {
     case system
     case light
@@ -42,21 +27,12 @@ enum AppearanceScheme: String, CaseIterable, Identifiable {
     }
 }
 
-/// Live-updating appearance controller injected into SwiftUI environment so changing accent or theme
-/// immediately repigments every screen consistently.
+/// The theme choice (System / Light / Dark). Signal has one accent, ink, for every act and everything that waits on a
+/// person; colour is kept for status (blue = running, green = success, red = problem). No custom accents.
 @Observable
 final class ToolrollAppearance: @unchecked Sendable {
     static let shared = ToolrollAppearance()
-    static let accentStorageKey = "appearance.accentHex.v1"
     static let themeStorageKey = "appearance.theme.v1"
-
-    var accentHex: String {
-        didSet {
-            let normalized = Self.normalizeHex(accentHex) ?? AccentPreset.signalBlue.hex
-            if accentHex != normalized { accentHex = normalized; return }
-            UserDefaults.standard.set(normalized, forKey: Self.accentStorageKey)
-        }
-    }
 
     var scheme: AppearanceScheme {
         didSet {
@@ -65,154 +41,18 @@ final class ToolrollAppearance: @unchecked Sendable {
     }
 
     init() {
-        let savedHex = UserDefaults.standard.string(forKey: Self.accentStorageKey)
-        accentHex = savedHex.flatMap(Self.normalizeHex) ?? AccentPreset.signalBlue.hex
         let savedScheme = UserDefaults.standard.string(forKey: Self.themeStorageKey)
         scheme = savedScheme.flatMap(AppearanceScheme.init(rawValue:)) ?? .system
+        // The old accent picker's choice no longer applies.
+        UserDefaults.standard.removeObject(forKey: "appearance.accentHex.v1")
     }
 
-    var isMonochromeInk: Bool {
-        accentHex.uppercased() == AccentPreset.ink.hex
-    }
-
-    /// Primary button fill / count pill fill (3% disciplined accent).
-    var signal: Color {
-        if isMonochromeInk { return ToolrollTheme.ink }
-        let base = Self.uiColor(hex: accentHex) ?? Self.uiColor(hex: AccentPreset.signalBlue.hex)!
-        let lightFill = Self.ensureLightFillReadable(base)
-        let darkFill = Self.ensureDarkFillReadable(base)
-        return Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? darkFill : lightFill })
-    }
-
-    /// High-contrast text on top of `signal` fill.
-    var onSignal: Color {
-        if isMonochromeInk { return ToolrollTheme.onInk }
-        let base = Self.uiColor(hex: accentHex) ?? Self.uiColor(hex: AccentPreset.signalBlue.hex)!
-        let lightFill = Self.ensureLightFillReadable(base)
-        let darkFill = Self.ensureDarkFillReadable(base)
-        let lightFg = Self.relativeLuminance(lightFill) > 0.42 ? UIColor(red: 0.06, green: 0.06, blue: 0.07, alpha: 1) : UIColor.white
-        let darkFg = Self.relativeLuminance(darkFill) > 0.46 ? UIColor(red: 0.05, green: 0.06, blue: 0.07, alpha: 1) : UIColor.white
-        return Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? darkFg : lightFg })
-    }
-
-    /// Readable text/dot hue on canvas & paper surfaces (calibrated >= 4.5:1 light, >= 6:1 dark).
-    var signalText: Color {
-        if isMonochromeInk { return ToolrollTheme.ink }
-        let base = Self.uiColor(hex: accentHex) ?? Self.uiColor(hex: AccentPreset.signalBlue.hex)!
-        let lightText = Self.ensureContrastOnLight(base)
-        let darkText = Self.ensureContrastOnDark(base)
-        return Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? darkText : lightText })
-    }
-
-    /// Subtle wash for soft badges or accent callouts.
-    var signalSoft: Color {
-        if isMonochromeInk { return ToolrollTheme.neutralSoft }
-        let base = Self.uiColor(hex: accentHex) ?? Self.uiColor(hex: AccentPreset.signalBlue.hex)!
-        let lightSoft = base.withAlphaComponent(0.11)
-        let darkSoft = Self.ensureContrastOnDark(base).withAlphaComponent(0.15)
-        return Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? darkSoft : lightSoft })
-    }
-
-    var swiftUIColor: Color {
-        Color(uiColor: Self.uiColor(hex: accentHex) ?? Self.uiColor(hex: AccentPreset.signalBlue.hex)!)
-    }
-
-    func setCustomColor(_ color: Color) {
-        let ui = UIColor(color)
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        guard ui.getRed(&r, green: &g, blue: &b, alpha: &a) else { return }
-        let hex = String(format: "#%02X%02X%02X", Int(round(max(0, min(1, r)) * 255)), Int(round(max(0, min(1, g)) * 255)), Int(round(max(0, min(1, b)) * 255)))
-        accentHex = hex
-    }
-
-    // MARK: Contrast Calibration (mirrors src/accent-colors.ts)
-
-    static func normalizeHex(_ raw: String) -> String? {
-        let stripped = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "#", with: "")
-            .uppercased()
-        if stripped.count == 6, UInt32(stripped, radix: 16) != nil {
-            return "#\(stripped)"
-        }
-        if stripped.count == 3, UInt32(stripped, radix: 16) != nil {
-            let expanded = stripped.map { "\($0)\($0)" }.joined()
-            return "#\(expanded)"
-        }
-        return nil
-    }
-
-    static func uiColor(hex: String) -> UIColor? {
-        guard let norm = normalizeHex(hex), let value = UInt32(norm.dropFirst(), radix: 16) else { return nil }
-        return UIColor(
-            red: CGFloat((value >> 16) & 0xff) / 255,
-            green: CGFloat((value >> 8) & 0xff) / 255,
-            blue: CGFloat(value & 0xff) / 255,
-            alpha: 1
-        )
-    }
-
-    private static func relativeLuminance(_ color: UIColor) -> CGFloat {
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        color.getRed(&r, green: &g, blue: &b, alpha: &a)
-        func lin(_ c: CGFloat) -> CGFloat { c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4) }
-        return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
-    }
-
-    private static func contrastRatio(_ c1: UIColor, _ c2: UIColor) -> CGFloat {
-        let l1 = relativeLuminance(c1)
-        let l2 = relativeLuminance(c2)
-        return (max(l1, l2) + 0.05) / (min(l1, l2) + 0.05)
-    }
-
-    private static func adjustBrightness(_ color: UIColor, factor: CGFloat, liftTowardWhite: CGFloat = 0) -> UIColor {
-        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        color.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-        let nextB = max(0.05, min(1.0, b * factor))
-        let nextS = max(0, min(1.0, s * (1 - liftTowardWhite * 0.45)))
-        let liftedB = min(1.0, nextB + (1 - nextB) * liftTowardWhite)
-        return UIColor(hue: h, saturation: nextS, brightness: liftedB, alpha: 1)
-    }
-
-    private static func ensureLightFillReadable(_ base: UIColor) -> UIColor {
-        // Keep Signal Blue crisp (#2563EB on light) so white button labels pass contrast cleanly.
-        let white = UIColor.white
-        var current = base
-        for _ in 0..<18 {
-            if contrastRatio(current, white) >= 4.5 { return current }
-            current = adjustBrightness(current, factor: 0.94)
-        }
-        return current
-    }
-
-    private static func ensureDarkFillReadable(_ base: UIColor) -> UIColor {
-        let darkBg = UIColor(red: 0.06, green: 0.06, blue: 0.065, alpha: 1)
-        var current = base
-        for _ in 0..<16 {
-            if contrastRatio(current, darkBg) >= 4.2 { return current }
-            current = adjustBrightness(current, factor: 1.08, liftTowardWhite: 0.05)
-        }
-        return current
-    }
-
-    private static func ensureContrastOnLight(_ base: UIColor) -> UIColor {
-        let paper = UIColor(red: 0.96, green: 0.96, blue: 0.96, alpha: 1)
-        var current = base
-        for _ in 0..<20 {
-            if contrastRatio(current, paper) >= 4.6 { return current }
-            current = adjustBrightness(current, factor: 0.93)
-        }
-        return current
-    }
-
-    private static func ensureContrastOnDark(_ base: UIColor) -> UIColor {
-        let darkPaper = UIColor(red: 0.09, green: 0.09, blue: 0.10, alpha: 1)
-        var current = base
-        for _ in 0..<24 {
-            if contrastRatio(current, darkPaper) >= 6.0 { return current }
-            current = adjustBrightness(current, factor: 1.08, liftTowardWhite: 0.08)
-        }
-        return current
-    }
+    /// Primary button fill: ink.
+    var signal: Color { ToolrollTheme.ink }
+    /// Text on an ink fill.
+    var onSignal: Color { ToolrollTheme.onInk }
+    /// Act-coloured text on paper: ink.
+    var signalText: Color { ToolrollTheme.ink }
 }
 
 extension EnvironmentValues {
@@ -239,51 +79,64 @@ enum ToolrollTheme {
         )
     }
 
-    /// Outer frame / canvas (Light #F4F4F5 graphite paper / Dark #0E0E10 deep graphite).
-    static let paper = dynamic(light: hex(0xF4F4F5), dark: hex(0x0E0E10))
-    /// Card / sheet surface (Light #FFFFFF / Dark #161618).
-    static let surface = dynamic(light: hex(0xFFFFFF), dark: hex(0x161618))
-    /// Raised well / segmented track / hunk header (Light #ECECEE / Dark #1E1E21).
-    static let raised = dynamic(light: hex(0xECECEE), dark: hex(0x1E1E21))
+    /// Canvas (Light #F5F5F3 / Dark #0E0E10).
+    static let paper = dynamic(light: hex(0xF5F5F3), dark: hex(0x0E0E10))
+    /// Card / sheet surface (Light #FFFFFF / Dark #18181B).
+    static let surface = dynamic(light: hex(0xFFFFFF), dark: hex(0x18181B))
+    /// Raised well / segmented track / hunk header.
+    static let raised = dynamic(light: hex(0xEFEFEC), dark: hex(0x222226))
     static let subtleFill = raised
-    /// Quiet 1px hairline divider (Light black 8% / Dark white 8%).
-    static let hairline = dynamic(light: hex(0x171717, alpha: 0.09), dark: hex(0xFFFFFF, alpha: 0.08))
-    static let controlLine = dynamic(light: hex(0x171717, alpha: 0.14), dark: hex(0xFFFFFF, alpha: 0.13))
-    /// Subtle machined top-edge light catch on dark surfaces (`unslop` tokens.md).
-    static let topHighlight = dynamic(light: hex(0xFFFFFF, alpha: 0.0), dark: hex(0xFFFFFF, alpha: 0.10))
+    /// Card border (Light #E4E4E0 / Dark #2A2A2E).
+    static let border = dynamic(light: hex(0xE4E4E0), dark: hex(0x2A2A2E))
+    /// Row divider inside a card.
+    static let hairline = dynamic(light: hex(0xEFEFEC), dark: hex(0x242428))
+    /// Outline of a secondary control (Light #CFCFCA / Dark #3A3A3F).
+    static let controlLine = dynamic(light: hex(0xCFCFCA), dark: hex(0x3A3A3F))
+    static let topHighlight = dynamic(light: hex(0xFFFFFF, alpha: 0.0), dark: hex(0xFFFFFF, alpha: 0.06))
 
-    static let ink = dynamic(light: hex(0x171717), dark: hex(0xEDEDED))
+    static let ink = dynamic(light: hex(0x111113), dark: hex(0xEDEDEA))
     static let onInk = dynamic(light: hex(0xFFFFFF), dark: hex(0x0E0E10))
-    static let muted = dynamic(light: hex(0x5A5A60), dark: hex(0x9C9CA4))
-    static let subtle = dynamic(light: hex(0x8A8A91), dark: hex(0x6E6E76))
+    /// Body text a step down from ink.
+    static let body = dynamic(light: hex(0x3B3B38), dark: hex(0xC9C9C4))
+    static let muted = dynamic(light: hex(0x5F5F5B), dark: hex(0xA1A19B))
+    static let subtle = dynamic(light: hex(0x8A8A86), dark: hex(0x76767A))
+    /// A switch that's on: ink on paper; in dark, green (a light knob on a light track would vanish).
+    static let toggleOn = dynamic(light: hex(0x111113), dark: hex(0x2FB574))
+    /// A disabled primary button.
+    static let disabledFill = dynamic(light: hex(0xD9D9D5), dark: hex(0x2C2C30))
 
     static let neutralInk = dynamic(light: hex(0x525257), dark: hex(0xB4B4BC))
-    static let neutralSoft = dynamic(light: hex(0xEFEFF1), dark: hex(0x202024))
+    static let neutralSoft = dynamic(light: hex(0xEFEFEC), dark: hex(0x222226))
+    /// A highlight behind changed words (stale plan).
+    static let changedMark = dynamic(light: hex(0xE6E6E1), dark: hex(0x34343A))
 
-    static let danger = dynamic(light: hex(0xC4320A), dark: hex(0xFF977D))
-    static let dangerSoft = dynamic(light: hex(0xFEEBE7), dark: hex(0xFF977D, alpha: 0.14))
-    static let success = dynamic(light: hex(0x1B7049), dark: hex(0x3DD68C))
-    static let successSoft = dynamic(light: hex(0xE6F6EB), dark: hex(0x3DD68C, alpha: 0.14))
-    static let info = dynamic(light: hex(0x0B65B8), dark: hex(0x70B8FF))
-    static let infoSoft = dynamic(light: hex(0xE6F4FE), dark: hex(0x70B8FF, alpha: 0.14))
+    static let danger = dynamic(light: hex(0xB42318), dark: hex(0xFF8A7A))
+    static let dangerSoft = dynamic(light: hex(0xFBEAE8), dark: hex(0xFF8A7A, alpha: 0.14))
+    static let dangerInk = dynamic(light: hex(0x7A1A12), dark: hex(0xFFB4A8))
+    static let success = dynamic(light: hex(0x1A7348), dark: hex(0x3DD68C))
+    static let successSoft = dynamic(light: hex(0xE7F3EC), dark: hex(0x3DD68C, alpha: 0.13))
+    static let successInk = dynamic(light: hex(0x14583A), dark: hex(0x8BE5B6))
+    /// Running / live only.
+    static let info = dynamic(light: hex(0x1D5FD1), dark: hex(0x6EA2FF))
+    static let infoSoft = dynamic(light: hex(0xDCE7FA), dark: hex(0x6EA2FF, alpha: 0.18))
 
     // Diff line backgrounds calibrated for crisp light & dark readability.
     static let diffAddFill = dynamic(light: hex(0xEBF9F0), dark: hex(0x3DD68C, alpha: 0.13))
     static let diffDelFill = dynamic(light: hex(0xFEF0EE), dark: hex(0xFF977D, alpha: 0.13))
 
     // Dedicated dark terminal / agent output palette (consistent across light & dark system schemes).
-    static let terminalBg = dynamic(light: hex(0x101012), dark: hex(0x09090B))
+    static let terminalBg = dynamic(light: hex(0x111113), dark: hex(0x09090B))
     static let terminalSurface = dynamic(light: hex(0x1A1A1D), dark: hex(0x141417))
     static let terminalBorder = dynamic(light: hex(0xFFFFFF, alpha: 0.10), dark: hex(0xFFFFFF, alpha: 0.09))
     static let terminalHighlight = Color.white.opacity(0.09)
-    static let terminalInk = Color(uiColor: hex(0xEDEDED))
-    static let terminalMuted = Color(uiColor: hex(0x96969E))
-    static let terminalBlue = Color(uiColor: hex(0x70B8FF))
+    static let terminalInk = Color(uiColor: hex(0xEDEDEA))
+    static let terminalMuted = Color(uiColor: hex(0x9A9A95))
+    static let terminalBlue = Color(uiColor: hex(0x8FB4F5))
     static let terminalGreen = Color(uiColor: hex(0x3DD68C))
     static let terminalRed = Color(uiColor: hex(0xFF977D))
 }
 
-/// The one state tone a row or task carries. Needs-you uses the customizable Signal accent; status keeps its hue.
+/// The one state tone a row or task carries. What waits on a person is ink; only running/live is blue.
 enum StateTone {
     case needs
     case live
@@ -291,15 +144,7 @@ enum StateTone {
     case failed
     case neutral
 
-    func hue(appearance: ToolrollAppearance) -> Color {
-        switch self {
-        case .needs: return appearance.signalText
-        case .live: return ToolrollTheme.info
-        case .done: return ToolrollTheme.success
-        case .failed: return ToolrollTheme.danger
-        case .neutral: return ToolrollTheme.muted
-        }
-    }
+    func hue(appearance: ToolrollAppearance) -> Color { hue }
 
     var hue: Color {
         switch self {
@@ -307,8 +152,60 @@ enum StateTone {
         case .live: return ToolrollTheme.info
         case .done: return ToolrollTheme.success
         case .failed: return ToolrollTheme.danger
-        case .neutral: return ToolrollTheme.neutralInk
+        case .neutral: return ToolrollTheme.muted
         }
+    }
+}
+
+/// What waits on a person: a solid ink chip ("Approve plan", "Review result"). Outlined when the data is saved, not live.
+struct InkChip: View {
+    let text: String
+    var outlined = false
+    @Environment(\.showsStaleData) private var stale
+
+    var body: some View {
+        let hollow = outlined || stale
+        Text(text)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(hollow ? ToolrollTheme.ink : ToolrollTheme.onInk)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(hollow ? Color.clear : ToolrollTheme.ink)
+            }
+            .overlay {
+                if hollow {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(ToolrollTheme.ink, lineWidth: 1)
+                }
+            }
+    }
+}
+
+/// Running: a blue dot with a soft halo.
+struct LiveDot: View {
+    var body: some View {
+        Circle()
+            .fill(ToolrollTheme.info)
+            .frame(width: 8, height: 8)
+            .padding(4)
+            .background(Circle().fill(ToolrollTheme.infoSoft))
+            .accessibilityHidden(true)
+    }
+}
+
+/// An uppercase section label ("DONE WHEN", "PLAN", "PAIRED MAC").
+struct SectionLabel: View {
+    let text: String
+
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text.uppercased())
+            .font(.caption.weight(.semibold))
+            .tracking(0.4)
+            .foregroundStyle(ToolrollTheme.muted)
+            .accessibilityAddTraits(.isHeader)
     }
 }
 
@@ -321,7 +218,7 @@ struct StatusDotLabel: View {
     @Environment(\.showsStaleData) private var stale
 
     var body: some View {
-        let color = tone.hue(appearance: appearance)
+        let color = tone.hue
         HStack(spacing: 6) {
             Circle()
                 .fill(color)
@@ -402,8 +299,7 @@ struct DiffStatPips: View {
 /// Quiet machined surface card: 12pt radius, subtle 1px hairline (never a bright white wireframe box),
 /// plus a razor-thin dark-mode top-edge light catch.
 struct CardBackground: ViewModifier {
-    var radius: CGFloat = 12
-    @Environment(\.colorScheme) private var colorScheme
+    var radius: CGFloat = 14
     @Environment(\.showsStaleData) private var stale
 
     func body(content: Content) -> some View {
@@ -411,19 +307,9 @@ struct CardBackground: ViewModifier {
             .background(ToolrollTheme.surface, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: colorScheme == .dark
-                                ? [Color.white.opacity(0.13), Color.white.opacity(0.06)]
-                                : [Color.black.opacity(0.08), Color.black.opacity(0.08)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 1
-                    )
-                    .opacity(stale ? 0.45 : 1)
+                    .strokeBorder(ToolrollTheme.border, lineWidth: 1)
+                    .opacity(stale ? 0.6 : 1)
             )
-            .shadow(color: colorScheme == .light ? Color.black.opacity(0.03) : .clear, radius: 2, y: 1)
     }
 }
 
@@ -473,7 +359,7 @@ struct StaleDataBanner: View {
 }
 
 extension View {
-    func card(radius: CGFloat = 12) -> some View {
+    func card(radius: CGFloat = 14) -> some View {
         modifier(CardBackground(radius: radius))
     }
 
@@ -482,67 +368,95 @@ extension View {
     }
 }
 
-/// Primary Signal CTA: uses the person's chosen accent, machined top-edge highlight, and tactile 0.98 press scale.
+/// Primary act: an ink fill, 52pt tall (44 compact), 12pt corners.
 struct SignalButtonStyle: ButtonStyle {
     var compact = false
-    @Environment(\.toolrollAppearance) private var appearance
+    @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(compact ? .subheadline.weight(.semibold) : .headline)
-            .frame(maxWidth: .infinity, minHeight: compact ? 44 : 48)
+            .font(compact ? .subheadline.weight(.semibold) : .body.weight(.semibold))
+            .frame(maxWidth: .infinity, minHeight: compact ? 44 : 52)
             .padding(.horizontal, 16)
-            .foregroundStyle(appearance.onSignal)
-            .background(appearance.signal, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [Color.white.opacity(0.28), Color.clear],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 1
-                    )
-            )
+            .foregroundStyle(isEnabled ? ToolrollTheme.onInk : ToolrollTheme.muted)
+            .background(isEnabled ? ToolrollTheme.ink : ToolrollTheme.disabledFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
-            .opacity(configuration.isPressed ? 0.9 : 1)
+            .opacity(configuration.isPressed ? 0.88 : 1)
             .animation(.easeOut(duration: 0.14), value: configuration.isPressed)
     }
 }
 
-/// Secondary button: quiet raised surface with hairline border, ink label, and tactile 0.98 press scale.
-struct OutlineButtonStyle: ButtonStyle {
+/// A deliberate act that always asks for the passkey (protected work, exceptions): an ink outline, not a fill, so the
+/// hand slows down.
+struct DeliberateButtonStyle: ButtonStyle {
     var compact = false
-    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(compact ? .subheadline.weight(.semibold) : .headline)
-            .frame(maxWidth: .infinity, minHeight: compact ? 44 : 48)
-            .padding(.horizontal, 16)
-            .foregroundStyle(ToolrollTheme.ink)
-            .background(ToolrollTheme.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: colorScheme == .dark
-                                ? [Color.white.opacity(0.15), Color.white.opacity(0.08)]
-                                : [ToolrollTheme.controlLine, ToolrollTheme.controlLine],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 1
-                    )
-            )
+            .font(compact ? .subheadline.weight(.semibold) : .body.weight(.semibold))
+            .frame(maxWidth: .infinity, minHeight: compact ? 44 : 52)
+            .padding(.horizontal, 12)
+            .foregroundStyle(isEnabled ? ToolrollTheme.ink : ToolrollTheme.subtle)
+            .background(ToolrollTheme.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(isEnabled ? ToolrollTheme.ink : ToolrollTheme.controlLine, lineWidth: 2))
             .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
             .opacity(configuration.isPressed ? 0.84 : 1)
             .animation(.easeOut(duration: 0.14), value: configuration.isPressed)
     }
 }
 
-/// Alias kept for existing call sites that adopt the primary Signal CTA style.
+/// Secondary: surface fill, a thin control outline, ink label.
+struct OutlineButtonStyle: ButtonStyle {
+    var compact = false
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(compact ? .subheadline.weight(.semibold) : .body.weight(.semibold))
+            .frame(maxWidth: .infinity, minHeight: compact ? 44 : 52)
+            .padding(.horizontal, 16)
+            .foregroundStyle(isEnabled ? ToolrollTheme.ink : ToolrollTheme.subtle)
+            .background(ToolrollTheme.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollTheme.controlLine, lineWidth: 1))
+            .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
+            .opacity(configuration.isPressed ? 0.84 : 1)
+            .animation(.easeOut(duration: 0.14), value: configuration.isPressed)
+    }
+}
+
+/// A small pill button ("Lock now", "Paste", "Done").
+struct PillButtonStyle: ButtonStyle {
+    var filled = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(filled ? .semibold : .medium))
+            .padding(.horizontal, 14)
+            .frame(minHeight: 34)
+            .foregroundStyle(filled ? ToolrollTheme.onInk : ToolrollTheme.ink)
+            .background(Capsule().fill(filled ? ToolrollTheme.ink : ToolrollTheme.surface))
+            .overlay { if !filled { Capsule().strokeBorder(ToolrollTheme.controlLine, lineWidth: 1) } }
+            .opacity(configuration.isPressed ? 0.8 : 1)
+            .contentShape(Capsule())
+    }
+}
+
+/// A round 44pt icon button on paper (Settings, Back, Open on Mac).
+struct RoundIconButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.body.weight(.medium))
+            .foregroundStyle(ToolrollTheme.ink)
+            .frame(width: 44, height: 44)
+            .background(Circle().fill(ToolrollTheme.surface))
+            .overlay(Circle().strokeBorder(ToolrollTheme.border, lineWidth: 1))
+            .opacity(configuration.isPressed ? 0.75 : 1)
+            .contentShape(Circle())
+    }
+}
+
+/// Alias kept for existing call sites that adopt the primary style.
 typealias InkButtonStyle = SignalButtonStyle
 
 /// The brand mark: three skewed bars, the middle one taller (DESIGN.md).

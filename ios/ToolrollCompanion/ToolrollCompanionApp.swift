@@ -45,12 +45,71 @@ private struct RootView: View {
                 PairingProgressView(appState: appState)
             } else if appState.connection == .unpaired {
                 WelcomePairingView(appState: appState)
+            } else if appState.lockState != .open {
+                // Nothing of the work is drawn until the unlock finishes.
+                UnlockCover(appState: appState)
             } else {
                 WorkInboxView(appState: appState)
             }
         }
         .animation(.snappy(duration: 0.25), value: appState.pairing)
         .sensoryFeedback(.success, trigger: appState.pairedCount)
+    }
+}
+
+/// "Unlock approvals when I open Toolroll": the app stays covered until one passkey (or, for viewing only, Face ID).
+private struct UnlockCover: View {
+    let appState: CompanionAppState
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer()
+            VStack(spacing: 14) {
+                BrandMark(size: 56)
+                Text("Toolroll")
+                    .font(.system(size: 26, weight: .semibold))
+                    .tracking(-0.5)
+                    .foregroundStyle(ToolrollTheme.ink)
+                Text("Unlock to see your work. Routine approvals stay unlocked for a while after.")
+                    .font(.subheadline)
+                    .foregroundStyle(ToolrollTheme.muted)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let problem = appState.unlockProblem {
+                    Text(problem)
+                        .font(.footnote)
+                        .foregroundStyle(ToolrollTheme.danger)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.horizontal, 32)
+            Spacer()
+            VStack(spacing: 8) {
+                Button {
+                    Task { await appState.unlock() }
+                } label: {
+                    if appState.lockState == .unlocking {
+                        ProgressView().tint(ToolrollTheme.onInk)
+                    } else {
+                        Label("Unlock", systemImage: "faceid")
+                    }
+                }
+                .buttonStyle(SignalButtonStyle())
+                .disabled(appState.lockState == .unlocking)
+                Text("\(appState.workspaceLabel) · One passkey unlocks your work and routine approvals")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(ToolrollTheme.muted)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 12)
+        }
+        .background(ToolrollTheme.paper.ignoresSafeArea())
+        .overlay(alignment: .top) { SigningBanner(wording: appState.signingWording) }
+        .task(id: appState.lockGeneration) {
+            if appState.unlocksAutomatically { await appState.unlock() }
+        }
     }
 }
 
