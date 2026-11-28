@@ -34,6 +34,7 @@ public struct CanvasWorkspaceView: View {
         let elementSelector: String?
         let elementFile: String?
         let elementLine: Int?
+        var appBoardId: String? = nil
     }
 
     public init(store: WorkbenchStore) {
@@ -62,8 +63,21 @@ public struct CanvasWorkspaceView: View {
                         )
 
                     ZStack(alignment: .topLeading) {
+                        if !store.canvasAppSections.isEmpty {
+                            sectionHeaderPlaced(id: "web") { webSectionHeader }
+                            ForEach(store.canvasAppSections) { section in
+                                sectionHeaderPlaced(id: section.id) { appSectionHeader(section) }
+                            }
+                        }
                         ForEach(store.canvasArtboards) { board in
                             artboardView(board)
+                                .position(
+                                    x: (board.x + board.width / 2) * zoom + panOffset.width,
+                                    y: (board.y + board.height / 2) * zoom + panOffset.height
+                                )
+                        }
+                        ForEach(store.canvasAppArtboards) { board in
+                            appArtboardView(board)
                                 .position(
                                     x: (board.x + board.width / 2) * zoom + panOffset.width,
                                     y: (board.y + board.height / 2) * zoom + panOffset.height
@@ -132,6 +146,15 @@ public struct CanvasWorkspaceView: View {
         .background(ToolrollPalette.ground)
         .task(id: "\(store.selectedProject ?? "")::\(store.activeProject ?? "")::\(store.selectedRow?.project ?? "")") {
             await store.loadCanvasForCurrentProject()
+        }
+        .alert("Recapture \(store.canvasCaptureProjectName)?", isPresented: Binding(
+            get: { store.canvasCaptureConfirmation != nil },
+            set: { if !$0 { store.cancelAppRecapture() } }
+        )) {
+            Button("Recapture") { store.confirmAppRecapture() }
+            Button("Cancel", role: .cancel) { store.cancelAppRecapture() }
+        } message: {
+            Text(CanvasCaptureTrust.question(projectName: store.canvasCaptureProjectName))
         }
         .onKeyPress("v") { handleCanvasToolShortcut(.select) }
         .onKeyPress("h") { handleCanvasToolShortcut(.hand) }
@@ -246,7 +269,9 @@ public struct CanvasWorkspaceView: View {
             Spacer()
 
             HStack(spacing: 8) {
-                Text("\(store.canvasArtboards.count) screens")
+                Text(store.canvasAppArtboards.isEmpty
+                     ? "\(store.canvasArtboards.count) screens"
+                     : "\(store.canvasArtboards.count) web · \(store.canvasAppSections.reduce(0) { $0 + $1.surface.screens.count }) app screens")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(ToolrollPalette.muted)
                 if !store.canvasPins.isEmpty {
@@ -432,7 +457,7 @@ public struct CanvasWorkspaceView: View {
     }
 
     private func artboardView(_ board: CanvasArtboard) -> some View {
-        let pinsForBoard = store.canvasPins.filter { $0.artboardPath == board.path || $0.artboardRoute == board.route }
+        let pinsForBoard = store.canvasPins.filter { !$0.isAppPin && ($0.artboardPath == board.path || $0.artboardRoute == board.route) }
         let scaledW = board.width * zoom
         let scaledH = board.height * zoom
         let needsWebView = board.isLiveInteractive || board.isHydrating
@@ -860,6 +885,7 @@ public struct CanvasWorkspaceView: View {
                 elementSelector: draft.elementSelector,
                 elementFile: draft.elementFile,
                 elementLine: draft.elementLine,
+                appBoardId: draft.appBoardId,
                 fileImmediately: fileImmediately
             )
         }
@@ -1101,6 +1127,246 @@ public struct CanvasWorkspaceView: View {
         let cleanBase = store.canvasBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let cleanPath = path.hasPrefix("/") ? path : "/\(path)"
         return "\(cleanBase)\(cleanPath)"
+    }
+}
+
+extension CanvasWorkspaceView {
+    @ViewBuilder
+    fileprivate func sectionHeaderPlaced<Content: View>(id: String, @ViewBuilder content: () -> Content) -> some View {
+        let width = store.canvasSectionWidth(id)
+        let height = WorkbenchStore.sectionHeaderBand - 18
+        let top = store.canvasSectionTop(id)
+        content()
+            .frame(width: width, height: height, alignment: .leading)
+            .scaleEffect(zoom)
+            .position(x: (60 + width / 2) * zoom + panOffset.width, y: (top + height / 2) * zoom + panOffset.height)
+    }
+
+    fileprivate func sectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(ToolrollPalette.ink)
+    }
+
+    fileprivate func sectionDetail(_ words: String) -> some View {
+        Text(words)
+            .font(.system(size: 11.5, design: .monospaced))
+            .foregroundStyle(ToolrollPalette.muted)
+            .lineLimit(1)
+    }
+
+    fileprivate func staleBadge(_ words: String) -> some View {
+        Text(words)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(ToolrollPalette.ink)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(ToolrollPalette.raised, in: Capsule())
+            .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+    }
+
+    fileprivate var webSectionHeader: some View {
+        let staleCount = store.canvasArtboards.filter { $0.latestImagePath != nil && $0.cachedStateKey != store.canvasStateKey && !$0.isHydrating }.count
+        return HStack(spacing: 12) {
+            sectionTitle("Web")
+            sectionDetail((store.discoveredCanvasRoutes.count > store.canvasArtboards.count
+                           ? "\(store.canvasArtboards.count) of \(store.discoveredCanvasRoutes.count) screens"
+                           : "\(store.canvasArtboards.count) screens")
+                          + (store.canvasHeadCommit.isEmpty ? "" : " · @\(store.canvasHeadCommit.prefix(7))"))
+            if staleCount > 0 {
+                staleBadge("\(staleCount) stale · web files changed")
+                    .help("These tiles were captured before the web files changed; they render again when the preview server is awake.")
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    fileprivate func appSectionHeader(_ section: CanvasAppSection) -> some View {
+        let run = store.canvasAppCaptureRuns[section.id] ?? .idle
+        let appearances = Array(Set(section.surface.screens.flatMap { section.surface.appearances(for: $0) })).sorted { $0 == "light" && $1 != "light" }
+        return HStack(spacing: 12) {
+            sectionTitle(section.title)
+            sectionDetail("\(section.surface.screens.count) screens · \(appearances.joined(separator: " + "))")
+            if let index = section.captures?.index {
+                sectionDetail("captured \(Self.relativeTime(index.capturedAt)) @ \(index.commit.prefix(7))"
+                              + (index.device.map { " · \($0)" } ?? ""))
+                    .help("Captured \(index.capturedAt) at \(index.commit) on \(index.device ?? "the Simulator") \(index.os ?? "")")
+                if section.isStale {
+                    staleBadge("Stale · \(section.surface.paths.joined(separator: ", ")) changed")
+                        .help("The app's files changed since these screens were captured. Recapture to see the current app.")
+                }
+            } else {
+                sectionDetail("not captured yet")
+            }
+            Spacer(minLength: 8)
+            switch run {
+            case .running(let progress):
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(progress)
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.ink)
+                        .lineLimit(1)
+                }
+            case .failed(let reason, let log):
+                HStack(spacing: 8) {
+                    Text("Capture failed: \(reason)")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ToolrollPalette.danger)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: 420, alignment: .trailing)
+                        .help(log.isEmpty ? reason : log)
+                        .textSelection(.enabled)
+                    Button("Dismiss") { store.dismissAppCaptureFailure(section.id) }
+                        .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                    recaptureButton(section, label: "Try again", prominent: true)
+                }
+            case .idle:
+                recaptureButton(section, label: "Recapture", prominent: section.captures == nil || section.isStale)
+            }
+        }
+    }
+
+    fileprivate func recaptureButton(_ section: CanvasAppSection, label: String, prominent: Bool) -> some View {
+        Button {
+            store.requestAppRecapture(section.id)
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "camera.viewfinder").font(.system(size: 11))
+                Text(label)
+            }
+        }
+        .buttonStyle(KitButtonStyle(prominent ? .primary : .ghost, compact: true))
+        .help("Builds \(section.surface.label) with Xcode and photographs each screen, light and dark, in its own Simulator (\"Toolroll Canvas\"). Takes a few minutes.")
+    }
+
+    static func relativeTime(_ iso: String) -> String {
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let date = parser.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
+        guard let date else { return iso }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: date, relativeTo: Date())
+    }
+
+    fileprivate func appTileImage(_ board: CanvasArtboard) -> NSImage? {
+        guard let path = board.latestImagePath else { return nil }
+        return CanvasImageCache.shared.image(key: path, maxPixelDimension: 1080) { store.appCaptureImage(board) }
+    }
+
+    fileprivate func appArtboardView(_ board: CanvasArtboard) -> some View {
+        let pins = store.canvasPins(onApp: board)
+        let scaledW = board.width * zoom
+        let scaledH = board.height * zoom
+        let bezel = 5 * zoom
+        let screenW = scaledW - bezel * 2
+        let screenH = scaledH - bezel * 2
+        let pinning = tool == .pin || tool == .options
+
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text(board.title ?? board.route)
+                    .font(.system(size: max(10, 11.5 * zoom), weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                    .lineLimit(1)
+                Text((board.appearance ?? "").capitalized)
+                    .font(.system(size: max(9, 10 * zoom), design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted)
+                if !pins.isEmpty {
+                    Text("\(pins.count)")
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.inverseInk)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(ToolrollPalette.ink, in: Capsule())
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(width: scaledW)
+            .contentShape(Rectangle())
+            .help("\(board.route) · \(board.sourceFile ?? "")")
+            .gesture(
+                DragGesture()
+                    .onChanged { val in
+                        store.moveCanvasAppArtboard(id: board.id, dx: val.translation.width / zoom, dy: val.translation.height / zoom)
+                    }
+            )
+
+            ZStack(alignment: .topLeading) {
+                Group {
+                    if let img = appTileImage(board) {
+                        Image(nsImage: img)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: screenW, height: screenH, alignment: .top)
+                            .clipped()
+                    } else {
+                        VStack(spacing: 6) {
+                            Text(board.title ?? board.route)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(ToolrollPalette.ink)
+                            Text("Not captured yet")
+                                .font(.system(size: 11))
+                                .foregroundStyle(ToolrollPalette.muted)
+                        }
+                        .frame(width: screenW, height: screenH)
+                        .background(ToolrollPalette.codeBg)
+                    }
+                }
+
+                if pinning {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .frame(width: screenW, height: screenH)
+                        .onTapGesture { location in
+                            draftPin = PendingPinDraft(
+                                artboardId: board.id,
+                                route: board.title ?? board.route,
+                                path: board.route,
+                                xFrac: Double(location.x / max(1, screenW)),
+                                yFrac: Double(location.y / max(1, screenH)),
+                                kind: tool == .options ? .options : .change,
+                                elementName: nil,
+                                elementSelector: nil,
+                                elementFile: board.sourceFile,
+                                elementLine: nil,
+                                appBoardId: board.id
+                            )
+                            draftPinText = ""
+                            selectedPinId = nil
+                        }
+                }
+
+                ForEach(Array(pins.enumerated()), id: \.element.id) { idx, pin in
+                    pinMarker(pin: pin, index: idx + 1)
+                        .position(x: pin.xFrac * screenW, y: pin.yFrac * screenH)
+                }
+
+                if let draft = draftPin, draft.artboardId == board.id {
+                    Circle()
+                        .fill(ToolrollPalette.ink)
+                        .frame(width: 14, height: 14)
+                        .overlay(Circle().strokeBorder(ToolrollPalette.paper, lineWidth: 2))
+                        .position(x: draft.xFrac * screenW, y: draft.yFrac * screenH)
+                        .popover(isPresented: Binding(
+                            get: { draftPin?.artboardId == board.id },
+                            set: { if !$0 { draftPin = nil } }
+                        ), arrowEdge: .trailing) {
+                            draftPinPopover(draft)
+                        }
+                }
+            }
+            .frame(width: screenW, height: screenH)
+            .clipShape(RoundedRectangle(cornerRadius: 24 * zoom, style: .continuous))
+            .padding(bezel)
+            .background(Color.black.opacity(0.88), in: RoundedRectangle(cornerRadius: 29 * zoom, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 29 * zoom, style: .continuous)
+                    .strokeBorder(pinning ? ToolrollPalette.ink.opacity(0.45) : ToolrollPalette.line, lineWidth: 1)
+            )
+        }
     }
 }
 

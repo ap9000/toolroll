@@ -189,6 +189,12 @@ public final class WorkbenchStore {
     public private(set) var canvasViewport: CanvasViewportPreset = .desktop
     public private(set) var canvasBaseURL: String = ""
     public private(set) var hydratingBoardIds: Set<String> = []
+    public internal(set) var canvasAppSections: [CanvasAppSection] = []
+    public internal(set) var canvasAppArtboards: [CanvasArtboard] = []
+    public internal(set) var canvasAppCaptureRuns: [String: AppCaptureRunState] = [:]
+    public internal(set) var canvasHeadCommit: String = ""
+    /// A pending Recapture trust question: the surface and the exact project root it was asked about.
+    public internal(set) var canvasCaptureConfirmation: (surfaceId: String, root: String)? = nil
     public private(set) var activeAgentSetupTitle: String? = nil
     public private(set) var missingRuntimeInstallCommand: String? = nil
     private var attemptedAutoBootstrap: Bool = false
@@ -424,15 +430,20 @@ public final class WorkbenchStore {
         let projectChanged = (canvasProjectRoot != root) || (canvasProjectName != targetProject)
         canvasProjectName = targetProject
         canvasProjectRoot = root
-        if projectChanged { canvasBaseURL = "" }
+        if projectChanged { canvasBaseURL = ""; canvasCaptureConfirmation = nil }
 
-        let facts = await Task.detached(priority: .userInitiated) { () -> (git: String, baseline: String, routes: [YouiScreenEntry]?, pins: [CanvasPin]) in
-            guard let root else { return ("latest", "baseline", nil, []) }
-            return (YouiCanvasStorage.gitStateKey(projectRoot: root), YouiCanvasStorage.mainBranchKey(projectRoot: root),
-                    YouiCanvasStorage.discoverRoutes(projectRoot: root), YouiCanvasStorage.loadPins(projectRoot: root))
+        let facts = await Task.detached(priority: .userInitiated) { () -> (git: String, baseline: String, routes: [YouiScreenEntry]?, pins: [CanvasPin], app: [CanvasAppSection], head: String) in
+            guard let root else { return ("latest", "baseline", nil, [], [], "") }
+            let app = Self.readAppSections(projectRoot: root)
+            let appPaths = app.flatMap(\.surface.paths)
+            return (YouiCanvasStorage.gitStateKey(projectRoot: root, excluding: appPaths), YouiCanvasStorage.mainBranchKey(projectRoot: root),
+                    YouiCanvasStorage.discoverRoutes(projectRoot: root), YouiCanvasStorage.loadPins(projectRoot: root), app,
+                    HardenedGit.refusal(in: root) == nil ? (HardenedGit.text(["rev-parse", "--short=10", "HEAD"], in: root) ?? "") : "")
         }.value
         guard canvasProjectRoot == root else { return }
         canvasGitKey = facts.git
+        canvasHeadCommit = facts.head
+        canvasAppSections = facts.app
         let stateKey = facts.git + canvasOriginTag(for: root)
         let baselineKey = facts.baseline
         canvasStateKey = stateKey
@@ -450,10 +461,12 @@ public final class WorkbenchStore {
                 stateKey: stateKey,
                 baselineKey: baselineKey,
                 columns: initial.count <= 2 ? max(1, initial.count) : 3,
-                viewport: canvasViewport
+                viewport: canvasViewport,
+                originY: webOriginY
             )
             canvasPins = facts.pins
         }
+        layoutCanvasAppArtboards()
 
         let needsHydration = forceRefresh || canvasArtboards.contains(where: { $0.latestImagePath == nil || $0.cachedStateKey != stateKey })
         if needsHydration {
@@ -552,7 +565,8 @@ public final class WorkbenchStore {
             stateKey: canvasStateKey,
             baselineKey: canvasBaselineKey,
             columns: screens.count <= 2 ? max(1, screens.count) : 3,
-            viewport: viewport
+            viewport: viewport,
+            originY: webOriginY
         )
         canvasArtboards = zip(canvasArtboards, updated).map { old, next in
             var merged = next
@@ -565,6 +579,7 @@ public final class WorkbenchStore {
             merged.compareSplit = old.compareSplit
             return merged
         }
+        layoutCanvasAppArtboards()
         if viewportChanged {
             Task { await wakePreviewServerAndHydrate(forceAll: false) }
         }
@@ -579,7 +594,7 @@ public final class WorkbenchStore {
             path: path,
             sourceFile: sourceFile,
             x: 60 + Double(col) * (viewport.width + 44),
-            y: 56 + Double(row) * (viewport.height + 60),
+            y: webOriginY + Double(row) * (viewport.height + 60),
             width: viewport.width,
             height: viewport.height
         )
@@ -592,6 +607,7 @@ public final class WorkbenchStore {
             }
         }
         canvasArtboards.append(board)
+        layoutCanvasAppArtboards()
         if board.latestImagePath == nil {
             Task { await wakePreviewServerAndHydrate(forceAll: false) }
         }
@@ -716,13 +732,17 @@ public final class WorkbenchStore {
         elementFile: String? = nil,
         elementLine: Int? = nil,
         screenshotPNG: Data? = nil,
+        appBoardId: String? = nil,
         fileImmediately: Bool,
         planFirst: Bool = true
     ) async {
-        let fallbackFile = elementFile ?? canvasArtboards.first(where: { $0.path == path })?.sourceFile
+        let appBoard = appBoardId.flatMap { id in canvasAppArtboards.first(where: { $0.id == id }) }
+        let appSection = appBoard.flatMap { board in canvasAppSections.first(where: { $0.id == board.surface }) }
+        let fallbackFile = elementFile ?? canvasArtboards.first(where: { $0.path == path })?.sourceFile ?? appBoard?.sourceFile
         let pinId = CanvasPin.newRequestId()
         var savedShot: String? = nil
-        if let png = screenshotPNG, let root = canvasProjectRoot {
+        let png = screenshotPNG ?? appBoard.flatMap { appCaptureImage($0) }
+        if let png, let root = canvasProjectRoot {
             savedShot = YouiCanvasStorage.savePinScreenshot(png, projectRoot: root, pinId: pinId)
         }
         let pin = CanvasPin(
@@ -733,13 +753,18 @@ public final class WorkbenchStore {
             yFrac: yFrac,
             kind: kind,
             body: body,
-            author: activeProfile.account.isEmpty ? "alex" : activeProfile.account,
+            author: CanvasPin.authorName(account: activeProfile.account.isEmpty ? presence.me : activeProfile.account),
+            authorKind: "person",
             elementName: elementName,
             elementSelector: elementSelector,
             elementFile: fallbackFile,
             elementLine: elementLine,
             screenshotPath: savedShot,
-            isDraft: !fileImmediately
+            isDraft: !fileImmediately,
+            surface: appBoard?.surface,
+            appearance: appBoard?.appearance,
+            device: appSection?.surface.device,
+            captureStateKey: appBoard?.cachedStateKey
         )
         canvasPins.append(pin)
 
@@ -769,47 +794,43 @@ public final class WorkbenchStore {
     }
 
     public func submitPins(_ pins: [CanvasPin], grouping: PinBatchGrouping, planFirst: Bool = true) async {
+        let targetProj = canvasProjectName.isEmpty ? selectedProject : canvasProjectName
+        let optionPins = pins.filter { $0.kind == .options }
+        for p in optionPins {
+            guard let i = canvasPins.firstIndex(where: { $0.id == p.id }) else { continue }
+            canvasPins[i].isDraft = false
+            if let root = canvasProjectRoot {
+                _ = YouiCanvasStorage.writeYouiRequest(projectRoot: root, projectName: targetProj ?? "toolroll", pin: canvasPins[i])
+            }
+        }
+        if !optionPins.isEmpty {
+            notice = WorkbenchNotice(kind: .info, message: optionPins.count == 1
+                ? "Options request sent. It becomes a task waiting for your approval within a minute."
+                : "\(optionPins.count) options requests sent. Each becomes a task waiting for your approval within a minute.")
+        }
+        let changePins = pins.filter { $0.kind != .options }
+
         let groups: [(String, [CanvasPin])]
         switch grouping {
         case .perScreen:
-            let byRoute = Dictionary(grouping: pins, by: \.artboardRoute)
-            groups = byRoute.keys.sorted().map { ($0, byRoute[$0] ?? []) }
+            let byScreen = Dictionary(grouping: changePins, by: CanvasPinTaskText.screenLabel)
+            groups = byScreen.keys.sorted().map { ($0, byScreen[$0] ?? []) }
         case .singleTask:
-            groups = [("UI Review (\(pins.count) pins)", pins)]
+            groups = [("UI Review (\(changePins.count) pins)", changePins)]
         case .perPin:
-            groups = pins.map { ($0.artboardRoute, [$0]) }
+            groups = changePins.map { (CanvasPinTaskText.screenLabel($0), [$0]) }
         }
 
-        let targetProj = canvasProjectName.isEmpty ? selectedProject : canvasProjectName
         for (label, batch) in groups where !batch.isEmpty {
-            let title: String
-            if batch.count == 1, let only = batch.first {
-                let prefix = only.kind == .options ? "[UI Options A/B/C/D] " : "[UI] "
-                title = String("\(prefix)\(only.artboardRoute): \(only.body)".prefix(118))
-            } else {
-                title = String("[UI] \(label) (\(batch.count) changes)".prefix(118))
-            }
+            let title = CanvasPinTaskText.title(label: label, batch: batch, surfaces: canvasAppSections.map(\.surface))
 
-            let touchedPaths = Set(batch.map(\.artboardPath))
+            let touchedPaths = Set(batch.filter { !$0.isAppPin }.map(\.artboardPath))
             for board in canvasArtboards where touchedPaths.contains(board.path) {
                 setArtboardBaselineCheckpoint(boardId: board.id)
             }
 
-            let details = batch.enumerated().map { idx, p -> String in
-                var meta = "route `\(p.artboardPath)` at (\(Int(p.xFrac * 100))%, \(Int(p.yFrac * 100))%)"
-                if let el = p.elementName { meta += " · element `\(el)`" }
-                if let f = p.elementFile {
-                    meta += p.elementLine.map { " · `\(f):\($0)`" } ?? " · `\(f)`"
-                }
-                if let shot = p.screenshotPath {
-                    meta += " · element screenshot `\(shot)`"
-                }
-                let kindTag = p.kind == .options ? "[Options A/B/C/D] " : ""
-                return "\(idx + 1). \(kindTag)\(p.body) (\(meta))"
-            }.joined(separator: "\n")
-
-            await createTask(title: title, project: targetProj, body: details, planFirst: planFirst)
-            let createdTaskId = workRowsResponse.rows.first?.id
+            let details = CanvasPinTaskText.body(batch: batch, surfaces: canvasAppSections.map(\.surface))
+            let createdTaskId = await createTask(title: title, project: targetProj, body: details, planFirst: planFirst)
             for p in batch {
                 if let i = canvasPins.firstIndex(where: { $0.id == p.id }) {
                     canvasPins[i].isDraft = false
@@ -832,23 +853,7 @@ public final class WorkbenchStore {
     }
 
     private func resolveLocalProjectRoot(for projectName: String) -> String? {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let directCandidates = [
-            "\(home)/Documents/\(projectName)",
-            "\(home)/Documents/firstmate/projects/\(projectName)",
-            "\(home)/code/\(projectName)",
-            "\(home)/Projects/\(projectName)",
-        ]
-        for path in directCandidates where FileManager.default.fileExists(atPath: path) {
-            return path
-        }
-        let docsURL = URL(fileURLWithPath: "\(home)/Documents")
-        if let entries = try? FileManager.default.contentsOfDirectory(at: docsURL, includingPropertiesForKeys: [.isDirectoryKey]) {
-            if let match = entries.first(where: { $0.lastPathComponent.lowercased() == projectName.lowercased() }) {
-                return match.path
-            }
-        }
-        return nil
+        CanvasProjectRoot.resolve(projectName: projectName, recorded: projectsRead?.projects ?? [])
     }
 
     public func completeSetup() {
@@ -3203,26 +3208,29 @@ public final class WorkbenchStore {
         await prepareCancel(taskId: taskId, alsoArchive: false)
     }
 
-    public func createTask(title: String, project: String?, body: String, planFirst: Bool) async {
+    @discardableResult
+    public func createTask(title: String, project: String?, body: String, planFirst: Bool) async -> String? {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return nil }
         busyLabel = "Filing task…"
         defer { busyLabel = nil }
 
         if activeProfile.isDemo {
             isNewTaskSheetOpen = false
             notice = WorkbenchNotice(kind: .info, message: "Filed demo task \"\(trimmed)\".")
-            return
+            return nil
         }
-        guard let client else { return }
+        guard let client else { return nil }
         do {
-            let reply = try await client.createTask(title: trimmed, project: project, body: body, planFirst: planFirst)
+            let reply = try await client.fileTask(title: trimmed, project: project, body: body, planFirst: planFirst)
             isNewTaskSheetOpen = false
             isComposingNewWork = false
-            notice = WorkbenchNotice(kind: .info, message: reply)
+            notice = WorkbenchNotice(kind: .info, message: reply.message)
             await refreshAll()
+            return reply.taskId
         } catch {
             notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+            return nil
         }
     }
 
