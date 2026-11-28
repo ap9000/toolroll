@@ -466,7 +466,7 @@ describe("passkey approvals", () => {
     expect(page.body).toMatch(/<option value="60"[^>]*>Once per hour<\/option>/);
     expect(page.body).toContain("Shipping, landing, protected work and exceptions always ask.");
     expect(page.body).not.toContain("recommended");
-    // Status colour only: no caution colour on the section (no-amber.test.ts guards the palette), and the one ink act
+    // Status colour only: no caution colour on the section (the design palette test guards the colours), and the one ink act
     // stays Pair an iPhone.
     expect(page.body).not.toMatch(/warn/i);
     expect(primaries(page.body)).toBe(1);
