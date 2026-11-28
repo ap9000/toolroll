@@ -244,12 +244,41 @@ public struct StepAgent: Codable, Equatable, Sendable {
     public let model: String?
 }
 
+/// Whether this task's approval always asks for a live passkey (never the unlocked window), and why.
+public struct StepPasskeyHints: Codable, Equatable, Sendable {
+    /// The task's paths reach protected work.
+    public let protectedWork: Bool?
+    /// The plan is a release.
+    public let release: Bool?
+    /// Up to five of the protected paths it touches, for the banner.
+    public let protectedPaths: [String]?
+
+    public init(protectedWork: Bool?, release: Bool?, protectedPaths: [String]?) {
+        self.protectedWork = protectedWork
+        self.release = release
+        self.protectedPaths = protectedPaths
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        protectedWork = try? c.decodeIfPresent(Bool.self, forKey: .protectedWork)
+        release = try? c.decodeIfPresent(Bool.self, forKey: .release)
+        protectedPaths = try? c.decodeIfPresent([String].self, forKey: .protectedPaths)
+    }
+}
+
 /// The approval terms an Approval card carries while an approval waits (approval-summary.ts).
 public struct ApprovalTerms: Codable, Equatable, Sendable {
     public struct Row: Codable, Equatable, Sendable {
         public let label: String
         public let words: String
         public let lines: [String]
+
+        public init(label: String, words: String, lines: [String]) {
+            self.label = label
+            self.words = words
+            self.lines = lines
+        }
     }
 
     public struct Usual: Codable, Equatable, Sendable {
@@ -263,6 +292,15 @@ public struct ApprovalTerms: Codable, Equatable, Sendable {
     public let warnings: [String]
     public let usualLabel: String
     public let usual: [Usual]
+
+    public init(key: String, revision: String?, rows: [Row], warnings: [String], usualLabel: String, usual: [Usual]) {
+        self.key = key
+        self.revision = revision
+        self.rows = rows
+        self.warnings = warnings
+        self.usualLabel = usualLabel
+        self.usual = usual
+    }
 }
 
 public struct StepCard: Codable, Equatable, Sendable, Identifiable {
@@ -373,6 +411,9 @@ public struct StepCards: Codable, Equatable, Sendable {
     public let planStopped: StepPlanStopped?
     public let planQueued: Bool?
     public let room: String?
+    /// What the phone's approval dock needs to say before the tap (sent by the Mac's companion reads; absent from
+    /// older Macs and from the web's Engine API). Display only: the Mac decides again on every act.
+    public let passkey: StepPasskeyHints?
 
     /// The Approval card's terms while an approval waits on a person.
     public var waitingTerms: ApprovalTerms? {
