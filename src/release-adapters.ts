@@ -1369,7 +1369,9 @@ async function macosCasesOf(run: typeof exec, gh: string, slug: string, sha: str
 /** One GitHub API read through the plane's gh, as JSON: only `repos/<owner>/<name>/…` paths, never a URL a response named. */
 export function githubJson(run: Exec, gh: string): (path: string) => Promise<unknown> {
   return async path => {
-    if (!/^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_./?&=%:+-]+$/.test(path) || path.includes("..")) throw new Error(`not a GitHub read this makes: ${path.slice(0, 120)}`);
+    // `..` is never part of a path, except the three dots between the two sides of a compare (a commit or a release tag, then a commit).
+    const compare = /^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/compare\/(?:[0-9a-f]{40}|v\d+\.\d+\.\d+)\.\.\.[0-9a-f]{40}(?:\?per_page=\d+)?$/.test(path);
+    if (!/^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_./?&=%:+-]+$/.test(path) || (path.includes("..") && !compare)) throw new Error(`not a GitHub read this makes: ${path.slice(0, 120)}`);
     const out = await run(gh, ["api", "--hostname", "github.com", "--method", "GET", path], { cwd: "/", env: ciEnv() });
     if (out.code !== 0) throw new Error(`GitHub answered ${(out.stderr || out.stdout).trim().split("\n").slice(-1)[0]?.slice(0, 200) || `gh exited ${out.code}`} for ${path.replace(/\?.*/, "")}`);
     try { return JSON.parse(out.stdout) as unknown; } catch { throw new Error(`GitHub's answer for ${path.replace(/\?.*/, "")} couldn't be read`); }

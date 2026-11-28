@@ -352,4 +352,14 @@ describe("GitHub as a release from main reads it (release-adapters.ts mainReads)
     await expect(read("user/repos")).rejects.toThrow(/not a GitHub read/);
     await expect(read(`repos/${REPO}/../x`)).rejects.toThrow(/not a GitHub read/);
   });
+
+  test("its GitHub reader allows the proof's compare of two commits, or a tag and a commit, and no other dots", async () => {
+    const compare = `repos/${REPO}/compare/${HEAD}...${M}`, since = `repos/${REPO}/compare/v0.9.128...${M}?per_page=100`;
+    const read = githubJson(ghWith({ [compare]: { status: "ahead" }, [since]: { files: [] } }), "/usr/bin/gh");
+    await expect(read(compare)).resolves.toEqual({ status: "ahead" });
+    await expect(read(since)).resolves.toEqual({ files: [] });
+    await expect(read(`repos/${REPO}/compare/${HEAD}...${M}/../x`)).rejects.toThrow(/not a GitHub read/);
+    await expect(read(`repos/${REPO}/compare/main...${M}`)).rejects.toThrow(/not a GitHub read/);
+    await expect(read(`repos/${REPO}/contents/a...b`)).rejects.toThrow(/not a GitHub read/);
+  });
 });
