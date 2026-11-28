@@ -153,6 +153,32 @@ describe("filing", () => {
     expect(youiyouxState(store, repo).problem === null).toBe(!counted);
   });
 
+  test("the Mac Canvas's filed options pin (test/fixtures/canvas, written by YouiCanvasStorage) is a valid offer, filed once as an options task", () => {
+    const mac = JSON.parse(readFileSync(join(import.meta.dirname, "..", "test", "fixtures", "canvas", "mac-options-request.json"), "utf8")) as Request;
+    save(`${ID}.json`, mac);
+    expect(pass()).toMatchObject({ filed: 1, invalid: 0 });
+    expect(youiyouxState(store, repo).problem).toBeNull();
+    const id = taskOf();
+    expect(store.getScope(id)!.touches).toEqual([OPTIONS_FILE]);
+    expect(store.youiyouxOriginOf(id)?.kind).toBe("options");
+    expect(pass(later(1))).toMatchObject({ filed: 0, invalid: 0 });
+  });
+
+  test.each([
+    ["an options pin", () => { const one = options(); delete one.task; return { ...one, canvas: { isDraft: true, xFrac: 0.4, yFrac: 0.3 } }; }],
+    ["a change pin with a task", () => ({ ...request(), canvas: { isDraft: true } })],
+  ])("%s still a draft on the Mac Canvas is neither filed nor counted unreadable", (_what, make) => {
+    save(`${ID}.json`, make());
+    expect(pass()).toMatchObject({ filed: 0, invalid: 0 });
+    expect(filed()).toEqual([]);
+    expect(youiyouxState(store, repo).problem).toBeNull();
+  });
+
+  test("only a draft flag that is exactly true holds a request back", () => {
+    save(`${ID}.json`, { ...request(), canvas: { isDraft: "true" } });
+    expect(pass()).toMatchObject({ filed: 1, invalid: 0 });
+  });
+
   test.each([
     ["a link to a file outside the project", () => { writeFileSync(join(base, "outside.json"), JSON.stringify(request())); symlinkSync(join(base, "outside.json"), join(requests(), `${ID}.json`)); }],
     ["a second name for a file outside the project", () => { writeFileSync(join(base, "outside.json"), JSON.stringify(request())); linkSync(join(base, "outside.json"), join(requests(), `${ID}.json`)); }],
