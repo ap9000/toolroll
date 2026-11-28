@@ -193,7 +193,8 @@ public final class WorkbenchStore {
     public internal(set) var canvasAppArtboards: [CanvasArtboard] = []
     public internal(set) var canvasAppCaptureRuns: [String: AppCaptureRunState] = [:]
     public internal(set) var canvasHeadCommit: String = ""
-    public internal(set) var canvasCaptureConfirmation: String? = nil
+    /// A pending Recapture trust question: the surface and the exact project root it was asked about.
+    public internal(set) var canvasCaptureConfirmation: (surfaceId: String, root: String)? = nil
     public private(set) var activeAgentSetupTitle: String? = nil
     public private(set) var missingRuntimeInstallCommand: String? = nil
     private var attemptedAutoBootstrap: Bool = false
@@ -429,7 +430,7 @@ public final class WorkbenchStore {
         let projectChanged = (canvasProjectRoot != root) || (canvasProjectName != targetProject)
         canvasProjectName = targetProject
         canvasProjectRoot = root
-        if projectChanged { canvasBaseURL = "" }
+        if projectChanged { canvasBaseURL = ""; canvasCaptureConfirmation = nil }
 
         let facts = await Task.detached(priority: .userInitiated) { () -> (git: String, baseline: String, routes: [YouiScreenEntry]?, pins: [CanvasPin], app: [CanvasAppSection], head: String) in
             guard let root else { return ("latest", "baseline", nil, [], [], "") }
