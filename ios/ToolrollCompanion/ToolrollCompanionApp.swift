@@ -5,11 +5,14 @@ import ToolrollCompanionCore
 struct ToolrollCompanionApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @State private var appState = CompanionAppState()
+    @State private var appearance = ToolrollAppearance.shared
 
     var body: some Scene {
         WindowGroup {
             RootView(appState: appState)
-                .tint(ToolrollTheme.ink)
+                .environment(\.toolrollAppearance, appearance)
+                .preferredColorScheme(appearance.scheme.colorScheme)
+                .tint(appearance.signalText)
                 .overlay {
                     // Cover the app as soon as it stops being active (C7), so the app switcher never keeps a snapshot
                     // of a diff, a pairing code or a pasted payload: SwiftUI may not draw the cover in time if it waits

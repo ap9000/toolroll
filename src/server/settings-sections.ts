@@ -280,8 +280,12 @@ function appearanceSection(): SectionImpl<SectionPrefs> {
                 select({ name: "accent", label: "Accent", current: prefs.accent, items: [...ACCENT_CHOICES.map(one => [one.hex, one.id === "ink" ? "Ink (default)" : one.name] as const), ...(custom === null ? [] : [[custom, `Your own colour (${custom})`] as const])] })),
               accentNoteWords === null ? "" : html`<p class="k-note">${accentNoteWords}</p>`,
             ]) }),
-          disclose("Use your own colour", kitSectionForm({ proof: "appearance", action: "/settings/appearance", id: "accent-own", gate: true, hidden: { return: back },
-            body: formRow("Your own colour", "Six hex digits, like #6e56cf.", input({ id: "accent-hex", name: "accent", value: custom ?? "", attrs: { placeholder: "#6e56cf", spellcheck: "false", autocomplete: "off", "aria-label": "Your own colour", pattern: "#?[0-9a-fA-F]{6}", required: true } })) }), custom !== null),
+          disclose("Use your own colour", joinHtml([
+            kitSectionForm({ proof: "appearance", action: "/settings/appearance", id: "accent-picker", gate: true, hidden: { return: back },
+              body: formRow("Colour picker", "Pick any swatch for buttons, focus and what needs you.", html`<input type="color" name="accent" value="${prefs.accent}" aria-label="Pick a colour" style="width:40px;height:36px;padding:2px;border:1px solid var(--so-input-line);border-radius:8px;background:var(--so-paper);cursor:pointer">`) }),
+            kitSectionForm({ proof: "appearance", action: "/settings/appearance", id: "accent-own", gate: true, hidden: { return: back },
+              body: formRow("Hex code", "Six hex digits, like #3b82f6.", input({ id: "accent-hex", name: "accent", value: custom ?? "", attrs: { placeholder: "#3b82f6", spellcheck: "false", autocomplete: "off", "aria-label": "Your own colour", pattern: "#?[0-9a-fA-F]{6}", required: true } })) }),
+          ]), custom !== null),
         ]),
       });
     },

@@ -6,6 +6,7 @@ struct WelcomePairingView: View {
     @Bindable var appState: CompanionAppState
     @State private var scanner: ScannerMode?
     @State private var showSecurity = false
+    @Environment(\.toolrollAppearance) private var appearance
 
     enum ScannerMode: String, Identifiable {
         case scan
@@ -160,9 +161,9 @@ struct WelcomePairingView: View {
         HStack(alignment: .top, spacing: 10) {
             Text(number)
                 .font(.caption.monospaced().weight(.bold))
-                .foregroundStyle(ToolrollTheme.onInk)
+                .foregroundStyle(appearance.onSignal)
                 .frame(width: 20, height: 20)
-                .background(ToolrollTheme.ink, in: Circle())
+                .background(appearance.signal, in: Circle())
             Text(text)
                 .font(.subheadline)
                 .foregroundStyle(ToolrollTheme.ink)

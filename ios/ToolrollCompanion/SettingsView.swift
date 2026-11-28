@@ -1,20 +1,29 @@
 import SwiftUI
 import ToolrollCompanionCore
 
-/// Signal-styled Settings: sentence-case section titles, grouped paper sheets on frame grey,
-/// zero uppercase system List chrome.
+/// Unified Signal Settings: Appearance (theme + customizable accent matching Web & Desktop),
+/// paired Mac status, and quiet grouped paper sheets.
 struct SettingsView: View {
     @Bindable var appState: CompanionAppState
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.toolrollAppearance) private var appearance
+    @Environment(\.colorScheme) private var colorScheme
     @State private var confirmUnpair = false
     @State private var removing = false
     @State private var showSecured = false
     @State private var showDetails = false
 
+    private var customColorBinding: Binding<Color> {
+        Binding(
+            get: { appearance.swiftUIColor },
+            set: { appearance.setCustomColor($0) }
+        )
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 20) {
                     if appState.isDemoMode {
                         section("Demo") {
                             VStack(spacing: 0) {
@@ -54,6 +63,79 @@ struct SettingsView: View {
                         }
                     }
 
+                    section("Appearance") {
+                        VStack(spacing: 0) {
+                            // Theme segmented control
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Theme")
+                                    .font(.footnote.weight(.medium))
+                                    .foregroundStyle(ToolrollTheme.muted)
+                                HStack(spacing: 2) {
+                                    ForEach(AppearanceScheme.allCases) { item in
+                                        let selected = appearance.scheme == item
+                                        Button {
+                                            withAnimation(.easeOut(duration: 0.16)) {
+                                                appearance.scheme = item
+                                            }
+                                        } label: {
+                                            Text(item.title)
+                                                .font(.footnote.weight(selected ? .semibold : .medium))
+                                                .foregroundStyle(selected ? ToolrollTheme.ink : ToolrollTheme.muted)
+                                                .frame(maxWidth: .infinity, minHeight: 34)
+                                                .background {
+                                                    if selected {
+                                                        RoundedRectangle(cornerRadius: 7.5, style: .continuous)
+                                                            .fill(ToolrollTheme.surface)
+                                                            .overlay(
+                                                                RoundedRectangle(cornerRadius: 7.5, style: .continuous)
+                                                                    .strokeBorder(ToolrollTheme.hairline, lineWidth: 0.75)
+                                                            )
+                                                    }
+                                                }
+                                                .contentShape(Rectangle())
+                                        }
+                                        .buttonStyle(.plain)
+                                        .accessibilityAddTraits(selected ? .isSelected : [])
+                                    }
+                                }
+                                .padding(3)
+                                .background(ToolrollTheme.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .strokeBorder(ToolrollTheme.hairline, lineWidth: 1)
+                                )
+                            }
+                            .padding(14)
+
+                            Divider().overlay(ToolrollTheme.hairline).padding(.leading, 14)
+
+                            // Accent presets + custom color picker
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack {
+                                    Text("Accent")
+                                        .font(.footnote.weight(.medium))
+                                        .foregroundStyle(ToolrollTheme.muted)
+                                    Spacer()
+                                    Text(activeAccentLabel)
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(ToolrollTheme.subtle)
+                                }
+
+                                HStack(spacing: 12) {
+                                    ForEach(AccentPreset.all) { preset in
+                                        accentSwatch(preset)
+                                    }
+                                    Spacer(minLength: 4)
+                                    ColorPicker("", selection: customColorBinding, supportsOpacity: false)
+                                        .labelsHidden()
+                                        .frame(width: 32, height: 32)
+                                        .accessibilityLabel("Pick a custom accent colour")
+                                }
+                            }
+                            .padding(14)
+                        }
+                    }
+
                     section("Security and details") {
                         VStack(spacing: 0) {
                             DisclosureGroup(isExpanded: $showSecured) {
@@ -64,6 +146,7 @@ struct SettingsView: View {
                                     .font(.subheadline.weight(.medium))
                                     .foregroundStyle(ToolrollTheme.ink)
                             }
+                            .tint(ToolrollTheme.subtle)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 12)
 
@@ -86,6 +169,7 @@ struct SettingsView: View {
                                         .font(.subheadline.weight(.medium))
                                         .foregroundStyle(ToolrollTheme.ink)
                                 }
+                                .tint(ToolrollTheme.subtle)
                                 .padding(.horizontal, 14)
                                 .padding(.vertical, 12)
                             }
@@ -133,9 +217,11 @@ struct SettingsView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                         .fontWeight(.semibold)
-                        .foregroundStyle(ToolrollTheme.ink)
+                        .foregroundStyle(appearance.signalText)
                 }
             }
+            .sensoryFeedback(.selection, trigger: appearance.accentHex)
+            .sensoryFeedback(.selection, trigger: appearance.scheme)
             .confirmationDialog("Remove this iPhone?", isPresented: $confirmUnpair, titleVisibility: .visible) {
                 Button("Remove", role: .destructive) {
                     removing = true
@@ -149,6 +235,51 @@ struct SettingsView: View {
                 Text("You'll need to pair again to see your work on this iPhone.")
             }
         }
+    }
+
+    private var activeAccentLabel: String {
+        if let preset = AccentPreset.all.first(where: { $0.hex.uppercased() == appearance.accentHex.uppercased() }) {
+            return preset.name
+        }
+        return appearance.accentHex
+    }
+
+    private func accentSwatch(_ preset: AccentPreset) -> some View {
+        let selected = appearance.accentHex.uppercased() == preset.hex.uppercased()
+        let fill: Color = preset.id == "ink"
+            ? ToolrollTheme.ink
+            : Color(uiColor: ToolrollAppearance.uiColor(hex: preset.hex) ?? .systemBlue)
+
+        return Button {
+            withAnimation(.easeOut(duration: 0.16)) {
+                appearance.accentHex = preset.hex
+            }
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(fill)
+                    .frame(width: 28, height: 28)
+                    .overlay(
+                        Circle()
+                            .strokeBorder(Color.white.opacity(colorScheme == .dark ? 0.22 : 0.12), lineWidth: 1)
+                    )
+                if selected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(preset.id == "ink" ? ToolrollTheme.onInk : Color.white)
+                }
+            }
+            .padding(3)
+            .overlay(
+                Circle()
+                    .strokeBorder(selected ? ToolrollTheme.ink : Color.clear, lineWidth: 1.5)
+            )
+            .frame(minWidth: 36, minHeight: 36)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(preset.name)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {

@@ -123,11 +123,16 @@ struct DiffFileView: View {
                 .truncationMode(.head)
                 .textSelection(.enabled)
             Spacer(minLength: 8)
-            HStack(spacing: 6) {
-                Text("+\(route.additions)").foregroundStyle(ToolrollTheme.success)
-                Text("−\(route.deletions)").foregroundStyle(ToolrollTheme.danger)
+            HStack(spacing: 8) {
+                HStack(spacing: 5) {
+                    Text("+\(route.additions)").foregroundStyle(ToolrollTheme.success)
+                    Text("−\(route.deletions)").foregroundStyle(ToolrollTheme.danger)
+                }
+                .font(.caption.monospacedDigit().weight(.semibold))
+                if !dynamicTypeSize.isAccessibilitySize {
+                    DiffStatPips(additions: route.additions, deletions: route.deletions)
+                }
             }
-            .font(.caption.monospacedDigit().weight(.semibold))
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)

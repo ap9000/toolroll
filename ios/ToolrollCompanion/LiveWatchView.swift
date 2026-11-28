@@ -208,11 +208,7 @@ struct LiveWatchView: View {
                     ProgressView().controlSize(.mini)
                     Text("Connecting to run #\(run)…")
                 case .watching:
-                    Circle()
-                        .fill(ToolrollTheme.terminalBlue)
-                        .frame(width: 6.5, height: 6.5)
-                        .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
-                        .accessibilityHidden(true)
+                    LivePulseBars(color: ToolrollTheme.terminalBlue, height: 10, animate: true)
                     Text("Streaming run #\(run)")
                         .foregroundStyle(ToolrollTheme.terminalBlue)
                 case .finished:

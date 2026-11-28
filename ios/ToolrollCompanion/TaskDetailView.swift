@@ -5,11 +5,13 @@ struct TaskDetailView: View {
     let appState: CompanionAppState
     let taskId: String
     @State private var liveSheet: LiveSheet?
-    @State private var showUsual = false
+    @State private var showFiles = false
+    @State private var showDetails = false
     @State private var showHistory = false
     @State private var refreshed = 0
     @State private var showOpenOnMac = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.toolrollAppearance) private var appearance
 
     static let handoffActivity = "dev.toolroll.ios.task"
 
@@ -26,12 +28,11 @@ struct TaskDetailView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 20) {
                     if let cards = steps.value, let terms = cards.waitingTerms {
-                        // Decide gets one unified Approval Brief sheet + one dark Files manifest (2 surfaces total).
-                        decideBriefView(terms: terms)
+                        decideMinimalView(terms: terms, cards: cards)
                     } else {
-                        statusHeaderCard
+                        editorialHeader
                     }
 
                     if let failure = steps.failure, steps.value == nil {
@@ -43,19 +44,19 @@ struct TaskDetailView: View {
                     if appState.isOffline, steps.value != nil {
                         StaleDataBanner(lastUpdated: appState.lastUpdated)
                     }
-                    if let cards = steps.value {
+                    if let cards = steps.value, cards.waitingTerms == nil {
                         nowSection(cards)
                     }
                     changesSection
                         .id("changes")
-                    if let cards = steps.value {
+                    if let cards = steps.value, cards.waitingTerms == nil {
                         upcomingSection(cards)
                         historySection(cards)
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 12)
-                .padding(.bottom, 20)
+                .padding(.top, 16)
+                .padding(.bottom, 24)
             }
             .background(ToolrollTheme.paper.ignoresSafeArea())
             .environment(\.showsStaleData, appState.isOffline)
@@ -113,222 +114,215 @@ struct TaskDetailView: View {
         row?.title ?? steps.value?.task.title ?? "Task"
     }
 
-    private var isWaitingOnPerson: Bool {
-        if let row { return row.kind.isNeedsYou }
-        return next.isOnMac || next == .reviewChanges
-    }
-
-    // MARK: Unified Decide Approval Brief (2 Calm Surfaces Total)
+    // MARK: Borderless Editorial Decide View (Necessary Information Only)
 
     @ViewBuilder
-    private func decideBriefView(terms: ApprovalTerms) -> some View {
+    private func decideMinimalView(terms: ApprovalTerms, cards: StepCards) -> some View {
         let agentRow = terms.rows.first { matches($0.label, ["agent"]) }
         let goalRow = terms.rows.first { matches($0.label, ["goal"]) }
         let doneRow = terms.rows.first { matches($0.label, ["done when", "done", "verify"]) }
         let filesRow = terms.rows.first { matches($0.label, ["files"]) }
+        let costRow = terms.rows.first { matches($0.label, ["may cost", "budget", "cost"]) }
 
-        let excluded = Set([agentRow, goalRow, doneRow, filesRow].compactMap { $0?.label.lowercased() })
-        let specRows = terms.rows.filter { !excluded.contains($0.label.lowercased()) }
+        let primaryLabels = Set([goalRow, doneRow, filesRow, costRow].compactMap { $0?.label.lowercased() })
+        let detailRows = terms.rows.filter { !primaryLabels.contains($0.label.lowercased()) }
         let showGoal = goalRow.map { !repeats($0.words, title) } ?? false
 
-        // Surface 1: One unified Approval Brief paper sheet (1px ink outline).
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    StateChip(word: row?.kind.word(for: row) ?? "Decide", tone: .needs)
-                    if let meta = headerMeta {
-                        Text(meta)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(ToolrollTheme.muted)
-                            .lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
+        // 1. Borderless editorial header directly on the canvas (no outer wireframe box, no sticker badge).
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                StatusDotLabel(word: "Needs approval", tone: .needs)
+                if let meta = headerMeta {
+                    Text("· \(meta)")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(ToolrollTheme.subtle)
+                        .lineLimit(1)
                 }
+                Spacer(minLength: 0)
+            }
 
-                Text(title)
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(ToolrollTheme.ink)
+            Text(title)
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(ToolrollTheme.ink)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityAddTraits(.isHeader)
+
+            if let done = doneRow?.words, !done.isEmpty {
+                Text(verbatim: done.trimmingTrailingPeriod)
+                    .font(.subheadline)
+                    .foregroundStyle(ToolrollTheme.muted)
                     .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityAddTraits(.isHeader)
+            } else if showGoal, let goal = goalRow?.words {
+                Text(verbatim: goal.trimmingTrailingPeriod)
+                    .font(.subheadline)
+                    .foregroundStyle(ToolrollTheme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
-                if let agent = agentRow?.words, !agent.isEmpty {
-                    Text(verbatim: agent)
-                        .font(.footnote)
-                        .foregroundStyle(ToolrollTheme.muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if let revision = terms.revision {
-                    Text(verbatim: revision)
-                        .font(.footnote)
-                        .foregroundStyle(ToolrollTheme.muted)
-                }
-
-                ForEach(Array(terms.warnings.enumerated()), id: \.offset) { _, warning in
-                    Text(verbatim: warning)
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(ToolrollTheme.ink)
+            if !terms.warnings.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(terms.warnings.enumerated()), id: \.offset) { _, warning in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundStyle(ToolrollTheme.danger)
+                            Text(verbatim: warning)
+                                .font(.footnote.weight(.medium))
+                                .foregroundStyle(ToolrollTheme.ink)
+                        }
                         .padding(12)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(ToolrollTheme.neutralSoft, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                }
-
-                if showGoal, let goal = goalRow?.words {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Goal")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(ToolrollTheme.muted)
-                        Text(verbatim: goal)
-                            .font(.subheadline)
-                            .foregroundStyle(ToolrollTheme.ink)
-                            .fixedSize(horizontal: false, vertical: true)
+                        .background(ToolrollTheme.dangerSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     }
-                    .padding(.top, 2)
                 }
-
-                if let done = doneRow?.words {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Done when")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(ToolrollTheme.muted)
-                        Text(verbatim: done)
-                            .font(.subheadline)
-                            .foregroundStyle(ToolrollTheme.ink)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(.top, 2)
-                }
+                .padding(.top, 2)
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 2)
 
-            if !specRows.isEmpty {
-                Divider().overlay(ToolrollTheme.hairline)
-                ForEach(Array(specRows.enumerated()), id: \.offset) { index, item in
-                    specRowView(label: item.label, value: item.words, lines: item.lines)
-                    if index < specRows.count - 1 || !terms.usual.isEmpty {
-                        Divider().overlay(ToolrollTheme.hairline).padding(.leading, 16)
-                    }
-                }
-            }
-
-            if !terms.usual.isEmpty {
-                if specRows.isEmpty {
-                    Divider().overlay(ToolrollTheme.hairline)
-                }
-                DisclosureGroup(isExpanded: $showUsual) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(Array(terms.usual.enumerated()), id: \.offset) { _, item in
-                            HStack(alignment: .firstTextBaseline) {
-                                Text(verbatim: item.label)
-                                    .font(.caption)
-                                    .foregroundStyle(ToolrollTheme.muted)
-                                Spacer(minLength: 12)
-                                Text(verbatim: item.words)
-                                    .font(.footnote)
-                                    .foregroundStyle(ToolrollTheme.ink)
-                                    .multilineTextAlignment(.trailing)
-                            }
-                            .accessibilityElement(children: .combine)
-                        }
-                    }
-                    .padding(.top, 8)
-                } label: {
-                    Text(verbatim: terms.usualLabel)
-                        .font(.footnote.weight(.medium))
+        // 2. One compact machined surface holding only essential summary rows + progressive disclosure for everything else.
+        VStack(spacing: 0) {
+            if let costRow {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text("Budget")
+                        .font(.subheadline)
                         .foregroundStyle(ToolrollTheme.muted)
+                    Spacer(minLength: 8)
+                    Text(verbatim: compactCost(costRow.words))
+                        .font(.footnote.monospacedDigit().weight(.medium))
+                        .foregroundStyle(ToolrollTheme.ink)
+                        .multilineTextAlignment(.trailing)
                 }
                 .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.vertical, 13)
+                .accessibilityElement(children: .combine)
             }
-        }
-        .card(needsYou: true)
 
-        // Surface 2: One dark monospace Files in scope manifest (the visual anchor on Decide).
-        if let filesRow {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Files in scope")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(ToolrollTheme.terminalInk)
-                    Spacer()
-                    if !filesRow.lines.isEmpty {
-                        Text("\(filesRow.lines.count) \(filesRow.lines.count == 1 ? "file" : "files")")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(ToolrollTheme.terminalMuted)
-                    }
+            if let filesRow {
+                if costRow != nil {
+                    Divider().overlay(ToolrollTheme.hairline).padding(.leading, 16)
                 }
-                if !filesRow.lines.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(Array(filesRow.lines.enumerated()), id: \.offset) { _, line in
-                            HStack(spacing: 8) {
-                                Image(systemName: "doc.text")
-                                    .font(.caption2)
-                                    .foregroundStyle(ToolrollTheme.terminalMuted)
-                                    .accessibilityHidden(true)
-                                Text(verbatim: line)
-                                    .font(.footnote.monospaced())
-                                    .foregroundStyle(ToolrollTheme.terminalInk)
-                                    .lineLimit(2)
+                DisclosureGroup(isExpanded: $showFiles) {
+                    if !filesRow.lines.isEmpty {
+                        VStack(alignment: .leading, spacing: 7) {
+                            ForEach(Array(filesRow.lines.enumerated()), id: \.offset) { _, line in
+                                HStack(spacing: 8) {
+                                    Image(systemName: "doc.text")
+                                        .font(.caption2)
+                                        .foregroundStyle(ToolrollTheme.terminalMuted)
+                                        .accessibilityHidden(true)
+                                    Text(verbatim: line)
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(ToolrollTheme.terminalInk)
+                                        .lineLimit(2)
+                                }
                             }
                         }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .terminalCard(radius: 8)
+                        .padding(.top, 10)
+                    } else if !filesRow.words.isEmpty {
+                        Text(verbatim: filesRow.words)
+                            .font(.footnote)
+                            .foregroundStyle(ToolrollTheme.muted)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 8)
                     }
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(ToolrollTheme.terminalSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                } else if !filesRow.words.isEmpty {
-                    Text(verbatim: filesRow.words)
-                        .font(.footnote)
-                        .foregroundStyle(ToolrollTheme.terminalMuted)
+                } label: {
+                    HStack {
+                        Text("Files")
+                            .font(.subheadline)
+                            .foregroundStyle(ToolrollTheme.muted)
+                        Spacer(minLength: 8)
+                        Text(filesCountLabel(filesRow))
+                            .font(.footnote.monospacedDigit().weight(.medium))
+                            .foregroundStyle(ToolrollTheme.ink)
+                    }
                 }
+                .tint(ToolrollTheme.subtle)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 13)
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(ToolrollTheme.terminalBg, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(ToolrollTheme.terminalBorder, lineWidth: 1)
-            )
+
+            if !detailRows.isEmpty || !terms.usual.isEmpty || terms.revision != nil {
+                if costRow != nil || filesRow != nil {
+                    Divider().overlay(ToolrollTheme.hairline).padding(.leading, 16)
+                }
+                DisclosureGroup(isExpanded: $showDetails) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if let revision = terms.revision {
+                            Text(verbatim: revision)
+                                .font(.caption)
+                                .foregroundStyle(ToolrollTheme.muted)
+                        }
+                        if let agent = agentRow?.words, !agent.isEmpty {
+                            compactDetailRow("Agent", agent)
+                        }
+                        ForEach(Array(detailRows.filter { !matches($0.label, ["agent"]) }.enumerated()), id: \.offset) { _, item in
+                            compactDetailRow(item.label, sentenceCased(item.words))
+                        }
+                        if !terms.usual.isEmpty {
+                            Divider().overlay(ToolrollTheme.hairline)
+                            ForEach(Array(terms.usual.enumerated()), id: \.offset) { _, item in
+                                compactDetailRow(item.label, item.words)
+                            }
+                        }
+                        detailsBlock(cards)
+                    }
+                    .padding(.top, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } label: {
+                    HStack {
+                        Text("Details")
+                            .font(.subheadline)
+                            .foregroundStyle(ToolrollTheme.muted)
+                        Spacer(minLength: 8)
+                        Text("Model, rules, network")
+                            .font(.caption)
+                            .foregroundStyle(ToolrollTheme.subtle)
+                    }
+                }
+                .tint(ToolrollTheme.subtle)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 13)
+            }
         }
+        .card()
     }
 
-    @ViewBuilder
-    private func specRowView(label: String, value: String, lines: [String]) -> some View {
-        let compactInline = lines.isEmpty && value.count <= 34 && !dynamicTypeSize.isAccessibilitySize
-        if compactInline {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text(verbatim: label)
-                    .font(.footnote)
-                    .foregroundStyle(ToolrollTheme.muted)
-                Spacer(minLength: 8)
-                Text(verbatim: sentenceCased(value))
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(ToolrollTheme.ink)
-                    .multilineTextAlignment(.trailing)
+    private func compactCost(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Compress verbose "Up to $2.00 · stops after 20 min without progress" into clean "≤ $2.00 · 20m" when recognizable.
+        if let dollarRange = trimmed.range(of: #"\$[0-9]+(?:\.[0-9]+)?"#, options: .regularExpression) {
+            let price = String(trimmed[dollarRange])
+            if let minMatch = trimmed.range(of: #"([0-9]+)\s*min"#, options: .regularExpression) {
+                let digits = trimmed[minMatch].filter(\.isNumber)
+                if !digits.isEmpty { return "≤ \(price) · \(digits)m" }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .accessibilityElement(children: .combine)
-        } else {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(verbatim: label)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(ToolrollTheme.muted)
-                Text(verbatim: sentenceCased(value))
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(ToolrollTheme.ink)
-                    .fixedSize(horizontal: false, vertical: true)
-                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                    Text(verbatim: line)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(ToolrollTheme.ink)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .combine)
+            return "≤ \(price)"
         }
+        return trimmed
+    }
+
+    private func filesCountLabel(_ row: ApprovalTerms.Row) -> String {
+        if !row.lines.isEmpty {
+            return "\(row.lines.count) in scope"
+        }
+        return row.words.isEmpty ? "In scope" : row.words
+    }
+
+    private func compactDetailRow(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(verbatim: label)
+                .font(.caption)
+                .foregroundStyle(ToolrollTheme.muted)
+            Text(verbatim: value)
+                .font(.footnote)
+                .foregroundStyle(ToolrollTheme.ink)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private func sentenceCased(_ raw: String) -> String {
@@ -336,29 +330,34 @@ struct TaskDetailView: View {
         return first.uppercased() + raw.dropFirst()
     }
 
-    // MARK: Compact Signal Status Header Card (Review / Running / Done)
+    // MARK: Borderless Editorial Header (Review / Running / Done / Unblock)
 
-    private var statusHeaderCard: some View {
+    private var editorialHeader: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                if let row {
-                    StateChip(word: row.kind.word(for: row), tone: row.kind.tone)
+            HStack(spacing: 6) {
+                if case .watchLive = next {
+                    LivePulseBars(color: ToolrollTheme.info, height: 10)
+                    Text("Running")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(ToolrollTheme.info)
+                } else if let row {
+                    StatusDotLabel(word: editorialStatusWord(row: row), tone: row.kind.tone)
                 } else if let chip = next.chip {
-                    StateChip(word: chip.word, tone: chip.tone)
+                    StatusDotLabel(word: chip.word, tone: chip.tone)
                 } else if let cards = steps.value, let word = cards.headline, !word.isEmpty {
-                    StateChip(word: word, tone: cards.liveRun != nil ? .live : .neutral)
+                    StatusDotLabel(word: word, tone: cards.liveRun != nil ? .live : .neutral)
                 }
                 if let meta = headerMeta {
-                    Text(meta)
+                    Text("· \(meta)")
                         .font(.caption.monospaced())
-                        .foregroundStyle(ToolrollTheme.muted)
+                        .foregroundStyle(ToolrollTheme.subtle)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
             }
 
             Text(title)
-                .font(.title3.weight(.semibold))
+                .font(.title2.weight(.semibold))
                 .foregroundStyle(ToolrollTheme.ink)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityAddTraits(.isHeader)
@@ -373,9 +372,6 @@ struct TaskDetailView: View {
                             .font(.footnote.weight(.medium))
                             .foregroundStyle(ToolrollTheme.success)
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(ToolrollTheme.successSoft, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 } else {
                     markdownText(subtitle)
                         .font(.subheadline)
@@ -384,15 +380,23 @@ struct TaskDetailView: View {
                 }
             }
         }
-        .padding(16)
+        .padding(.horizontal, 2)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .card(needsYou: isWaitingOnPerson)
+    }
+
+    private func editorialStatusWord(row: WorkRow) -> String {
+        switch row.kind {
+        case .review: return "Ready to review"
+        case .decide: return row.need?.ask == .answer ? "Needs answer" : "Needs approval"
+        case .unblock: return "Needs unblock"
+        default: return row.kind.word(for: row)
+        }
     }
 
     private var headerMeta: String? {
         var parts: [String] = []
         if let age = row?.age, !age.isEmpty { parts.append(age) }
-        if let run = steps.value?.latestRun { parts.append("run #\(run)") }
+        if let run = steps.value?.latestRun { parts.append("#\(run)") }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
@@ -449,7 +453,7 @@ struct TaskDetailView: View {
                     ForEach(Array(current.enumerated()), id: \.offset) { _, card in
                         HStack(alignment: .firstTextBaseline, spacing: 10) {
                             Image(systemName: symbol(card.mark))
-                                .foregroundStyle(tone(card.mark).hue)
+                                .foregroundStyle(tone(card.mark).hue(appearance: appearance))
                                 .accessibilityHidden(true)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(card.label)
@@ -581,11 +585,12 @@ struct TaskDetailView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         } label: {
             Text(finished.isEmpty ? "Details" : "History · \(finished.count) finished")
-                .font(.footnote.weight(.semibold))
+                .font(.footnote.weight(.medium))
                 .foregroundStyle(ToolrollTheme.ink)
         }
+        .tint(ToolrollTheme.subtle)
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.vertical, 13)
         .card()
     }
 
@@ -593,8 +598,8 @@ struct TaskDetailView: View {
         HStack(alignment: .top, spacing: 10) {
             VStack(spacing: 0) {
                 Circle()
-                    .fill(tone(card.mark).hue)
-                    .frame(width: 8, height: 8)
+                    .fill(tone(card.mark).hue(appearance: appearance))
+                    .frame(width: 7, height: 7)
                     .padding(.top, 4)
                 if !isLast {
                     Rectangle()
@@ -674,7 +679,7 @@ struct TaskDetailView: View {
         .accessibilityElement(children: .combine)
     }
 
-    // MARK: Slim Single-Row Bottom Action Bar
+    // MARK: Sticky Bottom Action Dock
 
     @ViewBuilder
     private func bottomBar(proxy: ScrollViewProxy) -> some View {
@@ -698,10 +703,10 @@ struct TaskDetailView: View {
                                 NavigationLink(value: Route.diff(first)) {
                                     Text("Review diff")
                                 }
-                                .buttonStyle(InkButtonStyle(compact: true))
+                                .buttonStyle(SignalButtonStyle(compact: true))
                             } else {
                                 Button("Review diff") { jumpToChanges(proxy) }
-                                    .buttonStyle(InkButtonStyle(compact: true))
+                                    .buttonStyle(SignalButtonStyle(compact: true))
                                     .disabled(diff.value?.files.isEmpty ?? true)
                             }
                             if handoffURL != nil {
@@ -711,7 +716,7 @@ struct TaskDetailView: View {
                                     Label("Mac", systemImage: "laptopcomputer.and.arrow.down")
                                 }
                                 .buttonStyle(OutlineButtonStyle(compact: true))
-                                .frame(maxWidth: 112)
+                                .frame(maxWidth: 108)
                                 .accessibilityLabel("Open on Mac")
                             }
                         }
@@ -722,17 +727,14 @@ struct TaskDetailView: View {
                         Button {
                             liveSheet = LiveSheet(run: run)
                         } label: {
-                            HStack(spacing: 8) {
-                                Circle()
-                                    .fill(ToolrollTheme.terminalBlue)
-                                    .frame(width: 6, height: 6)
+                            HStack(spacing: 10) {
+                                LivePulseBars(color: ToolrollTheme.terminalBlue, height: 11)
                                 Text("Watch live output")
                             }
                             .font(.subheadline.weight(.semibold))
                             .frame(maxWidth: .infinity, minHeight: 44)
                             .foregroundStyle(ToolrollTheme.terminalInk)
-                            .background(ToolrollTheme.terminalBg, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ToolrollTheme.terminalBorder, lineWidth: 1))
+                            .terminalCard(radius: 10)
                         }
                         .buttonStyle(.plain)
                     case .none:
@@ -748,33 +750,28 @@ struct TaskDetailView: View {
 
     private func compactHandoffBar(_ label: String) -> some View {
         HStack(spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "lock.fill")
-                    .font(.footnote)
-                    .foregroundStyle(ToolrollTheme.muted)
-                    .accessibilityHidden(true)
-                Text(label)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(ToolrollTheme.ink)
-            }
-            .accessibilityElement(children: .combine)
-            Spacer(minLength: 8)
             if handoffURL != nil {
                 Button {
                     showOpenOnMac = true
                 } label: {
-                    Label("Open", systemImage: "arrow.up.right")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(ToolrollTheme.onInk)
-                        .padding(.horizontal, 14)
-                        .frame(minHeight: 36)
-                        .background(ToolrollTheme.ink, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    Label(label, systemImage: "arrow.up.right")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Open on Mac")
+                .buttonStyle(SignalButtonStyle(compact: true))
+            } else {
+                HStack(spacing: 8) {
+                    Image(systemName: "lock.fill")
+                        .font(.footnote)
+                        .foregroundStyle(ToolrollTheme.muted)
+                        .accessibilityHidden(true)
+                    Text(label)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(ToolrollTheme.ink)
+                }
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .card(radius: 10)
+                .accessibilityElement(children: .combine)
             }
         }
-        .frame(minHeight: 36)
     }
 
     private var firstFileRoute: DiffRoute? {
@@ -807,7 +804,7 @@ struct TaskDetailView: View {
                 .foregroundStyle(ToolrollTheme.muted)
             Button("Try again") { Task { await appState.loadTask(taskId) } }
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(ToolrollTheme.ink)
+                .foregroundStyle(appearance.signalText)
                 .frame(minHeight: 44)
         }
         .padding(16)
@@ -874,15 +871,20 @@ private struct FileRow: View {
                     .font(.caption.monospaced())
                     .foregroundStyle(ToolrollTheme.muted)
             } else {
-                HStack(spacing: 6) {
-                    Text("+\(entry.additions)").foregroundStyle(ToolrollTheme.success)
-                    Text("−\(entry.deletions)").foregroundStyle(ToolrollTheme.danger)
+                HStack(spacing: 8) {
+                    HStack(spacing: 5) {
+                        Text("+\(entry.additions)").foregroundStyle(ToolrollTheme.success)
+                        Text("−\(entry.deletions)").foregroundStyle(ToolrollTheme.danger)
+                    }
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    if !dynamicTypeSize.isAccessibilitySize {
+                        DiffStatPips(additions: entry.additions, deletions: entry.deletions)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(ToolrollTheme.subtle)
+                        .accessibilityHidden(true)
                 }
-                .font(.caption.monospacedDigit().weight(.semibold))
-                Image(systemName: "chevron.right")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(ToolrollTheme.subtle)
-                    .accessibilityHidden(true)
             }
         }
         .padding(.horizontal, 16)
@@ -891,5 +893,14 @@ private struct FileRow: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(entry.path), \(entry.additions) added, \(entry.deletions) removed")
+    }
+}
+
+private extension String {
+    var trimmingTrailingPeriod: String {
+        if hasSuffix(".") && !hasSuffix("..") {
+            return String(dropLast())
+        }
+        return self
     }
 }

@@ -48,6 +48,7 @@ struct WorkInboxView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.toolrollAppearance) private var appearance
 
     private var page: Loadable<InboxPage> { appState.inbox(filter.view) }
 
@@ -80,14 +81,13 @@ struct WorkInboxView: View {
                         filterControl
                         if let running = activeRunningRow {
                             if filter == .needsYou {
-                                // Slim 1-line bar on Needs so waiting items stay the clear visual hero.
                                 NavigationLink(value: Route.task(running.id)) {
-                                    CompactLiveStrip(row: running, reduceMotion: reduceMotion)
+                                    CompactLiveStrip(row: running)
                                 }
                                 .buttonStyle(.plain)
                             } else if filter == .all {
                                 NavigationLink(value: Route.task(running.id)) {
-                                    LiveAgentBanner(row: running, reduceMotion: reduceMotion)
+                                    LiveAgentBanner(row: running)
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -108,6 +108,7 @@ struct WorkInboxView: View {
                 if page.phase == .loaded { refreshed += 1 }
             }
             .sensoryFeedback(.success, trigger: refreshed)
+            .sensoryFeedback(.selection, trigger: filter)
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: Route.self) { route in
                 switch route {
@@ -167,14 +168,14 @@ struct WorkInboxView: View {
     // MARK: Brand + Connection Header
 
     private var topHeader: some View {
-        HStack(spacing: 12) {
-            BrandMark(size: 32)
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 10) {
+            BrandMark(size: 30)
+            VStack(alignment: .leading, spacing: 1) {
                 Text(headerTitle)
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(ToolrollTheme.ink)
                     .lineLimit(1)
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     if appState.isReconnecting {
                         ProgressView()
                             .controlSize(.mini)
@@ -199,8 +200,7 @@ struct WorkInboxView: View {
                     .foregroundStyle(ToolrollTheme.ink)
                     .padding(.horizontal, 12)
                     .frame(minHeight: 36)
-                    .background(ToolrollTheme.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollTheme.controlLine, lineWidth: 1))
+                    .card(radius: 8)
                     .accessibilityHint("Tries to reach your Mac again.")
             }
             Button {
@@ -208,13 +208,9 @@ struct WorkInboxView: View {
             } label: {
                 Image(systemName: "gearshape")
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(ToolrollTheme.ink)
+                    .foregroundStyle(ToolrollTheme.muted)
                     .frame(width: 36, height: 36)
-                    .background(ToolrollTheme.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(ToolrollTheme.hairline, lineWidth: 1)
-                    )
+                    .card(radius: 9)
                     .frame(minWidth: 44, minHeight: 44)
                     .contentShape(Rectangle())
             }
@@ -278,7 +274,7 @@ struct WorkInboxView: View {
             if hint == .differentMachine {
                 Button("Pair again") { showScanner = true }
                     .font(.footnote.weight(.semibold))
-                    .foregroundStyle(ToolrollTheme.ink)
+                    .foregroundStyle(appearance.signalText)
                     .frame(minHeight: 36)
             }
         }
@@ -304,7 +300,7 @@ struct WorkInboxView: View {
                 .foregroundStyle(ToolrollTheme.muted)
                 .fixedSize(horizontal: false, vertical: true)
             Button("Pair again") { showScanner = true }
-                .buttonStyle(InkButtonStyle(compact: true))
+                .buttonStyle(SignalButtonStyle(compact: true))
             Button("Remove from this iPhone") { confirmRemove = true }
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(ToolrollTheme.danger)
@@ -346,7 +342,7 @@ struct WorkInboxView: View {
                     segment(item)
                 }
             }
-            .padding(2)
+            .padding(3)
             .background(ToolrollTheme.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -365,33 +361,42 @@ struct WorkInboxView: View {
     private func segment(_ item: WorkFilter) -> some View {
         let selected = filter == item
         return Button {
-            withAnimation(.snappy(duration: 0.18)) { filter = item }
+            withAnimation(.easeOut(duration: 0.16)) { filter = item }
         } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: 5) {
                 Text(item.compactTitle)
                     .lineLimit(1)
                     .minimumScaleFactor(0.9)
                 if item == .needsYou, let count = appState.needsCount, count > 0 {
                     Text("\(count)")
                         .font(.caption2.monospacedDigit().weight(.bold))
-                        .foregroundStyle(ToolrollTheme.onInk)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(ToolrollTheme.ink, in: Capsule())
+                        .foregroundStyle(appearance.onSignal)
+                        .padding(.horizontal, 5.5)
+                        .padding(.vertical, 1.5)
+                        .background(appearance.signal, in: Capsule())
                 }
             }
             .font(.footnote.weight(selected ? .semibold : .medium))
             .foregroundStyle(selected ? ToolrollTheme.ink : ToolrollTheme.muted)
-            .frame(maxWidth: .infinity, minHeight: 36)
+            .frame(maxWidth: .infinity, minHeight: 34)
             .background {
                 if selected {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    RoundedRectangle(cornerRadius: 7.5, style: .continuous)
                         .fill(ToolrollTheme.surface)
                         .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(colorScheme == .dark ? ToolrollTheme.controlLine : ToolrollTheme.hairline, lineWidth: 0.75)
+                            RoundedRectangle(cornerRadius: 7.5, style: .continuous)
+                                .strokeBorder(
+                                    LinearGradient(
+                                        colors: colorScheme == .dark
+                                            ? [Color.white.opacity(0.16), Color.white.opacity(0.06)]
+                                            : [ToolrollTheme.hairline, ToolrollTheme.hairline],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    ),
+                                    lineWidth: 0.75
+                                )
                         )
-                        .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.35 : 0.06), radius: 2, y: 1)
+                        .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.35 : 0.05), radius: 2, y: 1)
                 }
             }
             .contentShape(Rectangle())
@@ -401,7 +406,7 @@ struct WorkInboxView: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
-    // MARK: Grouped Signal Paper Sections
+    // MARK: Grouped Signal Sections
 
     @ViewBuilder
     private var content: some View {
@@ -425,7 +430,7 @@ struct WorkInboxView: View {
                 if !needsRows.isEmpty || !value.otherNeeds.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         if showGroupHeaders {
-                            sectionHeader("Needs you", count: needsRows.count + value.otherNeeds.count)
+                            sectionHeader("Needs you", count: needsRows.count + value.otherNeeds.count, accent: true)
                         }
                         VStack(spacing: 0) {
                             ForEach(Array(needsRows.enumerated()), id: \.element.id) { index, row in
@@ -444,7 +449,7 @@ struct WorkInboxView: View {
                                 }
                             }
                         }
-                        .card(needsYou: true)
+                        .card()
                     }
                 }
 
@@ -479,15 +484,24 @@ struct WorkInboxView: View {
         }
     }
 
-    private func sectionHeader(_ title: String, count: Int) -> some View {
+    private func sectionHeader(_ title: String, count: Int, accent: Bool = false) -> some View {
         HStack {
             Text(title)
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(ToolrollTheme.muted)
             Spacer()
-            Text("\(count)")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(ToolrollTheme.subtle)
+            if accent {
+                Text("\(count)")
+                    .font(.caption2.monospacedDigit().weight(.bold))
+                    .foregroundStyle(appearance.onSignal)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(appearance.signal, in: Capsule())
+            } else {
+                Text("\(count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(ToolrollTheme.subtle)
+            }
         }
         .padding(.horizontal, 4)
         .accessibilityElement(children: .combine)
@@ -518,9 +532,9 @@ struct WorkInboxView: View {
                 .foregroundStyle(ToolrollTheme.muted)
                 .multilineTextAlignment(.center)
             if filter == .needsYou {
-                Button("Show all work") { withAnimation(.snappy(duration: 0.18)) { filter = .all } }
+                Button("Show all work") { withAnimation(.easeOut(duration: 0.16)) { filter = .all } }
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(ToolrollTheme.ink)
+                    .foregroundStyle(appearance.signalText)
                     .frame(minHeight: 44)
             }
         }
@@ -578,7 +592,7 @@ struct WorkInboxView: View {
                 .multilineTextAlignment(.center)
             Button("Try again") { Task { await appState.loadInbox(filter.view) } }
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(ToolrollTheme.ink)
+                .foregroundStyle(appearance.signalText)
                 .frame(minHeight: 44)
         }
         .padding(24)
@@ -594,7 +608,7 @@ struct WorkInboxView: View {
             Spacer(minLength: 8)
             Button("Retry") { Task { await appState.loadInbox(filter.view) } }
                 .font(.footnote.weight(.semibold))
-                .foregroundStyle(ToolrollTheme.ink)
+                .foregroundStyle(appearance.signalText)
                 .frame(minHeight: 36)
         }
         .padding(.horizontal, 12)
@@ -610,7 +624,7 @@ struct WorkInboxView: View {
             } else {
                 Button(failure == nil ? "Load more" : "Try loading more") { Task { await appState.loadMore(filter.view) } }
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(ToolrollTheme.ink)
+                    .foregroundStyle(appearance.signalText)
                     .frame(minHeight: 44)
             }
             if let failure, !page.isLoading {
@@ -659,61 +673,56 @@ struct WorkInboxView: View {
     }
 }
 
-/// Compact 1-line dark live bar shown on Needs so the waiting list stays the focal point.
+/// Compact 1-line dark live strip featuring Toolroll's signature /// pulse bars.
 private struct CompactLiveStrip: View {
     let row: WorkRow
-    let reduceMotion: Bool
 
     var body: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(ToolrollTheme.terminalBlue)
-                .frame(width: 6, height: 6)
-                .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
-                .accessibilityHidden(true)
-            Text("Building")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(ToolrollTheme.terminalBlue)
-            Text(row.title)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(ToolrollTheme.terminalInk)
-                .lineLimit(1)
-            Spacer(minLength: 8)
-            HStack(spacing: 4) {
-                Text("Watch")
-                Image(systemName: "chevron.right")
-                    .font(.caption2.weight(.semibold))
+        HStack(spacing: 10) {
+            LivePulseBars(color: ToolrollTheme.terminalBlue, height: 11)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(row.title)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(ToolrollTheme.terminalInk)
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(ToolrollTheme.terminalBlue)
+                    .lineLimit(1)
             }
-            .font(.caption.monospaced().weight(.medium))
-            .foregroundStyle(ToolrollTheme.terminalMuted)
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(ToolrollTheme.terminalMuted)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ToolrollTheme.terminalBg, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(ToolrollTheme.terminalBorder, lineWidth: 1)
-        )
+        .terminalCard(radius: 12)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityHint("Opens the running build")
     }
+
+    private var subtitle: String {
+        if let detail = row.askLine?.trimmingTrailingPeriod, !detail.isEmpty {
+            return detail
+        }
+        if let project = row.project, !project.isEmpty {
+            return "Building · \(project)"
+        }
+        return "Building now"
+    }
 }
 
-/// Full dark live-working card shown on the All tab when an agent is actively running.
+/// Expanded dark live-working banner shown on All when an agent is actively running.
 private struct LiveAgentBanner: View {
     let row: WorkRow
-    let reduceMotion: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(ToolrollTheme.terminalBlue)
-                    .frame(width: 6, height: 6)
-                    .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
-                    .accessibilityHidden(true)
+            HStack(spacing: 8) {
+                LivePulseBars(color: ToolrollTheme.terminalBlue, height: 11)
                 Text(headerLabel)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(ToolrollTheme.terminalBlue)
@@ -736,7 +745,7 @@ private struct LiveAgentBanner: View {
 
             if let detail = row.askLine?.trimmingTrailingPeriod, !detail.isEmpty {
                 Text(detail)
-                    .font(.caption)
+                    .font(.caption.monospaced())
                     .foregroundStyle(ToolrollTheme.terminalMuted)
                     .lineLimit(1)
                     .padding(.horizontal, 10)
@@ -745,13 +754,9 @@ private struct LiveAgentBanner: View {
                     .background(ToolrollTheme.terminalSurface, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             }
         }
-        .padding(16)
+        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ToolrollTheme.terminalBg, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(ToolrollTheme.terminalBorder, lineWidth: 1)
-        )
+        .terminalCard(radius: 12)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityHint("Opens the running build")
@@ -793,28 +798,43 @@ extension CompanionConnectionState {
     }
 }
 
-/// One row inside a grouped Signal paper section.
+/// Clean triage row: quiet status dot + action word on line 1, crisp title on line 2, minimal single-line detail.
 struct WorkRowItem: View {
     let row: WorkRow
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         let kind = row.kind
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
-                meta(kind)
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    StatusDotLabel(word: kind.word(for: row), tone: kind.tone)
+                    if let project = row.project, !project.isEmpty {
+                        Text("· \(project)")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(ToolrollTheme.muted)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 4)
+                    if !row.age.isEmpty {
+                        Text(row.age)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(ToolrollTheme.subtle)
+                    }
+                }
 
                 Text(row.title)
                     .font(.subheadline.weight(kind.isNeedsYou ? .semibold : .medium))
                     .foregroundStyle(ToolrollTheme.ink)
                     .multilineTextAlignment(.leading)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 4 : 2)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 if let ask = cleanedAsk(row.askLine, kind: kind) {
                     Text(ask)
                         .font(.footnote)
                         .foregroundStyle(askColor(ask, kind: kind))
-                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 4 : 2)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
                         .multilineTextAlignment(.leading)
                 }
 
@@ -826,12 +846,12 @@ struct WorkRowItem: View {
             }
 
             Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
+                .font(.caption2.weight(.semibold))
                 .foregroundStyle(ToolrollTheme.subtle)
                 .accessibilityHidden(true)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.vertical, 13)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
@@ -853,27 +873,6 @@ struct WorkRowItem: View {
         }
         return ToolrollTheme.muted
     }
-
-    @ViewBuilder
-    private func meta(_ kind: RowKind) -> some View {
-        let chip = StateChip(word: kind.word(for: row), tone: kind.tone)
-        let detail = [row.project, row.age].compactMap { $0 }.joined(separator: " · ")
-        if dynamicTypeSize.isAccessibilitySize {
-            VStack(alignment: .leading, spacing: 4) {
-                chip
-                Text(detail).font(.caption.monospaced()).foregroundStyle(ToolrollTheme.muted)
-            }
-        } else {
-            HStack(spacing: 8) {
-                chip
-                Text(detail)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(ToolrollTheme.muted)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-        }
-    }
 }
 
 /// A waiting ask inside the grouped Needs you card that isn't a task.
@@ -881,13 +880,21 @@ struct NeedOnlyRow: View {
     let need: NeedRow
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                StateChip(word: word, tone: .needs)
-                Text([need.project, need.age].compactMap { $0 }.joined(separator: " · "))
-                    .font(.caption.monospaced())
-                    .foregroundStyle(ToolrollTheme.muted)
-                    .lineLimit(1)
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                StatusDotLabel(word: word, tone: .needs)
+                if let project = need.project, !project.isEmpty {
+                    Text("· \(project)")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(ToolrollTheme.muted)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                if !need.age.isEmpty {
+                    Text(need.age)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(ToolrollTheme.subtle)
+                }
             }
             Text(need.title)
                 .font(.subheadline.weight(.semibold))
@@ -896,13 +903,14 @@ struct NeedOnlyRow: View {
                 Text(line)
                     .font(.footnote)
                     .foregroundStyle(ToolrollTheme.muted)
+                    .lineLimit(2)
             }
             Label("Open Toolroll on your Mac to answer", systemImage: "lock")
                 .font(.caption)
                 .foregroundStyle(ToolrollTheme.subtle)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.vertical, 13)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
     }
