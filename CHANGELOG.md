@@ -6,13 +6,20 @@ tooling) go on the GitHub release, not here. Entries before 0.9.104 use the olde
 
 ## 0.9.129 — 2026-11-28
 
-End-to-end encrypted iPhone companion pairing and direct-first remote reading from Settings → Phone.
+The Toolroll iPhone app: see what needs you, read plans and changes, and approve with a passkey, from anywhere.
 
 ### New
 
-- **Pair an iPhone from Settings → Phone**: scan a one-time QR code, confirm the 6-character code on both devices, and read your Work inbox, task scope, diffs, and live output on iOS.
-- **Direct-first connection with encrypted relay fallback**: paired phones connect directly over local Wi-Fi or Tailscale via Bonjour first and fall back to the end-to-end encrypted Noise IKpsk2 relay when away from home.
-- **Manage and revoke paired phones**: rename or remove any phone in Settings → Phone; changing your Toolroll password or restoring from backup automatically retires paired devices.
+- **Pair an iPhone** (Settings → Phone): scan a one-time QR code and confirm the six-character code on both screens, then read your Work inbox, plans, diffs and live output on the phone.
+- **Direct first, encrypted relay when away**: the phone connects straight to this Mac on Wi-Fi or Tailscale, and from anywhere else through `relay.toolroll.dev`, which is end-to-end encrypted and never sees what they send.
+- **Approve from your phone with a passkey**: approve plans and accept results in the app, each confirmed with a passkey and checked on this Mac (Settings → Phone → Passkey approvals).
+- **Passkey prompt** (Settings → Phone, operators only): ask for every approval, or once per 15 minutes or per hour; opening the app with your passkey unlocks routine approvals for that window. Shipping, landing, protected work and exceptions always ask, and every change is recorded.
+- **Manage paired phones**: rename or remove a phone in Settings → Phone; changing your Toolroll password or restoring a backup retires paired phones.
+- **Canvas: App · iPhone** (Mac app → Canvas): the iPhone app's real screens, light and dark, beside your web screens; Recapture asks before its first run in each project.
+
+### Fixed
+
+- **Canvas** finds projects in `~/Developer`, files option pins once, links each pin to the task it created, and no longer re-renders every web tile after an iOS edit.
 
 ## 0.9.128 — 2026-11-27
 
