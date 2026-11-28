@@ -2,7 +2,7 @@
 
 High-trust actions initiated from the native iOS companion app — approving a Task plan (`Approve`), accepting a result (`Accept`), landing onto a local branch (`Land`), and merging a pull request (`Ship`) — extend [ADR 0003](0003-browser-only-step-up-for-approvals.md) using WebAuthn Passkeys (`"passkey"` in `src/person-proof.ts`) verified locally by the Workspace inside each verb's existing transactional authority gate. This ADR explicitly unshelves the passkey ceremony deferred in `docs/plans/chat-management.md` (§7, *The phone-approval passkey plan*), while preserving its policy invariant: whenever a project or Workspace enables a *"Passkey required for approvals"* policy, `chat-code` approvals are also refused.
 
-Paired devices connect on a dedicated `paired-device` identity over an end-to-end encrypted Noise `IKpsk2` channel and are **never** treated as local loopback requests (`src/public-access.ts:requestFromThisComputer`). Every high-trust action requires a fresh, single-use, verb-specific server challenge bound to the exact target and digest (`Approve`, `Accept`, `Land`, and `Ship` each carry distinct canonical challenge payloads and human-readable wording so one assertion can never stand in for another).
+Paired devices connect on a dedicated `paired-device` identity over an end-to-end encrypted Noise `IKpsk2` channel and are **never** treated as local loopback requests (`src/public-access.ts:requestFromThisComputer`). Every high-trust action requires a fresh, single-use, verb-specific server challenge bound to the exact target and digest (`Approve`, `Accept`, `Land`, and `Ship` each carry distinct canonical challenge payloads and human-readable wording so one assertion can never stand in for another). The one bounded exception is the approval lease for routine approvals and accepts (see *Passkey Prompt Window* below); `Land`, `Ship`, publishing, protected work, release, exceptions and second-approver votes always need a live assertion.
 
 ## Per-Verb Wiring & Transactional Authority
 
@@ -33,20 +33,31 @@ Apple's Associated Domain (`webcredentials:toolroll.dev`) only permits the iOS a
   - Verification: `clientDataJSON.type === "webauthn.get"`, `clientDataJSON.challenge === base64url(SHA-256(canonicalActionChallenge))`, `clientDataJSON.origin === "https://toolroll.dev"`, `authData.rpIdHash === SHA-256("toolroll.dev")`, flags **`UP=1` AND `UV=1`**, `response.userHandle` matches the stored `userHandle` for `(workspaceId, accountName)` (required for our resident credentials), valid ECDSA-SHA256 signature over `authData || SHA-256(clientDataJSON)`, and `signCount` policy: accept `0 → 0` (standard for Apple synced passkeys), otherwise require strictly increasing `newSignCount > storedSignCount` and persist the new count.
 - **Honest wording & threat limits:** iOS passkeys sync via iCloud Keychain and carry `attestation: "none"`, so `UV=1` proves only that **a passkey registered to this account reported user verification** — NOT that the key is non-exportable hardware on one specific phone, and NOT that biometrics were used (iOS `UV=1` also accepts the device passcode, so someone who observed the passcode can satisfy `UV=1`). Proof rows record the passkey credential and the transport `pairedDeviceId` separately: `{ v: 1, at, generation, digest, verb, cred, deviceId, uv: true, be, bs }`, and audit wording states *"Passkey user verification"*, never *"Face ID"* or *"hardware-proven phone"*.
 
-## Tiered Passkey Freshness Window (Mirroring Mac `FRESH_WINDOW_MS`)
+## Passkey Prompt Window (Approval Lease)
 
-To avoid prompting Face ID / Passkey repeatedly when triaging routine work while keeping high-impact acts strictly per-ceremony, a Workspace configures a fixed **Approval prompt window** in Mac `Settings → Phone` (`Every time [0]` · `15 minutes [15, default]` · `1 hour [60]`):
+Prompting for a passkey on every routine approval makes triage tiring, so routine approvals may ride on a short **approval lease** started by a live assertion. High-impact acts never do. This is a deliberate, bounded exception to "every high-trust action requires a fresh assertion" above; everything outside the list below still needs a live assertion right now.
 
-- **Eligible inside the window (`outcome: "passkey-fresh"`):**
-  - Routine **`Approve`** that satisfies `scope.ts:freshlyApprovable` (single approver, standard permissions, non-protected, non-release, not quarantined).
-  - Clean **`Accept`** with no exception owed (`owedAcceptance !== "exception"`), non-protected result, and `publish === false`.
-- **Never cached (always requires a live WebAuthn assertion right now):**
-  - **`Ship`** (merge PR) and **`Land`** (mutate local branch) — compile-time and runtime restricted to live assertions only.
-  - Protected scopes, escalated terms, release scopes, quarantined filings, second-approver votes, exception accepts, and `Accept + Open PR`.
-- **In-memory session binding & immediate invalidation:**
-  - The freshness lease lives **in memory only on the Mac daemon**, bound to `(deviceId, accountName, credentialId, accountGeneration, recoveryGeneration)` for a fixed span (never extended by use).
-  - Immediately cleared on `passkey.lock` (*Lock approvals now* in iOS Settings), passkey revocation, tightening/disabling the window on Mac, device unpair, password change, backup restore, or daemon restart.
-  - Audit rows honestly record `outcome: "passkey-fresh"` with `provedAt` (the original Passkey assertion timestamp) and `"summary": "Passkey session window"`.
+- **The setting:** Mac `Settings → Phone → Passkey prompt`: `Every approval [0]` · `Once per 15 minutes [15, default]` · `Once per hour [60]`. It is one workspace-wide value (`passkey_approval_policy`, scope `*`), so changing it is an **instance operator's** act, never an approver's: the route admits only an instance operator (`settings.phone-passkey-window`, step-up, cookie-only), and the handler proves the operator and the typed password again **inside the same transaction as the write**, and records an action-ledger row (`passkey prompt changed`, source `policy`, actor, `old → new`). Any change ends every open lease. Approvers who are not operators see the current value read-only. The 15-minute default matches the Mac's `FRESH_WINDOW_MS` for fresh-password approvals; **the 60-minute tier has no Mac precedent and is an owner decision** (kept because the owner chose it; a phone is lost or handed over more often than a Mac, so it is opt-in by the operator, audited, and never the default).
+- **What can start a lease:** only a live assertion that was **verified and consumed** for a routine `task.approve` or a routine `task.accept`, or the explicit **unlock ceremony** below. The lease's credential, device, flags and start time come from the verified result, never from the client's payload. Nothing else starts one: not `Land`, `Ship`, publishing, a second-approver vote, an idempotent replay, or any refused or failed action.
+- **What a lease covers:** a routine `Approve` that satisfies `scope.ts:freshlyApprovable` (one approver, standard permissions, not protected, not release, not quarantined), and a clean `Accept` with no exception owed, a result that is not protected, and `publish === false` (`outcome: "passkey-fresh"`).
+- **What always needs a live assertion (never a lease):** `Land`, `Ship`, publishing (`Accept + Open PR`), protected scopes and protected results, release scopes, exception accepts, and second-approver votes. "Protected" is decided from the scope or result itself, independently of whether separation of duties is already satisfied (two approvals in, or a second person supplied, does not make protected work routine).
+- **Where the lease lives:** in memory on the Mac daemon only, owned by the passkey gate (`src/companion/passkey-gate.ts`), keyed to `(deviceId, accountName, credentialId, accountGeneration, recoveryGeneration)` for a fixed span from the verified ceremony time (never extended by use). The domain gates look the lease up themselves; a caller cannot hand in its own "fresh" proof.
+- **When it ends:** at its fixed expiry, and immediately on `passkey.lock` (*Lock approvals now* on the phone, or the app going to the background), passkey revocation, any change to the window on the Mac, device removal, password change, backup restore, or daemon restart. Leases are never written to disk.
+- **The phone may only tighten:** *Always ask on this iPhone* makes the app request a live assertion for every approval (`forceFresh: true`), whatever the Mac allows. The phone can never widen the window.
+- **Audit:** proof rows record `outcome: "passkey-fresh"` with `provedAt` (the time of the live assertion that started the lease) and the summary *"Passkey session window"*, so a reader can tell a leased approval from a live one.
+
+### Unlock approvals when the app opens
+
+With the phone setting *Unlock approvals when I open Toolroll* (default on), opening the app performs **one live passkey assertion** for an `unlock` challenge bound to the device, the account and the Mac's current window minutes, worded *"Unlock approvals on <device> for N minutes"*. The Mac verifies and consumes it like any other assertion and starts the same in-memory lease a routine approve or accept would, with the same coverage and the same endings. Specifically:
+
+- A local-only Face ID check (LocalAuthentication) **never** counts as approval: the Mac cannot verify it. Offline, it unlocks viewing only.
+- With the window set to `Every approval [0]` on the Mac, an unlock is refused (viewing only); every approval asks.
+- The lease never covers `Land`, `Ship`, publishing, protected work, release, exceptions or second-approver votes.
+- Sending the app to the background locks it (`passkey.lock`).
+
+### "Passkey required for approvals" policy
+
+`passkeyRequiredForApprovals` (`passkey_approval_policy.required`) is enforced where it is read: when set, `chat-code` approvals are refused. In this release **no route or UI sets it**: there is no console or phone control, so nothing in the product turns it on yet (its setter is exercised only by tests). Exposing it as a setting is future work.
 
 ## Considered Options
 

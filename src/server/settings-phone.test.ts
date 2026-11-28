@@ -27,6 +27,8 @@ const engine = vi.hoisted(() => ({
   started: null as null | { ok: true; qr: { pairSessionId: string; [key: string]: unknown }; expiresAtMs: number } | { ok: false; error: string },
   confirmed: { ok: true, deviceId: "dev-1" } as { ok: true; deviceId: string } | { ok: false; error: string },
   calls: [] as unknown[][],
+  passkeys: [] as { account: string; row: { credentialId: string; label: string; createdAt: string; lastUsedAt: string | null; revokedAt: string | null } }[],
+  window: 15 as 0 | 15 | 60,
 }));
 vi.mock("./phone-engine-api.js", () => ({
   pathStates: () => engine.paths!,
@@ -51,16 +53,20 @@ vi.mock("./phone-engine-api.js", () => ({
     engine.calls.push(["remove", service === null ? "off" : "running", deviceId, account]);
     return engine.phones.some(one => one.deviceId === deviceId && one.accountName === account && one.state !== "retired");
   },
-  listPasskeys: () => [],
+  listPasskeys: (_store: unknown, account: string) => engine.passkeys.filter(one => one.account === account).map(one => one.row),
   isPasskeyEnrollmentOpen: () => false,
-  openPasskeyEnrollment: () => ({ expiresAtMs: Date.now() + 300_000 }),
-  revokePasskey: () => false,
-  passkeyWindowMinutes: () => 15,
-  updatePasskeyWindowMinutes: () => {},
+  openPasskeyEnrollment: (_service: unknown, account: string) => { engine.calls.push(["passkey-enable", account]); return { expiresAtMs: Date.now() + 300_000 }; },
+  revokePasskey: (_store: unknown, credentialId: string, account: string) => {
+    engine.calls.push(["passkey-revoke", credentialId, account]);
+    return engine.passkeys.some(one => one.row.credentialId === credentialId && one.account === account && one.row.revokedAt === null);
+  },
+  passkeyWindowMinutes: () => engine.window,
+  savePasskeyWindow: (_store: unknown, minutes: 0 | 15 | 60) => { engine.calls.push(["passkey-window", minutes]); engine.window = minutes; },
+  endPasskeyWindows: (service: unknown) => { engine.calls.push(["passkey-leases-cleared", service === null ? "off" : "running"]); },
   parsePasskeyWindowMinutes: (raw: unknown) => (raw === "0" || raw === 0 ? 0 : raw === "15" || raw === 15 ? 15 : raw === "60" || raw === 60 ? 60 : null),
 }));
 
-let dir: string, store: Store, password = "", nopassPassword = "";
+let dir: string, store: Store, password = "", nopassPassword = "", kimPassword = "";
 const NOW = new Date("2026-11-27T14:00:00Z");
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "so-phone-settings-"));
@@ -70,6 +76,11 @@ beforeAll(() => {
   const sam = addApprover(store, "sam", NOW, { name: "alex", token: alex.token }); if (!sam.ok) throw new Error("second");
   nopassPassword = sam.token;
   store.raw().prepare("UPDATE approver SET password_set = 0 WHERE name = 'sam'").run();
+  // Kim: an approver with a password, limited to one project, so not an instance operator.
+  const kim = addApprover(store, "kim", NOW, { name: "alex", token: alex.token }); if (!kim.ok) throw new Error("third");
+  kimPassword = kim.token;
+  store.raw().prepare("UPDATE approver SET projects_json = '[\"acme/app\"]' WHERE name = 'kim'").run();
+  if (store.isInstanceOperator("kim") || !store.isInstanceOperator("alex")) throw new Error("operator fixture");
 });
 afterAll(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
@@ -95,7 +106,7 @@ const access: PhoneAccess = {
 beforeEach(() => {
   world = { on: true, service: SERVICE, hostedEnabled: false, hostedUrl: "wss://relay.toolroll.dev" };
   engine.paths = { direct: LISTENING, hosted: HOSTED_OFF };
-  engine.views.clear(); engine.bindings.clear(); engine.phones = []; engine.calls = [];
+  engine.views.clear(); engine.bindings.clear(); engine.phones = []; engine.calls = []; engine.passkeys = []; engine.window = 15;
   engine.started = { ok: true, qr: { pairSessionId: "pair_aaaaaaaaaaaaaaaa", macStaticPub: "k", pairPsk: "secret-psk" }, expiresAtMs: NOW.getTime() + 300_000 };
   engine.confirmed = { ok: true, deviceId: "dev-1" };
 });
@@ -433,6 +444,106 @@ describe("your phones", () => {
     world = { ...world, on: false, service: null };
     await call("settings.phone-remove", "/settings/phone/remove", { form: { device: "dev-1", password } });
     expect(engine.calls).toContainEqual(["remove", "off", "dev-1", "alex"]);
+  });
+});
+
+describe("passkey approvals", () => {
+  const phone: PhoneRow = { deviceId: "dev-1", name: "Work iPhone", accountName: "alex", pairedAt: "2026-11-20T09:05:00Z", lastSeenAt: null, state: "active", retiredReason: null };
+  const passkey = (account: string, credentialId = `cred-${account}`) => ({ account, row: { credentialId, label: `${account}'s iPhone`, createdAt: "2026-11-20T09:05:00Z", lastUsedAt: null, revokedAt: null } });
+  // The ledger is append-only: each test reads only the rows written after it started.
+  let since = 0;
+  const ledger = () => store.raw().prepare("SELECT actor, action, outcome, source, detail FROM action_ledger WHERE action = 'passkey prompt changed' AND id > ? ORDER BY id").all(since);
+  beforeEach(() => { since = Number(store.raw().prepare("SELECT COALESCE(MAX(id), 0) AS id FROM action_ledger").get()!["id"]); });
+
+  test("the operator sees the passkey prompt as a choice, in plain words, and what always asks", async () => {
+    engine.phones = [phone];
+    engine.passkeys = [passkey("alex")];
+    const page = await handlers()("settings.phone", "/settings/phone");
+    expect(page.body).toContain("Passkey prompt");
+    expect(page.body).toContain('action="/settings/phone/passkey/window"');
+    expect(page.body).toMatch(/<option value="0"[^>]*>Every approval<\/option>/);
+    expect(page.body).toMatch(/<option value="15" selected>Once per 15 minutes<\/option>/);
+    expect(page.body).toMatch(/<option value="60"[^>]*>Once per hour<\/option>/);
+    expect(page.body).toContain("Shipping, landing, protected work and exceptions always ask.");
+    expect(page.body).not.toContain("recommended");
+    // Status colour only: no amber anywhere on the section, and the one ink act stays Pair an iPhone.
+    expect(page.body).not.toMatch(/amber|warn/i);
+    expect(primaries(page.body)).toBe(1);
+  });
+
+  test("an approver who isn't an instance operator sees the prompt but can't change it", async () => {
+    engine.phones = [{ ...phone, accountName: "kim" }];
+    engine.passkeys = [passkey("kim")];
+    engine.window = 60;
+    const page = await handlers()("settings.phone", "/settings/phone", { as: "kim" });
+    expect(page.body).toContain("Passkey prompt");
+    expect(page.body).toContain("Once per hour");
+    expect(page.body).toContain("Whoever runs this Toolroll sets this.");
+    expect(page.body).not.toContain('action="/settings/phone/passkey/window"');
+  });
+
+  test("changing the prompt: an instance operator's step-up, written with its ledger row (actor, old → new), and every open window ends", async () => {
+    const call = handlers();
+    // Kim holds a password and is an approver, but not an instance operator: refused, nothing written.
+    const kim = await call("settings.phone-passkey-window", "/settings/phone/passkey/window", { as: "kim", form: { password: kimPassword, window: "60" } });
+    expect(kim.status).toBe(403);
+    expect(kim.body).toContain("An instance operator sets the passkey prompt.");
+    // The operator with the wrong password: refused, nothing written.
+    expect((await call("settings.phone-passkey-window", "/settings/phone/passkey/window", { form: { password: "nope", window: "60" } })).status).toBe(403);
+    // A value outside the three choices.
+    expect((await call("settings.phone-passkey-window", "/settings/phone/passkey/window", { form: { password, window: "30" } })).status).toBe(400);
+    expect(engine.window).toBe(15);
+    expect(engine.calls).toEqual([]);
+    expect(ledger()).toEqual([]);
+    // The operator, with the password: written, recorded, and every open window ended.
+    const saved = await call("settings.phone-passkey-window", "/settings/phone/passkey/window", { form: { password, window: "60" } });
+    expect([saved.status, saved.location]).toEqual([303, "/settings/phone#phone-passkeys"]);
+    expect(engine.window).toBe(60);
+    expect(engine.calls).toEqual([["passkey-window", 60], ["passkey-leases-cleared", "running"]]);
+    expect(ledger()).toEqual([{ actor: "alex", action: "passkey prompt changed", outcome: "changed", source: "policy", detail: "Once per 15 minutes → Once per hour" }]);
+    // The same choice again changes nothing and records nothing.
+    engine.calls = [];
+    await call("settings.phone-passkey-window", "/settings/phone/passkey/window", { form: { password, window: "60" } });
+    expect(engine.calls).toEqual([]);
+    expect(ledger()).toHaveLength(1);
+  });
+
+  test("the operator check is made in the write: an operator demoted after the page drew the form is refused", async () => {
+    store.raw().prepare("UPDATE approver SET projects_json = '[\"acme/app\"]' WHERE name = 'alex'").run();
+    try {
+      const tried = await handlers()("settings.phone-passkey-window", "/settings/phone/passkey/window", { form: { password, window: "0" } });
+      expect(tried.status).toBe(403);
+      expect(engine.window).toBe(15);
+      expect(ledger()).toEqual([]);
+    } finally {
+      store.raw().prepare("UPDATE approver SET projects_json = NULL WHERE name = 'alex'").run();
+    }
+  });
+
+  test("enable and revoke: the password typed now, and only your own passkey", async () => {
+    engine.passkeys = [passkey("alex"), passkey("kim")];
+    const call = handlers();
+    expect((await call("settings.phone-passkey-enable", "/settings/phone/passkey/enable", { form: { password: "nope" } })).status).toBe(403);
+    expect((await call("settings.phone-passkey-revoke", "/settings/phone/passkey/revoke", { form: { password: "nope", credential: "cred-alex" } })).status).toBe(403);
+    expect(engine.calls).toEqual([]);
+    expect((await call("settings.phone-passkey-revoke", "/settings/phone/passkey/revoke", { form: { password, credential: "cred-kim" } })).status).toBe(404);
+    const revoked = await call("settings.phone-passkey-revoke", "/settings/phone/passkey/revoke", { form: { password, credential: "cred-alex" } });
+    expect([revoked.status, revoked.location]).toEqual([303, "/settings/phone#phone-passkeys"]);
+    const enabled = await call("settings.phone-passkey-enable", "/settings/phone/passkey/enable", { form: { password } });
+    expect([enabled.status, enabled.location]).toEqual([303, "/settings/phone#phone-passkeys"]);
+    expect(engine.calls).toEqual([["passkey-revoke", "cred-kim", "alex"], ["passkey-revoke", "cred-alex", "alex"], ["passkey-enable", "alex"]]);
+    // Phone access off: nothing to enrol through.
+    world = { ...world, on: false, service: null };
+    expect((await call("settings.phone-passkey-enable", "/settings/phone/passkey/enable", { form: { password } })).status).toBe(409);
+  });
+
+  test("the routes: enable and revoke are an approver's own step-up; the prompt is an instance operator's", () => {
+    const of = (id: string) => ROUTES.find(one => one.id === id)!;
+    for (const id of ["settings.phone-passkey-enable", "settings.phone-passkey-revoke"]) {
+      expect(of(id), id).toMatchObject({ method: "POST", callers: ["cookie"], scope: "step-up", role: "approver", roleBrowser: true, limited: "self" });
+    }
+    expect(of("settings.phone-passkey-window")).toMatchObject({ method: "POST", callers: ["cookie"], scope: "step-up", role: "operator", roleBrowser: true, limited: "deny" });
+    expect(of("settings.phone-passkey-window").roleRefusal?.message).toBe("An instance operator sets the passkey prompt.");
   });
 });
 

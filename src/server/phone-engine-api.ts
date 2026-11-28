@@ -96,16 +96,18 @@ export function revokePasskey(store: Store, credentialId: string, accountName: s
   return revoked;
 }
 
-/** Configured Passkey approval window in minutes (`0` = every time, `15` = 15 min, `60` = 1 hour). */
+/** Configured Passkey approval window in minutes (`0` = every approval, `15` = once per 15 minutes, `60` = once per hour). */
 export function passkeyWindowMinutes(store: Store): PasskeyWindowMinutes {
   return passkeyApprovalWindowMinutes(store);
 }
 
-/** Updates the Passkey approval window and clears active fresh leases when tightened or turned off. */
-export function updatePasskeyWindowMinutes(store: Store, minutes: PasskeyWindowMinutes, service: PhoneService | null = null): void {
-  const prev = passkeyApprovalWindowMinutes(store);
+/** Writes the workspace's passkey prompt window. The caller proves an instance operator and records the ledger row in
+ * the same transaction (settings-phone.ts passkeyWindowAct); this only writes. */
+export function savePasskeyWindow(store: Store, minutes: PasskeyWindowMinutes): void {
   setPasskeyApprovalWindowMinutes(store, minutes);
-  if (minutes === 0 || minutes < prev) {
-    service?.engine.actions?.clearFreshLeases();
-  }
+}
+
+/** Ends every open approval window on this Mac (after the prompt window changed): the next approval asks again. */
+export function endPasskeyWindows(service: PhoneService | null): void {
+  service?.engine.actions?.clearFreshLeases();
 }

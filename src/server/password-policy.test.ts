@@ -102,6 +102,8 @@ const PASSWORD_CEREMONIES = [
   '/chat/config', '/chat', `/chat/file/${'a'.repeat(32)}`, '/chat/ack/1',
   '/connect/pair/ABCD-EFGH',
   '/t/guarded/reopen', '/t/guarded/accept-revision', '/t/guarded/resume', '/t/guarded/approve',
+  // Passkey phone approvals (ADR 0005): set up and revoke are an approver's own; the prompt window is an instance operator's.
+  '/settings/phone/passkey/enable', '/settings/phone/passkey/revoke', '/settings/phone/passkey/window',
 ];
 
 test('every password ceremony has a cookie-only step-up declaration', () => {
