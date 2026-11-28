@@ -110,28 +110,28 @@ struct StateChip: View {
     @Environment(\.showsStaleData) private var stale
 
     var body: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 6) {
             if tone == .live || tone == .done || tone == .failed {
                 Circle()
                     .fill(tone.foreground)
-                    .frame(width: 5.5, height: 5.5)
+                    .frame(width: 6, height: 6)
                     .accessibilityHidden(true)
             }
             Text(word)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(tone.foreground)
         }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 2.5)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
         .background(tone.background, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
         .opacity(stale ? 0.6 : 1)
     }
 }
 
-/// A paper sheet/card on frame grey: 10pt corners, 1px hairline, or a full 1px ink outline when waiting on a person.
+/// A paper sheet/card on frame grey: 12pt corners, 1px hairline, or a full 1px ink outline when waiting on a person.
 struct CardBackground: ViewModifier {
     var needsYou = false
-    var radius: CGFloat = 10
+    var radius: CGFloat = 12
     @Environment(\.showsStaleData) private var stale
 
     func body(content: Content) -> some View {
@@ -174,7 +174,7 @@ struct StaleDataBanner: View {
 }
 
 extension View {
-    func card(needsYou: Bool = false, radius: CGFloat = 10) -> some View {
+    func card(needsYou: Bool = false, radius: CGFloat = 12) -> some View {
         modifier(CardBackground(needsYou: needsYou, radius: radius))
     }
 }

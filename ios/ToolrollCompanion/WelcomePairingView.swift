@@ -26,7 +26,7 @@ struct WelcomePairingView: View {
                         Text("Toolroll")
                             .font(.largeTitle.weight(.bold))
                             .foregroundStyle(ToolrollTheme.ink)
-                        Text("Your agents build. You decide — wherever you are.")
+                        Text("Review plans, inspect diffs, and approve work from your iPhone")
                             .font(.title3)
                             .foregroundStyle(ToolrollTheme.muted)
                             .fixedSize(horizontal: false, vertical: true)
@@ -38,8 +38,8 @@ struct WelcomePairingView: View {
                                 .font(.footnote.weight(.medium))
                                 .foregroundStyle(ToolrollTheme.muted)
 
-                            pairingStep(number: "1", text: "On your Mac, open **Settings → Phone** and choose **Pair an iPhone**.")
-                            pairingStep(number: "2", text: "Scan the QR code and confirm the six-character match on both screens.")
+                            pairingStep(number: "1", text: "On your Mac, open **Settings → Phone** and choose **Pair an iPhone**")
+                            pairingStep(number: "2", text: "Scan the QR code and confirm the six-character match on both screens")
                         }
                         .padding(16)
                         .frame(maxWidth: .infinity, alignment: .leading)

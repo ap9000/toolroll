@@ -4,7 +4,6 @@ import ToolrollCompanionCore
 struct TaskDetailView: View {
     let appState: CompanionAppState
     let taskId: String
-    /// The run the Live sheet watches, fixed when it opens (the task's next step may change underneath it).
     @State private var liveSheet: LiveSheet?
     @State private var showUsual = false
     @State private var showHistory = false
@@ -12,7 +11,6 @@ struct TaskDetailView: View {
     @State private var showOpenOnMac = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    /// Handoff type for "this task, on the Mac" (Info.plist NSUserActivityTypes).
     static let handoffActivity = "dev.toolroll.ios.task"
 
     struct LiveSheet: Identifiable {
@@ -28,8 +26,14 @@ struct TaskDetailView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    statusHeaderCard
+                VStack(alignment: .leading, spacing: 16) {
+                    if let cards = steps.value, let terms = cards.waitingTerms {
+                        // Decide gets one unified Approval Brief sheet + one dark Files manifest (2 surfaces total).
+                        decideBriefView(terms: terms)
+                    } else {
+                        statusHeaderCard
+                    }
+
                     if let failure = steps.failure, steps.value == nil {
                         loadFailure(failure)
                     } else if steps.value == nil {
@@ -40,9 +44,6 @@ struct TaskDetailView: View {
                         StaleDataBanner(lastUpdated: appState.lastUpdated)
                     }
                     if let cards = steps.value {
-                        if let terms = cards.waitingTerms {
-                            decideScopeLayout(terms)
-                        }
                         nowSection(cards)
                     }
                     changesSection
@@ -54,7 +55,7 @@ struct TaskDetailView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
-                .padding(.bottom, 16)
+                .padding(.bottom, 20)
             }
             .background(ToolrollTheme.paper.ignoresSafeArea())
             .environment(\.showsStaleData, appState.isOffline)
@@ -108,8 +109,6 @@ struct TaskDetailView: View {
 
     private var handoffURL: URL? { appState.handoffURL(task: taskId) }
 
-    static let needsYouDetail = "It's at the top of Toolroll's Needs you list."
-
     private var title: String {
         row?.title ?? steps.value?.task.title ?? "Task"
     }
@@ -119,10 +118,228 @@ struct TaskDetailView: View {
         return next.isOnMac || next == .reviewChanges
     }
 
-    // MARK: Compact Signal Status Header Card
+    // MARK: Unified Decide Approval Brief (2 Calm Surfaces Total)
+
+    @ViewBuilder
+    private func decideBriefView(terms: ApprovalTerms) -> some View {
+        let agentRow = terms.rows.first { matches($0.label, ["agent"]) }
+        let goalRow = terms.rows.first { matches($0.label, ["goal"]) }
+        let doneRow = terms.rows.first { matches($0.label, ["done when", "done", "verify"]) }
+        let filesRow = terms.rows.first { matches($0.label, ["files"]) }
+
+        let excluded = Set([agentRow, goalRow, doneRow, filesRow].compactMap { $0?.label.lowercased() })
+        let specRows = terms.rows.filter { !excluded.contains($0.label.lowercased()) }
+        let showGoal = goalRow.map { !repeats($0.words, title) } ?? false
+
+        // Surface 1: One unified Approval Brief paper sheet (1px ink outline).
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    StateChip(word: row?.kind.word(for: row) ?? "Decide", tone: .needs)
+                    if let meta = headerMeta {
+                        Text(meta)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(ToolrollTheme.muted)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(ToolrollTheme.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityAddTraits(.isHeader)
+
+                if let agent = agentRow?.words, !agent.isEmpty {
+                    Text(verbatim: agent)
+                        .font(.footnote)
+                        .foregroundStyle(ToolrollTheme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let revision = terms.revision {
+                    Text(verbatim: revision)
+                        .font(.footnote)
+                        .foregroundStyle(ToolrollTheme.muted)
+                }
+
+                ForEach(Array(terms.warnings.enumerated()), id: \.offset) { _, warning in
+                    Text(verbatim: warning)
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(ToolrollTheme.ink)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(ToolrollTheme.neutralSoft, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+
+                if showGoal, let goal = goalRow?.words {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Goal")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(ToolrollTheme.muted)
+                        Text(verbatim: goal)
+                            .font(.subheadline)
+                            .foregroundStyle(ToolrollTheme.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.top, 2)
+                }
+
+                if let done = doneRow?.words {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Done when")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(ToolrollTheme.muted)
+                        Text(verbatim: done)
+                            .font(.subheadline)
+                            .foregroundStyle(ToolrollTheme.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.top, 2)
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if !specRows.isEmpty {
+                Divider().overlay(ToolrollTheme.hairline)
+                ForEach(Array(specRows.enumerated()), id: \.offset) { index, item in
+                    specRowView(label: item.label, value: item.words, lines: item.lines)
+                    if index < specRows.count - 1 || !terms.usual.isEmpty {
+                        Divider().overlay(ToolrollTheme.hairline).padding(.leading, 16)
+                    }
+                }
+            }
+
+            if !terms.usual.isEmpty {
+                if specRows.isEmpty {
+                    Divider().overlay(ToolrollTheme.hairline)
+                }
+                DisclosureGroup(isExpanded: $showUsual) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(terms.usual.enumerated()), id: \.offset) { _, item in
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(verbatim: item.label)
+                                    .font(.caption)
+                                    .foregroundStyle(ToolrollTheme.muted)
+                                Spacer(minLength: 12)
+                                Text(verbatim: item.words)
+                                    .font(.footnote)
+                                    .foregroundStyle(ToolrollTheme.ink)
+                                    .multilineTextAlignment(.trailing)
+                            }
+                            .accessibilityElement(children: .combine)
+                        }
+                    }
+                    .padding(.top, 8)
+                } label: {
+                    Text(verbatim: terms.usualLabel)
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(ToolrollTheme.muted)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+        }
+        .card(needsYou: true)
+
+        // Surface 2: One dark monospace Files in scope manifest (the visual anchor on Decide).
+        if let filesRow {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Files in scope")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(ToolrollTheme.terminalInk)
+                    Spacer()
+                    if !filesRow.lines.isEmpty {
+                        Text("\(filesRow.lines.count) \(filesRow.lines.count == 1 ? "file" : "files")")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(ToolrollTheme.terminalMuted)
+                    }
+                }
+                if !filesRow.lines.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(filesRow.lines.enumerated()), id: \.offset) { _, line in
+                            HStack(spacing: 8) {
+                                Image(systemName: "doc.text")
+                                    .font(.caption2)
+                                    .foregroundStyle(ToolrollTheme.terminalMuted)
+                                    .accessibilityHidden(true)
+                                Text(verbatim: line)
+                                    .font(.footnote.monospaced())
+                                    .foregroundStyle(ToolrollTheme.terminalInk)
+                                    .lineLimit(2)
+                            }
+                        }
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(ToolrollTheme.terminalSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                } else if !filesRow.words.isEmpty {
+                    Text(verbatim: filesRow.words)
+                        .font(.footnote)
+                        .foregroundStyle(ToolrollTheme.terminalMuted)
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(ToolrollTheme.terminalBg, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(ToolrollTheme.terminalBorder, lineWidth: 1)
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func specRowView(label: String, value: String, lines: [String]) -> some View {
+        let compactInline = lines.isEmpty && value.count <= 34 && !dynamicTypeSize.isAccessibilitySize
+        if compactInline {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(verbatim: label)
+                    .font(.footnote)
+                    .foregroundStyle(ToolrollTheme.muted)
+                Spacer(minLength: 8)
+                Text(verbatim: sentenceCased(value))
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(ToolrollTheme.ink)
+                    .multilineTextAlignment(.trailing)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .accessibilityElement(children: .combine)
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(verbatim: label)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(ToolrollTheme.muted)
+                Text(verbatim: sentenceCased(value))
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(ToolrollTheme.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                    Text(verbatim: line)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(ToolrollTheme.ink)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private func sentenceCased(_ raw: String) -> String {
+        guard let first = raw.first, first.isLowercase else { return raw }
+        return first.uppercased() + raw.dropFirst()
+    }
+
+    // MARK: Compact Signal Status Header Card (Review / Running / Done)
 
     private var statusHeaderCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 if let row {
                     StateChip(word: row.kind.word(for: row), tone: row.kind.tone)
@@ -146,7 +363,7 @@ struct TaskDetailView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityAddTraits(.isHeader)
 
-            if let subtitle = compactSubtitle {
+            if let subtitle = cleanedHeaderSubtitle {
                 if next == .reviewChanges && subtitle.localizedCaseInsensitiveContains("passed") {
                     HStack(spacing: 6) {
                         Image(systemName: "checkmark.circle.fill")
@@ -156,8 +373,8 @@ struct TaskDetailView: View {
                             .font(.footnote.weight(.medium))
                             .foregroundStyle(ToolrollTheme.success)
                     }
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
                     .background(ToolrollTheme.successSoft, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 } else {
                     markdownText(subtitle)
@@ -167,7 +384,7 @@ struct TaskDetailView: View {
                 }
             }
         }
-        .padding(14)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .card(needsYou: isWaitingOnPerson)
     }
@@ -179,11 +396,13 @@ struct TaskDetailView: View {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    private var compactSubtitle: String? {
-        if let agentRow = steps.value?.waitingTerms?.rows.first(where: { $0.label.lowercased() == "agent" }) {
-            return agentRow.words
+    private var cleanedHeaderSubtitle: String? {
+        guard var line = headerLine else { return nil }
+        if line.hasSuffix(".") && !line.hasSuffix("..") { line = String(line.dropLast()) }
+        if next == .reviewChanges, line.hasPrefix("The result is ready. ") {
+            return String(line.dropFirst("The result is ready. ".count))
         }
-        return headerLine
+        return line
     }
 
     private var headerLine: String? {
@@ -208,236 +427,6 @@ struct TaskDetailView: View {
         return min(x.count, y.count) >= 10 && (x.hasPrefix(y) || y.hasPrefix(x))
     }
 
-    // MARK: C-Style Decide Scope Layout (Guardrails + Contract + Dark File Manifest)
-
-    @ViewBuilder
-    private func decideScopeLayout(_ terms: ApprovalTerms) -> some View {
-        let budgetRow = terms.rows.first { matches($0.label, ["may cost", "budget", "cost"]) }
-        let networkRow = terms.rows.first { matches($0.label, ["network", "sandbox"]) }
-        let goalRow = terms.rows.first { matches($0.label, ["goal"]) }
-        let doneRow = terms.rows.first { matches($0.label, ["done when", "done", "verify"]) }
-        let filesRow = terms.rows.first { matches($0.label, ["files"]) }
-        let agentRow = terms.rows.first { matches($0.label, ["agent"]) }
-
-        let handledLabels = Set([budgetRow, networkRow, goalRow, doneRow, filesRow, agentRow].compactMap { $0?.label.lowercased() })
-        let remainingRows = terms.rows.filter { !handledLabels.contains($0.label.lowercased()) }
-
-        VStack(alignment: .leading, spacing: 12) {
-            // Revision note & warnings first if present
-            if let revision = terms.revision {
-                Text(verbatim: revision)
-                    .font(.footnote)
-                    .foregroundStyle(ToolrollTheme.muted)
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .card()
-            }
-            ForEach(Array(terms.warnings.enumerated()), id: \.offset) { _, warning in
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.footnote)
-                        .foregroundStyle(ToolrollTheme.ink)
-                    Text(verbatim: warning)
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(ToolrollTheme.ink)
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(ToolrollTheme.neutralSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ToolrollTheme.controlLine, lineWidth: 1))
-            }
-
-            // 2-up Guardrail Tiles (Budget + Sandbox/Network)
-            if budgetRow != nil || networkRow != nil {
-                if dynamicTypeSize.isAccessibilitySize {
-                    VStack(spacing: 8) {
-                        if let budgetRow { guardrailTile(icon: "dollarsign.circle", title: budgetRow.label, value: budgetRow.words, mono: true) }
-                        if let networkRow { guardrailTile(icon: "network", title: networkRow.label, value: networkRow.words, mono: false) }
-                    }
-                } else {
-                    HStack(alignment: .top, spacing: 10) {
-                        if let budgetRow {
-                            guardrailTile(icon: "dollarsign.circle", title: "Guardrail", value: budgetRow.words, mono: true)
-                        }
-                        if let networkRow {
-                            guardrailTile(icon: "lock.shield", title: networkRow.label, value: networkRow.words, mono: false)
-                        }
-                    }
-                }
-            }
-
-            // Verification Contract Card (Goal + Done when)
-            if goalRow != nil || doneRow != nil {
-                VStack(alignment: .leading, spacing: 0) {
-                    if let goalRow {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Goal")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(ToolrollTheme.muted)
-                            Text(verbatim: goalRow.words)
-                                .font(.subheadline)
-                                .foregroundStyle(ToolrollTheme.ink)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .padding(13)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityElement(children: .combine)
-                    }
-                    if goalRow != nil && doneRow != nil {
-                        Divider().overlay(ToolrollTheme.hairline).padding(.leading, 13)
-                    }
-                    if let doneRow {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Done when")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(ToolrollTheme.muted)
-                            Text(verbatim: doneRow.words)
-                                .font(.subheadline)
-                                .foregroundStyle(ToolrollTheme.ink)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .padding(13)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityElement(children: .combine)
-                    }
-                }
-                .card()
-            }
-
-            // Dark Monospace File Manifest (Direction C)
-            if let filesRow {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Files in scope")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(ToolrollTheme.terminalMuted)
-                        Spacer()
-                        if !filesRow.lines.isEmpty {
-                            Text("\(filesRow.lines.count) \(filesRow.lines.count == 1 ? "file" : "files")")
-                                .font(.caption2.monospaced().weight(.semibold))
-                                .foregroundStyle(ToolrollTheme.terminalInk)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(ToolrollTheme.terminalSurface, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                        }
-                    }
-                    if !filesRow.words.isEmpty {
-                        Text(verbatim: filesRow.words)
-                            .font(.caption)
-                            .foregroundStyle(ToolrollTheme.terminalMuted)
-                    }
-                    if !filesRow.lines.isEmpty {
-                        VStack(alignment: .leading, spacing: 5) {
-                            ForEach(Array(filesRow.lines.enumerated()), id: \.offset) { _, line in
-                                HStack(spacing: 8) {
-                                    Text(line.contains("test") ? "A" : "M")
-                                        .font(.caption2.monospaced().weight(.bold))
-                                        .foregroundStyle(line.contains("test") ? ToolrollTheme.terminalGreen : ToolrollTheme.terminalBlue)
-                                        .frame(width: 12)
-                                    Text(verbatim: line)
-                                        .font(.caption.monospaced())
-                                        .foregroundStyle(ToolrollTheme.terminalInk)
-                                        .lineLimit(2)
-                                }
-                            }
-                        }
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(ToolrollTheme.terminalSurface, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    }
-                }
-                .padding(13)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(ToolrollTheme.terminalBg, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(ToolrollTheme.terminalBorder, lineWidth: 1)
-                )
-            }
-
-            // Remaining scope rules (Tools, etc.) in quiet hairline key-value rows
-            if !remainingRows.isEmpty {
-                VStack(spacing: 0) {
-                    ForEach(Array(remainingRows.enumerated()), id: \.offset) { index, row in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(verbatim: row.label)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(ToolrollTheme.muted)
-                            Text(verbatim: row.words)
-                                .font(.footnote)
-                                .foregroundStyle(ToolrollTheme.ink)
-                                .fixedSize(horizontal: false, vertical: true)
-                            ForEach(Array(row.lines.enumerated()), id: \.offset) { _, line in
-                                Text(verbatim: line)
-                                    .font(.caption.monospaced())
-                                    .foregroundStyle(ToolrollTheme.ink)
-                            }
-                        }
-                        .padding(13)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityElement(children: .combine)
-                        if index < remainingRows.count - 1 {
-                            Divider().overlay(ToolrollTheme.hairline).padding(.leading, 13)
-                        }
-                    }
-                }
-                .card()
-            }
-
-            // Project defaults fold
-            if !terms.usual.isEmpty {
-                DisclosureGroup(isExpanded: $showUsual) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Divider().overlay(ToolrollTheme.hairline)
-                        ForEach(Array(terms.usual.enumerated()), id: \.offset) { _, item in
-                            HStack(alignment: .firstTextBaseline) {
-                                Text(verbatim: item.label)
-                                    .font(.caption.weight(.medium))
-                                    .foregroundStyle(ToolrollTheme.muted)
-                                Spacer(minLength: 8)
-                                Text(verbatim: item.words)
-                                    .font(.footnote)
-                                    .foregroundStyle(ToolrollTheme.ink)
-                                    .multilineTextAlignment(.trailing)
-                            }
-                            .accessibilityElement(children: .combine)
-                        }
-                    }
-                    .padding(.top, 8)
-                } label: {
-                    Text(verbatim: terms.usualLabel)
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(ToolrollTheme.ink)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .card()
-            }
-        }
-    }
-
-    private func guardrailTile(icon: String, title: String, value: String, mono: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 5) {
-                Image(systemName: icon)
-                    .font(.caption)
-                    .foregroundStyle(ToolrollTheme.muted)
-                    .accessibilityHidden(true)
-                Text(title)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(ToolrollTheme.muted)
-            }
-            Text(verbatim: value)
-                .font(mono ? .footnote.monospaced().weight(.semibold) : .footnote.weight(.semibold))
-                .foregroundStyle(ToolrollTheme.ink)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .card()
-        .accessibilityElement(children: .combine)
-    }
-
     private func matches(_ label: String, _ keys: [String]) -> Bool {
         let lower = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return keys.contains(lower)
@@ -456,7 +445,7 @@ struct TaskDetailView: View {
         if !current.isEmpty || !notes.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 sectionTitle("Now")
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 12) {
                     ForEach(Array(current.enumerated()), id: \.offset) { _, card in
                         HStack(alignment: .firstTextBaseline, spacing: 10) {
                             Image(systemName: symbol(card.mark))
@@ -481,7 +470,7 @@ struct TaskDetailView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .padding(14)
+                .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .card()
             }
@@ -530,7 +519,7 @@ struct TaskDetailView: View {
                         .buttonStyle(.plain)
                         .disabled(entry.binary)
                         if index < value.files.count - 1 {
-                            Divider().overlay(ToolrollTheme.hairline).padding(.leading, 40)
+                            Divider().overlay(ToolrollTheme.hairline).padding(.leading, 44)
                         }
                     }
                 }
@@ -559,14 +548,14 @@ struct TaskDetailView: View {
         return "\(files) · +\(added) −\(removed)"
     }
 
-    // MARK: Upcoming + History (Vertical Timeline Rail)
+    // MARK: Upcoming + History
 
     @ViewBuilder
     private func upcomingSection(_ cards: StepCards) -> some View {
         let upcoming = (cards.cards ?? []).filter { $0.inChain && $0.state == .todo }
         if !upcoming.isEmpty {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("Next:")
+                Text("Next")
                     .font(.caption.weight(.semibold))
                 Text(upcoming.map(\.label).joined(separator: " → "))
                     .font(.caption)
@@ -588,14 +577,14 @@ struct TaskDetailView: View {
                 }
                 detailsBlock(cards)
             }
-            .padding(.top, 10)
+            .padding(.top, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
         } label: {
             Text(finished.isEmpty ? "Details" : "History · \(finished.count) finished")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(ToolrollTheme.ink)
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .card()
     }
@@ -606,19 +595,19 @@ struct TaskDetailView: View {
                 Circle()
                     .fill(tone(card.mark).hue)
                     .frame(width: 8, height: 8)
-                    .padding(.top, 5)
+                    .padding(.top, 4)
                 if !isLast {
                     Rectangle()
                         .fill(ToolrollTheme.hairline)
                         .frame(width: 1)
                         .frame(maxHeight: .infinity)
-                        .padding(.vertical, 3)
+                        .padding(.vertical, 4)
                 }
             }
             .frame(width: 12)
             .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline) {
                     Text(card.label)
                         .font(.footnote.weight(.semibold))
@@ -659,7 +648,7 @@ struct TaskDetailView: View {
     }
 
     private func detailsBlock(_ cards: StepCards) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 6) {
             Divider().overlay(ToolrollTheme.hairline).padding(.vertical, 8)
             fact("Task", cards.task.id)
             if let run = cards.latestRun { fact("Latest run", "#\(run)") }
@@ -698,11 +687,11 @@ struct TaskDetailView: View {
                 Group {
                     switch next {
                     case .approveOnMac:
-                        compactHandoffBar("Approve on Mac")
+                        compactHandoffBar("Approve on your Mac")
                     case .answerOnMac:
-                        compactHandoffBar("Answer on Mac")
+                        compactHandoffBar("Answer on your Mac")
                     case .unblockOnMac:
-                        compactHandoffBar("Unblock on Mac")
+                        compactHandoffBar("Unblock on your Mac")
                     case .reviewChanges:
                         HStack(spacing: 8) {
                             if let first = firstFileRoute {
@@ -733,10 +722,10 @@ struct TaskDetailView: View {
                         Button {
                             liveSheet = LiveSheet(run: run)
                         } label: {
-                            HStack(spacing: 6) {
+                            HStack(spacing: 8) {
                                 Circle()
                                     .fill(ToolrollTheme.terminalBlue)
-                                    .frame(width: 7, height: 7)
+                                    .frame(width: 6, height: 6)
                                 Text("Watch live output")
                             }
                             .font(.subheadline.weight(.semibold))
@@ -751,27 +740,22 @@ struct TaskDetailView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.vertical, 10)
+                .padding(.vertical, 12)
             }
             .background(ToolrollTheme.surface)
         }
     }
 
     private func compactHandoffBar(_ label: String) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: "lock.fill")
                     .font(.footnote)
                     .foregroundStyle(ToolrollTheme.muted)
                     .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(label)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(ToolrollTheme.ink)
-                    Text("Passkey approvals coming next")
-                        .font(.caption2)
-                        .foregroundStyle(ToolrollTheme.muted)
-                }
+                Text(label)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(ToolrollTheme.ink)
             }
             .accessibilityElement(children: .combine)
             Spacer(minLength: 8)
@@ -783,13 +767,14 @@ struct TaskDetailView: View {
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(ToolrollTheme.onInk)
                         .padding(.horizontal, 14)
-                        .frame(minHeight: 38)
+                        .frame(minHeight: 36)
                         .background(ToolrollTheme.ink, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Open on Mac")
             }
         }
+        .frame(minHeight: 36)
     }
 
     private var firstFileRoute: DiffRoute? {
@@ -825,7 +810,7 @@ struct TaskDetailView: View {
                 .foregroundStyle(ToolrollTheme.ink)
                 .frame(minHeight: 44)
         }
-        .padding(14)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .card()
     }
@@ -862,11 +847,11 @@ private struct FileRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             Image(systemName: entry.binary ? "doc.zipper" : "doc.text")
                 .font(.footnote)
                 .foregroundStyle(ToolrollTheme.muted)
-                .frame(width: 18)
+                .frame(width: 16)
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -889,7 +874,7 @@ private struct FileRow: View {
                     .font(.caption.monospaced())
                     .foregroundStyle(ToolrollTheme.muted)
             } else {
-                HStack(spacing: 5) {
+                HStack(spacing: 6) {
                     Text("+\(entry.additions)").foregroundStyle(ToolrollTheme.success)
                     Text("−\(entry.deletions)").foregroundStyle(ToolrollTheme.danger)
                 }
@@ -900,8 +885,8 @@ private struct FileRow: View {
                     .accessibilityHidden(true)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
         .frame(minHeight: 48)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
