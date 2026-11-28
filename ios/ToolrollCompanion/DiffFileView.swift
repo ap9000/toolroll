@@ -3,7 +3,6 @@ import ToolrollCompanionCore
 
 /// Builds a file's flat row list once and keeps it while the same file is shown.
 final class DiffLayoutCache {
-    /// One row of the flat list: a hunk's header or one of its lines.
     enum Row {
         case hunk(index: Int, header: String)
         case line(DiffLine)
@@ -31,18 +30,15 @@ final class DiffLayoutCache {
 }
 
 /// One file's changes, read lazily with `task.diff { task, run, file }`.
-/// Dynamic Type monospaced text, line wrapping on by default, scalable line numbers. Up to thousands of lines, so the
-/// lines are one flat lazy list; without wrapping the whole list scrolls sideways together. Previous/next move
-/// across the result's files.
+/// Preserves the two-column old/new gutter and file stepper while adding Signal light/dark surfaces,
+/// a crisp vertical gutter hairline, and horizontal scroll toggle.
 struct DiffFileView: View {
     let appState: CompanionAppState
     @State private var route: DiffRoute
-    @AppStorage("diff.wrapLines") private var wrapLines = true
-    @ScaledMetric(relativeTo: .footnote) private var gutterWidth: CGFloat = 30
-    /// About one monospaced footnote character's advance, for sizing unwrapped lines.
+    @AppStorage("diff.wrapLines") private var wrapLines = false
+    @ScaledMetric(relativeTo: .footnote) private var gutterWidth: CGFloat = 28
     @ScaledMetric(relativeTo: .footnote) private var charWidth: CGFloat = 8
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    /// The flat rows of the file on screen, built once per loaded file instead of on every redraw (G5).
     @State private var layoutCache = DiffLayoutCache()
 
     init(appState: CompanionAppState, route: DiffRoute) {
@@ -52,7 +48,6 @@ struct DiffFileView: View {
 
     private var file: Loadable<ResultDiffFile> { appState.diffFile(route) }
 
-    /// The result's files that open (binary ones don't), in order, for previous/next.
     private var siblings: [DiffRoute] {
         guard let value = appState.diff(route.task).value, let run = value.run, run == route.run else { return [route] }
         let routes = value.files.filter { !$0.binary }.map {
@@ -66,31 +61,42 @@ struct DiffFileView: View {
     }
 
     var body: some View {
-        GeometryReader { geometry in
-            let viewport = max(0, geometry.size.width - 32)
-            Group {
-                if wrapLines {
-                    ScrollView(.vertical) { content(viewport: viewport) }
-                } else {
-                    // Top-leading, so a short file starts at the top instead of centring in the two-way scroll.
-                    ScrollView([.horizontal, .vertical]) { content(viewport: viewport) }
+        VStack(spacing: 0) {
+            pinnedFileHeader
+            Divider().overlay(ToolrollTheme.hairline)
+            GeometryReader { geometry in
+                let viewport = max(0, geometry.size.width)
+                let minHeight = max(0, geometry.size.height)
+                Group {
+                    if wrapLines {
+                        ScrollView(.vertical) {
+                            content(viewport: viewport)
+                                .frame(minHeight: minHeight, alignment: .topLeading)
+                        }
+                    } else {
+                        ScrollView([.horizontal, .vertical]) {
+                            content(viewport: viewport)
+                                .frame(minHeight: minHeight, alignment: .topLeading)
+                        }
                         .defaultScrollAnchor(.topLeading)
+                    }
                 }
+                .id(route)
             }
-            .id(route)
         }
-        .background(ToolrollTheme.paper.ignoresSafeArea())
+        .background(ToolrollTheme.surface.ignoresSafeArea())
         .navigationTitle((route.path as NSString).lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Picker("Long lines", selection: $wrapLines) {
-                        Label("Wrap long lines", systemImage: "text.alignleft").tag(true)
                         Label("Scroll sideways", systemImage: "arrow.left.and.right").tag(false)
+                        Label("Wrap long lines", systemImage: "text.alignleft").tag(true)
                     }
                 } label: {
                     Image(systemName: wrapLines ? "text.alignleft" : "arrow.left.and.right")
+                        .font(.subheadline)
                         .foregroundStyle(ToolrollTheme.ink)
                 }
                 .accessibilityLabel("Long lines")
@@ -108,20 +114,38 @@ struct DiffFileView: View {
         }
     }
 
+    private var pinnedFileHeader: some View {
+        HStack(spacing: 8) {
+            Text(route.path)
+                .font(.caption.monospaced())
+                .foregroundStyle(ToolrollTheme.muted)
+                .lineLimit(1)
+                .truncationMode(.head)
+                .textSelection(.enabled)
+            Spacer(minLength: 8)
+            HStack(spacing: 6) {
+                Text("+\(route.additions)").foregroundStyle(ToolrollTheme.success)
+                Text("−\(route.deletions)").foregroundStyle(ToolrollTheme.danger)
+            }
+            .font(.caption.monospacedDigit().weight(.semibold))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(ToolrollTheme.paper)
+        .accessibilityElement(children: .combine)
+    }
+
     @ViewBuilder
     private func content(viewport: CGFloat) -> some View {
         LazyVStack(alignment: .leading, spacing: 0) {
-            header
-                .frame(width: viewport, alignment: .leading)
-                .padding(.bottom, 14)
             if let value = file.value {
                 let layout = rows(value)
-                // Unwrapped, every line is as wide as the widest, so add/remove highlights run the full width.
-                let lineWidth = max(viewport, CGFloat(layout.widest) * charWidth * 1.1 + gutterWidth * 2 + 40)
+                let lineWidth = max(viewport, CGFloat(layout.widest) * charWidth * 1.12 + gutterWidth * 2 + 52)
                 if value.file.hunks.isEmpty {
                     Text(value.file.meta.isEmpty ? "No line changes to show." : value.file.meta.joined(separator: "\n"))
                         .font(.footnote.monospaced())
                         .foregroundStyle(ToolrollTheme.muted)
+                        .padding(16)
                         .frame(width: viewport, alignment: .leading)
                 }
                 ForEach(Array(layout.rows.enumerated()), id: \.offset) { _, row in
@@ -138,8 +162,8 @@ struct DiffFileView: View {
                     Text("This file is too long to show in full here. Open it on your Mac for the rest.")
                         .font(.footnote)
                         .foregroundStyle(ToolrollTheme.muted)
+                        .padding(16)
                         .frame(width: viewport, alignment: .leading)
-                        .padding(.top, 14)
                 }
             } else if let failure = file.failure {
                 VStack(alignment: .leading, spacing: 8) {
@@ -154,56 +178,51 @@ struct DiffFileView: View {
                         .foregroundStyle(ToolrollTheme.ink)
                         .frame(minHeight: 44)
                 }
+                .padding(16)
                 .frame(width: viewport, alignment: .leading)
             } else {
                 ProgressView()
                     .frame(width: viewport)
-                    .padding(.vertical, 32)
+                    .padding(.vertical, 40)
             }
         }
-        .padding(16)
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(route.path)
-                .font(.footnote.monospaced())
-                .foregroundStyle(ToolrollTheme.ink)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 10) {
-                Text("+\(route.additions) added").foregroundStyle(ToolrollTheme.success)
-                Text("−\(route.deletions) removed").foregroundStyle(ToolrollTheme.danger)
-            }
-            .font(.footnote.monospacedDigit().weight(.semibold))
-            .accessibilityElement(children: .combine)
-        }
+        .padding(.bottom, 16)
     }
 
     private func fileStepper(files: [DiffRoute], index: Int) -> some View {
         VStack(spacing: 0) {
-            Divider()
+            Divider().overlay(ToolrollTheme.hairline)
             HStack {
                 Button {
                     route = files[index - 1]
                 } label: {
                     Image(systemName: "chevron.left")
-                        .font(.body.weight(.semibold))
+                        .font(.subheadline.weight(.semibold))
                         .frame(minWidth: 44, minHeight: 44)
                 }
                 .disabled(index == 0)
                 .accessibilityLabel("Previous file")
+
                 Spacer()
-                Text("\(index + 1) of \(files.count)")
-                    .font(.subheadline.monospacedDigit())
-                    .foregroundStyle(ToolrollTheme.muted)
-                    .accessibilityLabel("File \(index + 1) of \(files.count)")
+
+                VStack(spacing: 1) {
+                    Text((route.path as NSString).lastPathComponent)
+                        .font(.caption.monospaced().weight(.medium))
+                        .foregroundStyle(ToolrollTheme.ink)
+                        .lineLimit(1)
+                    Text("\(index + 1) of \(files.count)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(ToolrollTheme.muted)
+                }
+                .accessibilityLabel("File \(index + 1) of \(files.count)")
+
                 Spacer()
+
                 Button {
                     route = files[index + 1]
                 } label: {
                     Image(systemName: "chevron.right")
-                        .font(.body.weight(.semibold))
+                        .font(.subheadline.weight(.semibold))
                         .frame(minWidth: 44, minHeight: 44)
                 }
                 .disabled(index == files.count - 1)
@@ -211,15 +230,12 @@ struct DiffFileView: View {
             }
             .foregroundStyle(ToolrollTheme.ink)
             .padding(.horizontal, 12)
-            .padding(.vertical, 2)
         }
         .background(ToolrollTheme.paper)
     }
 
-    /// "Change 2: lines 10 to 25" from "@@ -8,9 +10,16 @@ …", so the rotor jumps hunk to hunk (U20).
     static func hunkLabel(_ header: String, index: Int) -> String {
         let pattern = /@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/
-        // Server-written numbers: parsed without trapping (a huge value is nil) and added without overflow.
         if let match = header.firstMatch(of: pattern), let start = Int(match.1) {
             let count = match.2.flatMap { Int($0) } ?? 1
             let (sum, overflow) = start.addingReportingOverflow(max(count, 1) - 1)
@@ -235,11 +251,15 @@ struct DiffFileView: View {
             .typesettingLanguage(Locale.Language(identifier: "zxx"))
             .foregroundStyle(ToolrollTheme.muted)
             .lineLimit(wrapLines ? nil : 1)
-            .padding(.horizontal, 10)
+            .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Rectangle().fill(ToolrollTheme.subtleFill))
-            .padding(.top, first ? 0 : 12)
+            .background(ToolrollTheme.raised)
+            .overlay(alignment: .bottom) { Divider().overlay(ToolrollTheme.hairline) }
+            .overlay(alignment: .top) {
+                if !first { Divider().overlay(ToolrollTheme.hairline) }
+            }
+            .padding(.top, first ? 0 : 10)
             .accessibilityLabel(Self.hunkLabel(header, index: index))
             .accessibilityAddTraits(.isHeader)
     }
@@ -247,21 +267,27 @@ struct DiffFileView: View {
     private func lineView(_ line: DiffLine) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             if dynamicTypeSize.isAccessibilitySize {
-                // One gutter at large sizes: the line's number where it ends up (or where it was, if removed).
                 Text((line.newLine ?? line.oldLine).map(String.init) ?? "")
                     .frame(width: gutterWidth, alignment: .trailing)
-                    .foregroundStyle(ToolrollTheme.muted)
+                    .foregroundStyle(gutterColor(line.kind))
             } else {
                 Text(line.oldLine.map(String.init) ?? "")
                     .frame(width: gutterWidth, alignment: .trailing)
-                    .foregroundStyle(ToolrollTheme.muted)
+                    .foregroundStyle(gutterColor(line.kind))
                 Text(line.newLine.map(String.init) ?? "")
                     .frame(width: gutterWidth, alignment: .trailing)
-                    .foregroundStyle(ToolrollTheme.muted)
+                    .foregroundStyle(gutterColor(line.kind))
             }
+
+            Rectangle()
+                .fill(ToolrollTheme.hairline)
+                .frame(width: 1)
+                .padding(.vertical, -2)
+
             Text(marker(line.kind))
                 .foregroundStyle(markerColor(line.kind))
                 .fontWeight(.bold)
+
             Text(line.text.isEmpty ? " " : line.text)
                 .foregroundStyle(line.kind == .meta ? ToolrollTheme.muted : ToolrollTheme.ink)
                 .fixedSize(horizontal: !wrapLines, vertical: true)
@@ -269,12 +295,20 @@ struct DiffFileView: View {
         }
         .font(.footnote.monospaced())
         .typesettingLanguage(Locale.Language(identifier: "zxx"))
-        .padding(.horizontal, 8)
-        .padding(.vertical, 2)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 2.5)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Rectangle().fill(background(line.kind)))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityText(line))
+    }
+
+    private func gutterColor(_ kind: DiffLineKind) -> Color {
+        switch kind {
+        case .addition: return ToolrollTheme.success.opacity(0.85)
+        case .deletion: return ToolrollTheme.danger.opacity(0.85)
+        default: return ToolrollTheme.subtle
+        }
     }
 
     private func marker(_ kind: DiffLineKind) -> String {
@@ -289,14 +323,14 @@ struct DiffFileView: View {
         switch kind {
         case .addition: return ToolrollTheme.success
         case .deletion: return ToolrollTheme.danger
-        default: return ToolrollTheme.muted
+        default: return ToolrollTheme.subtle
         }
     }
 
     private func background(_ kind: DiffLineKind) -> Color {
         switch kind {
-        case .addition: return ToolrollTheme.successSoft
-        case .deletion: return ToolrollTheme.dangerSoft
+        case .addition: return ToolrollTheme.diffAddFill
+        case .deletion: return ToolrollTheme.diffDelFill
         default: return .clear
         }
     }
