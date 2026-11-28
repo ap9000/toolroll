@@ -4,6 +4,16 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.129 — 2026-11-28
+
+End-to-end encrypted iPhone companion pairing and direct-first remote reading from Settings → Phone.
+
+### New
+
+- **Pair an iPhone from Settings → Phone**: scan a one-time QR code, confirm the 6-character code on both devices, and read your Work inbox, task scope, diffs, and live output on iOS.
+- **Direct-first connection with encrypted relay fallback**: paired phones connect directly over local Wi-Fi or Tailscale via Bonjour first and fall back to the end-to-end encrypted Noise IKpsk2 relay when away from home.
+- **Manage and revoke paired phones**: rename or remove any phone in Settings → Phone; changing your Toolroll password or restoring from backup automatically retires paired devices.
+
 ## 0.9.128 — 2026-11-27
 
 Sharper UI craft across Work, diffs, Settings, Flows, and Spend, plus focused `toolroll task --help`.
