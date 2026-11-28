@@ -466,9 +466,10 @@ with a time limit.
   entry (\`## <version>\`, in the format the top of CHANGELOG.md
   describes). No tag or npm package has that version yet.
 - \`gh\` is signed in, the console, worker and both CLI names
-  (\`toolroll\`, \`standing-orders\`) run one build, and the gate checkout
-  is a clone whose origin is the GitHub repository. Credentials are never
-  asked for in chat or written to the release journal.
+  (\`toolroll\`, \`standing-orders\`) run one build (\`toolroll update --yes\`
+  brings them together), and the gate checkout is a clone whose origin is
+  the GitHub repository. Credentials are never asked for in chat or written
+  to the release journal.
 
 ## What it does, in order
 

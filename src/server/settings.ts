@@ -178,7 +178,7 @@ import { teamsSettingsHtml } from "../teams-settings.js";
 import { telegramSettingsHtml } from "../telegram-settings.js";
 import { hashPairingCode,loadBotToken,mintPairingCode,PAIRING_TTL_MS,redactToken,saveBotToken,TOKEN_ENV } from "../telegram.js";
 import { newerThan,updatesHtml,updatesScript,updateStepsHtml } from "../toolroll-update-ui.js";
-import { abandonRuntimeUpdate,currentRuntime,launchRuntimeUpdate,markWhatsNewSeen,prepareRuntimeUpdate,requestRuntimeUpdateCancel,runningWorkWords,runtimeUpdateStatus,runtimeUpdateTerminal,type When } from "../toolroll-update.js";
+import { abandonRuntimeUpdate,commandRuntime,consoleDriftWords,currentRuntime,launchRuntimeUpdate,markWhatsNewSeen,prepareRuntimeUpdate,requestRuntimeUpdateCancel,runningWorkWords,runtimeUpdateStatus,runtimeUpdateTerminal,type When } from "../toolroll-update.js";
 import { TOOLS_PROJECT_SCRIPT,toolsHtml,toolsProjectPicker } from "../tools-ui.js";
 import { effectivePrimary,isMessagingChannel,savePrimary } from "../webhooks.js";
 import type { EdgeContext } from './handler-context.js';
@@ -477,6 +477,12 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     return sendScreen(response, 200, screen("Monitoring", settingsSubPage("system", "Monitoring", html`${(monitoringHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`),
       { chrome: chromeFor(project, "settings") }));
   }
+  /** The console runs as the service: the `toolroll` command on PATH running another build is drift, said with its
+   * fix. Only for installs `toolroll update` switches. */
+  function runtimeDriftHere(current: string, method: { kind: string }): string | null {
+    if (["npx", "source", "desktop"].includes(method.kind)) return null;
+    try { return consoleDriftWords({ version: current, dist: options.updates?.dist ?? currentRuntime(current).dist }, (options.updates?.command ?? commandRuntime)()); } catch { return null; }
+  }
   // Settings → Updates: the installed version, three ways to update, the update's steps live, then What's new. An instance operator's page.
   async function updatesPage(ctx: HandlerContext): Promise<void> {
     const { url, response, project } = ctx;
@@ -491,7 +497,9 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     // The last answer npm gave (the background checks ask while update checks are on; Check now asks once).
     const checksOff = updateChecksOff(process.env, options.configDir ?? dirname(databaseFile)).off;
     const known = lastChecks.known<{ version: string } | { problem: string }>("release")?.value ?? null;
-    const view = { current, latest: active ? { version: current } : known ?? (checksOff ? { off: true as const } : { pending: true as const }), method: options.updates?.method ?? installMethod(), journal: status.journal, running: status.running, whatsNew: status.whatsNew, rollbackTo: status.lastUpdate?.to === current ? status.lastUpdate.from : null, csrf: who.session.csrf };
+    const method = options.updates?.method ?? installMethod();
+    const view = { current, latest: active ? { version: current } : known ?? (checksOff ? { off: true as const } : { pending: true as const }), method, journal: status.journal, running: status.running, whatsNew: status.whatsNew, rollbackTo: status.lastUpdate?.to === current ? status.lastUpdate.from : null, csrf: who.session.csrf,
+      drift: runtimeDriftHere(current, method) };
     return sendScreen(response, 200, screen("Updates", settingsSubPage("system", "Updates", html`${(updatesHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`),
       { chrome: chromeFor(project, "settings"), ...(active ? { functional: { script: updatesScript(), fetches: true } } : {}) }));
   }
@@ -3074,6 +3082,7 @@ ${postForm("/settings/chat-approval/save", html`\
   /** What General's sections read, none of it from the request. */
   const generalImpls = generalSections({
     updatesVersion: name => settingsUpdates(name, "")?.current ?? null,
+    runtimeDrift: () => runtimeDriftHere(options.updates?.current ?? PACKAGE_VERSION, options.updates?.method ?? installMethod()),
     packageVersion: PACKAGE_VERSION,
     firstResult: now => { const at = store.firstSuccessAt(now), since = store.installationStartedAt(); return at === null || since === null ? null : firstResultWords(since, at); },
     passwordless: () => sessionStandsIn(store),

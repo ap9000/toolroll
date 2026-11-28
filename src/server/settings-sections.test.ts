@@ -203,6 +203,20 @@ describe("admission runs before any loader: a denied section is never read", () 
     expect(read({ ...PERSONAS["installation approver"]!, installation: false })).not.toContain('data-section="version"');
     expect(updatesVersion).not.toHaveBeenCalled();
   });
+  test("Version says when the service and the toolroll command run different builds, with the command, to whoever reads installation data", () => {
+    const words = "Your Toolroll service runs 0.9.116, but `toolroll` is 0.9.127. Run `toolroll update --yes` to bring them together.";
+    const runtimeDrift = vi.fn(() => words);
+    const read = (person: SectionPerson) => render(() => text(renderArea("general", generalSections({ ...DEPS, runtimeDrift }), base(person), { section: null, open: false }).sections));
+    const operator = read(OPERATOR);
+    expect(operator).toContain("data-runtime-drift");
+    expect(operator).toContain('<code class="k-mono">toolroll update --yes</code>');
+    // An operator's browser session without installation data, and a project-limited person, read no installation data.
+    runtimeDrift.mockClear();
+    expect(read({ ...OPERATOR, installation: false })).not.toContain("data-runtime-drift");
+    expect(read(PERSONAS["project-limited approver"]!)).not.toContain("data-runtime-drift");
+    expect(runtimeDrift).not.toHaveBeenCalled();
+    expect(render(() => text(renderArea("general", generalSections({ ...DEPS, runtimeDrift: () => null }), base(OPERATOR), { section: null, open: false }).sections))).not.toContain("data-runtime-drift");
+  });
 });
 
 describe("what each persona reads and may do on General", () => {

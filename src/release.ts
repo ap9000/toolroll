@@ -33,6 +33,7 @@
  * GitHub, npm or a running Toolroll.
  */
 
+import { isNewer } from "./releases.js";
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
@@ -201,7 +202,21 @@ export type GateState = {
   pending?: boolean;
   completion: { actor: string; at: string; digest: string } | null;
 };
-export type Installed = { services: string[]; clis: { name: string; runtime: string | null }[] };
+/** `versions`: the Toolroll version each runtime folder holds, where its package.json says (absent from older adapters). */
+export type Installed = { services: string[]; clis: { name: string; runtime: string | null }[]; versions?: Record<string, string | null> };
+
+/** The preflight's stop when the service and the CLI names don't run one build: which runs what, which is newer, and
+ * the one command that brings them together. */
+export function mixedRuntimeWords(installed: Installed): string {
+  const version = (dist: string | null) => dist === null ? null : installed.versions?.[dist] ?? null;
+  const named = (label: string, dist: string | null) => `${label} ${dist ?? "not linked"}${version(dist) === null ? "" : ` (${version(dist)})`}`;
+  const list = [...installed.services.map(one => named("service", one)), ...installed.clis.map(one => named(one.name, one.runtime))].join("; ");
+  const service = installed.services.map(version).find(one => one !== null) ?? null;
+  const cli = installed.clis.map(one => version(one.runtime)).find(one => one !== null) ?? null;
+  const newer = service !== null && cli !== null && isNewer(cli, service) ? ` \`toolroll\` is ${cli}, newer than the ${service} your service runs.` : "";
+  const fix = installed.services.length === 0 ? " Update them to one verified build first." : " Run `toolroll update --yes` to bring them to one verified build, then release again.";
+  return `The console, worker and CLI names don't run one build (${list}).${newer}${fix}`;
+}
 /** A CLI name's link on PATH and where it pointed before the release moved it (release-links.ts). */
 export type SavedLink = { name: string; path: string; before: string | null; foreign?: true };
 /** A deployment that stopped and couldn't recover. `gate`: the update pause it left, when its journal is before the swap. */
@@ -1615,7 +1630,7 @@ async function begin(options: ReleaseOptions, adapters: ReleaseAdapters, now: Da
   const installed = await adapters.toolroll.installed();
   const runtimes = new Set([...installed.services, ...installed.clis.map(one => one.runtime ?? "(not linked)")]);
   if (installed.services.length === 0 || runtimes.size !== 1) {
-    throw new Stop("mixed-runtime", `The console, worker and CLI names don't run one build (${[...installed.services.map(one => `service ${one}`), ...installed.clis.map(one => `${one.name} ${one.runtime ?? "not linked"}`)].join("; ")}). Update them to one verified build first.`);
+    throw new Stop("mixed-runtime", mixedRuntimeWords(installed));
   }
   const github = await adapters.repo.github();
   await adapters.repo.sync(branch);
@@ -1666,7 +1681,7 @@ async function beginMain(options: ReleaseOptions, adapters: ReleaseAdapters, now
   const installed = await adapters.toolroll.installed();
   const runtimes = new Set([...installed.services, ...installed.clis.map(one => one.runtime ?? "(not linked)")]);
   if (installed.services.length === 0 || runtimes.size !== 1) {
-    throw new Stop("mixed-runtime", `The console, worker and CLI names don't run one build (${[...installed.services.map(one => `service ${one}`), ...installed.clis.map(one => `${one.name} ${one.runtime ?? "not linked"}`)].join("; ")}). Update them to one verified build first.`);
+    throw new Stop("mixed-runtime", mixedRuntimeWords(installed));
   }
   const github = await adapters.repo.github();
   const nothing = "Nothing was checked, deployed, tagged or published";

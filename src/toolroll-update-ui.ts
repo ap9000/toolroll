@@ -8,7 +8,7 @@
 import { html, joinHtml, postForm, type Html } from "./html.js";
 import type { InstallMethod } from "./install-method.js";
 import { STEP_WORDS, UPDATE_STEPS, runtimeUpdateTerminal, type RuntimeUpdateJournal, type UpdateStep } from "./toolroll-update.js";
-import { btn, chip, codeLine, disclose, formRow, infoLine, note, notice, radios, settingsRecord, settingsSection } from "./server/kit.js";
+import { btn, chip, codeLine, codeWords, disclose, formRow, infoLine, note, notice, radios, settingsRecord, settingsSection } from "./server/kit.js";
 import { kitSectionForm } from "./settings-kit.js";
 
 const clock = (iso: string) => { const d = new Date(iso); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
@@ -27,6 +27,8 @@ export type UpdatesView = {
   /** The version `toolroll update --rollback` returns to: the last completed update's, while it is what runs. */
   rollbackTo: string | null;
   csrf: string;
+  /** The service (this console) and the `toolroll` command run different builds: what to say, with the fix. */
+  drift?: string | null;
 };
 
 /** A step's state as one of the kit's status words. */
@@ -104,7 +106,7 @@ export function updatesHtml(view: UpdatesView, said: { said?: string | null; pro
     : "";
   const rollback = view.rollbackTo !== null ? joinHtml([note(`To go back to ${view.rollbackTo}:`), codeLine("toolroll update --rollback")]) : "";
   const version = settingsSection({ id: "update", title: state[0], ...(state[2] === "" ? {} : { right: state[2] }),
-    body: html`<div data-update-state="${newer ? "available" : "current"}">${joinHtml([answer, state[1] === "" ? "" : note(state[1]), form, rollback])}</div>` });
+    body: html`<div data-update-state="${newer ? "available" : "current"}">${joinHtml([answer, view.drift ? html`<div data-runtime-drift>${infoLine(codeWords(view.drift))}</div>` : "", state[1] === "" ? "" : note(state[1]), form, rollback])}</div>` });
   return joinHtml([whatsNew, j ? outcomeHtml(j) : "", version]);
 }
 
