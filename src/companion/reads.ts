@@ -17,6 +17,7 @@ import { IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
 import type { WorkRows } from "../contracts/engine-api.js";
 import { checkEngineResponse, ENGINE_API_VERSION } from "../contracts/engine-api.js";
+import { isProtectedWork, protectedChanges } from "../approval-policy.js";
 import { resultDiffFileOf, resultDiffOf, resultRunsOf, stepCardsOf } from "../engine-reads.js";
 import { readMainWindow } from "../live-main-read.js";
 import { runLiveCommands, type Store, type TaskFamily } from "../store.js";
@@ -107,6 +108,21 @@ export function createCompanionReads(deps: CompanionReadDeps): CompanionReadHand
     return family;
   }
 
+  /** ADR 0005, display only: whether approving or accepting this task always asks for a live passkey on the phone
+   * (protected work, a release), and which protected paths it touches. Read from the project's rules and the scope's
+   * declared paths — never from separation-of-duties eligibility. The Mac decides again on every act. */
+  function passkeyHintsOf(family: TaskFamily): { protectedWork: boolean; release: boolean; protectedPaths: string[] } {
+    const scope = store.getScope(family.current.id);
+    if (family.current.repo === null) return { protectedWork: false, release: scope?.releaseTerms != null, protectedPaths: [] };
+    const rules = store.approvalRules(family.current.repo);
+    const touches = scope === null ? [] : [...scope.touches];
+    return {
+      protectedWork: isProtectedWork(rules, touches),
+      release: scope?.releaseTerms != null,
+      protectedPaths: rules.protectProject ? [] : protectedChanges(rules, touches).slice(0, 5),
+    };
+  }
+
   /** The run named, if the actor can see it on its project (the Live grid's admission, without a browser session). */
   function runInView(runParam: string | null) {
     if (runParam === null || !RUN_ID.test(runParam)) throw new CompanionReadError("invalid_params", "run is required");
@@ -174,8 +190,10 @@ export function createCompanionReads(deps: CompanionReadDeps): CompanionReadHand
     taskSteps: (principal, params) => asDevice(principal, () => {
       const family = familyInView(params);
       const cards = stepCardsOf({ store, family, now: runtime.clock(), access: runtime.workAccess(), evidenceRoot: runtime.evidenceRoot, viewer: principal.accountName, withChoices: false });
+      const passkey = passkeyHintsOf(family);
       familyInView(params);
-      return checkEngineResponse("stepCards", cards);
+      // `passkey` is the phone's own addition (not the Engine API's): what its approval dock says before the tap.
+      return { ...checkEngineResponse("stepCards", cards), passkey };
     }),
 
     taskDiff: (principal, params) => asDevice(principal, () => {
