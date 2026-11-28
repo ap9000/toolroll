@@ -10,7 +10,6 @@
       "device": "iPhone 17 Pro",
       "paths": ["ios"],
       "appearances": ["light", "dark"],
-      "capture": "scripts/canvas-capture-ios.sh",
       "screens": [
         { "id": "welcome", "title": "Welcome", "launch": [], "view": "ios/ToolrollCompanion/WelcomePairingView.swift", "note": "unpaired: a fresh Simulator, no --demo" },
         { "id": "pair-paste", "title": "Pair · paste code", "launch": ["--screen", "paste"], "view": "ios/ToolrollCompanion/WelcomePairingView.swift" },

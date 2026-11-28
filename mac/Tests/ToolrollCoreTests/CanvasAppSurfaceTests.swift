@@ -45,7 +45,6 @@ struct CanvasAppSurfaceTests {
         #expect(manifest.schema == "toolroll.app-screens/v1")
         let ios = try #require(manifest.surfaces.first)
         #expect(ios.id == "ios" && ios.kind == "ios" && ios.paths == ["ios"] && ios.appearances == ["light", "dark"])
-        #expect(ios.capture == "scripts/canvas-capture-ios.sh")
         #expect(ios.screens.count >= 9)
         for screen in ios.screens {
             #expect(FileManager.default.fileExists(atPath: "\(repoRoot)/\(screen.view)"), "\(screen.id): \(screen.view) is missing")
@@ -134,6 +133,8 @@ struct CanvasAppSurfaceTests {
         #expect(try scriptKey() == swiftKey())
     }
 
+    private let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13])
+
     private func writeIndex(_ folder: URL, key: String, at: String, screens: [String]) throws {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let entries = screens.map { #"{"screen": "\#($0)", "appearance": "dark", "file": "\#($0)-dark.png", "commit": "abc", "captured_at": "\#(at)"}"# }
@@ -141,7 +142,7 @@ struct CanvasAppSurfaceTests {
         {"schema": "toolroll.app-captures/v1", "surface": "ios", "device": "iPhone 17 Pro", "os": "iOS 26.5",
          "state_key": "\(key)", "commit": "abc1234567", "captured_at": "\(at)", "captures": [\(entries.joined(separator: ","))]}
         """, folder.appendingPathComponent("index.json").path)
-        for screen in screens { try Data([0x89, 0x50]).write(to: folder.appendingPathComponent("\(screen)-dark.png")) }
+        for screen in screens { try png.write(to: folder.appendingPathComponent("\(screen)-dark.png")) }
     }
 
     @Test("Captures at the current key are fresh; otherwise the latest set shows, marked stale")
@@ -159,7 +160,7 @@ struct CanvasAppSurfaceTests {
         #expect(stale.imagePath(screen: "inbox", appearance: "light") == nil)
 
         try writeIndex(AppSurfaceStorage.mirrorDir(projectRoot: root, surface: "ios"), key: "s-mid", at: "2026-11-02T10:00:00Z", screens: ["settings"])
-        #expect(AppSurfaceStorage.latestCaptures(projectRoot: root, surface: "ios", stateKey: "s-new", home: home)?.index.stateKey == "s-mid")
+        #expect(AppSurfaceStorage.latestCaptures(projectRoot: root, surface: "ios", stateKey: "s-new", home: home)?.index.stateKey == "s-old")
 
         try writeIndex(cache.appendingPathComponent("s-new"), key: "s-new", at: "2026-11-03T10:00:00Z", screens: ["inbox", "settings"])
         let fresh = try #require(AppSurfaceStorage.latestCaptures(projectRoot: root, surface: "ios", stateKey: "s-new", home: home))
@@ -309,17 +310,94 @@ struct CanvasAppSurfaceTests {
         #expect(AppCaptureLine.parse("Build settings from command line:") == .log("Build settings from command line:"))
     }
 
-    @Test("Only a plain file inside the project runs as the capture script")
-    func scriptPath() throws {
-        let root = try tempDir("tr-script")
-        defer { try? FileManager.default.removeItem(atPath: root) }
-        try write("#!/bin/bash\n", "\(root)/scripts/c.sh")
-        try write("#!/bin/bash\n", "\(root)/../outside-\(UUID().uuidString).sh")
-        try FileManager.default.createSymbolicLink(atPath: "\(root)/scripts/link.sh", withDestinationPath: "/bin/sh")
-        #expect(AppCaptureRunner.scriptPath(projectRoot: root, relative: "scripts/c.sh") == "\(root)/scripts/c.sh")
-        #expect(AppCaptureRunner.scriptPath(projectRoot: root, relative: "scripts/link.sh") == nil)
-        #expect(AppCaptureRunner.scriptPath(projectRoot: root, relative: "../x.sh") == nil)
-        #expect(AppCaptureRunner.scriptPath(projectRoot: root, relative: "/bin/sh") == nil)
-        #expect(AppCaptureRunner.scriptPath(projectRoot: root, relative: "scripts") == nil)
+    @Test("The Mac runs the capture script built into it, identical to scripts/canvas-capture-ios.sh, never a project's")
+    func embeddedScript() throws {
+        let onDisk = try String(contentsOfFile: "\(repoRoot)/scripts/canvas-capture-ios.sh", encoding: .utf8)
+        #expect(CanvasCaptureScript.source + "\n" == onDisk, "run mac/scripts/embed-canvas-capture.sh")
+        let argv = AppCaptureRunner.bashArguments(arguments: ["--repo", "/p"])
+        #expect(argv == ["-c", CanvasCaptureScript.source, "canvas-capture-ios.sh", "--repo", "/p"])
+        let planted = Data("""
+        {"schema": "toolroll.app-screens/v1", "project": "p", "surfaces": [{"id": "ios", "kind": "ios", "label": "iPhone",
+          "build": {"project": "ios/A.xcodeproj", "scheme": "A", "bundleId": "a.b"}, "device": "iPhone 17 Pro",
+          "paths": ["ios"], "appearances": ["light"], "capture": "/tmp/evil.sh",
+          "screens": [{"id": "ok", "title": "OK", "launch": [], "view": "ios/A/V.swift"}]}]}
+        """.utf8)
+        let parsed = try #require(AppSurfaceStorage.parseManifest(planted))
+        #expect(parsed.surfaces.count == 1)
+        let encoded = String(decoding: try JSONEncoder().encode(parsed), as: UTF8.self)
+        #expect(!encoded.contains("evil"))
+    }
+
+    @Test("The first Recapture of a project asks; the answer is remembered for that folder only, never in the repo")
+    func captureTrust() throws {
+        let suite = "tr-canvas-trust-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let root = try tempDir("tr-trust")
+        let other = try tempDir("tr-trust-other")
+        defer { try? FileManager.default.removeItem(atPath: root); try? FileManager.default.removeItem(atPath: other) }
+        #expect(!CanvasCaptureTrust.isTrusted(projectRoot: root, defaults: defaults))
+        CanvasCaptureTrust.trust(projectRoot: root, defaults: defaults)
+        #expect(CanvasCaptureTrust.isTrusted(projectRoot: root, defaults: defaults))
+        #expect(CanvasCaptureTrust.isTrusted(projectRoot: root + "/", defaults: defaults))
+        #expect(!CanvasCaptureTrust.isTrusted(projectRoot: other, defaults: defaults))
+        let link = other + "-link"
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: root)
+        defer { try? FileManager.default.removeItem(atPath: link) }
+        #expect(CanvasCaptureTrust.isTrusted(projectRoot: link, defaults: defaults))
+        #expect(!FileManager.default.fileExists(atPath: "\(root)/.youi"))
+        #expect(CanvasCaptureTrust.question(projectName: "shop") == "Recapture builds and runs shop in the Simulator. Only do this for projects you trust.")
+    }
+
+    @Test("Capture images are read only from the cache folder: no links, no outside paths, PNGs under 20 MB with one link")
+    func captureImageGuards() throws {
+        let base = try tempDir("tr-shots")
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let folder = "\(base)/cache/s-1"
+        try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+        try png.write(to: URL(fileURLWithPath: "\(folder)/ok.png"))
+        #expect(AppSurfaceStorage.captureImage(path: "\(folder)/ok.png", within: folder) == png)
+
+        try "ssh private key".write(toFile: "\(base)/secret", atomically: true, encoding: .utf8)
+        try png.write(to: URL(fileURLWithPath: "\(base)/outside.png"))
+        try FileManager.default.createSymbolicLink(atPath: "\(folder)/link.png", withDestinationPath: "\(base)/secret")
+        try FileManager.default.createSymbolicLink(atPath: "\(folder)/linkpng.png", withDestinationPath: "\(base)/outside.png")
+        try FileManager.default.linkItem(atPath: "\(base)/outside.png", toPath: "\(folder)/hard.png")
+        try "not a png".write(toFile: "\(folder)/text.png", atomically: true, encoding: .utf8)
+        let big = FileHandle(forWritingAtPath: { FileManager.default.createFile(atPath: "\(folder)/big.png", contents: png); return "\(folder)/big.png" }())!
+        try big.truncate(atOffset: UInt64(AppSurfaceStorage.captureImageByteCap + 1))
+        try big.close()
+        for bad in ["\(folder)/link.png", "\(folder)/linkpng.png", "\(folder)/hard.png", "\(folder)/text.png", "\(folder)/big.png",
+                    "\(base)/outside.png", "\(folder)/../outside.png", "\(base)/secret", "\(folder)/missing.png"] {
+            #expect(AppSurfaceStorage.captureImage(path: bad, within: folder) == nil, "\(bad)")
+            #expect(AppSurfaceStorage.captureImage(path: bad, within: folder, readAll: false) == nil, "\(bad)")
+        }
+
+        let set = AppCaptureSet(index: AppCaptureIndex(schema: AppCaptureIndex.schemaName, surface: "ios", device: nil, os: nil, stateKey: "s-1",
+                                                        commit: "c", capturedAt: "2026-11-01T00:00:00Z", captures: [
+            AppCaptureEntry(screen: "a", appearance: "dark", file: "ok.png", commit: "c", capturedAt: "x"),
+            AppCaptureEntry(screen: "b", appearance: "dark", file: "link.png", commit: "c", capturedAt: "x"),
+            AppCaptureEntry(screen: "c", appearance: "dark", file: "../outside.png", commit: "c", capturedAt: "x"),
+        ]), folder: folder, isStale: false)
+        #expect(set.imagePath(screen: "a", appearance: "dark") != nil)
+        #expect(set.imagePath(screen: "b", appearance: "dark") == nil)
+        #expect(set.imagePath(screen: "c", appearance: "dark") == nil)
+    }
+
+    @Test("A planted capture set in the repo mirror, or a linked cache folder, is never read")
+    func mirrorAndLinkedFoldersIgnored() throws {
+        let home = URL(fileURLWithPath: try tempDir("tr-home"))
+        let root = try tempDir("tr-proj")
+        let elsewhere = try tempDir("tr-elsewhere")
+        defer { for p in [home.path, root, elsewhere] { try? FileManager.default.removeItem(atPath: p) } }
+        try writeIndex(AppSurfaceStorage.mirrorDir(projectRoot: root, surface: "ios"), key: "s-1", at: "2026-11-02T10:00:00Z", screens: ["inbox"])
+        #expect(AppSurfaceStorage.latestCaptures(projectRoot: root, surface: "ios", stateKey: "s-1", home: home) == nil)
+
+        try writeIndex(URL(fileURLWithPath: elsewhere), key: "s-1", at: "2026-11-02T10:00:00Z", screens: ["inbox"])
+        let cache = AppSurfaceStorage.surfaceCacheDir(projectRoot: root, surface: "ios", home: home)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: cache.appendingPathComponent("s-1").path, withDestinationPath: elsewhere)
+        #expect(AppSurfaceStorage.latestCaptures(projectRoot: root, surface: "ios", stateKey: "s-1", home: home) == nil)
+        #expect(AppSurfaceStorage.latestCaptures(projectRoot: root, surface: "ios", stateKey: "s-other", home: home) == nil)
     }
 }

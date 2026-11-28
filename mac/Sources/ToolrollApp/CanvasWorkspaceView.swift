@@ -147,6 +147,15 @@ public struct CanvasWorkspaceView: View {
         .task(id: "\(store.selectedProject ?? "")::\(store.activeProject ?? "")::\(store.selectedRow?.project ?? "")") {
             await store.loadCanvasForCurrentProject()
         }
+        .alert("Recapture \(store.canvasCaptureProjectName)?", isPresented: Binding(
+            get: { store.canvasCaptureConfirmation != nil },
+            set: { if !$0 { store.cancelAppRecapture() } }
+        )) {
+            Button("Recapture") { store.confirmAppRecapture() }
+            Button("Cancel", role: .cancel) { store.cancelAppRecapture() }
+        } message: {
+            Text(CanvasCaptureTrust.question(projectName: store.canvasCaptureProjectName))
+        }
         .onKeyPress("v") { handleCanvasToolShortcut(.select) }
         .onKeyPress("h") { handleCanvasToolShortcut(.hand) }
         .onKeyPress("c") { handleCanvasToolShortcut(.pin) }
@@ -1221,7 +1230,7 @@ extension CanvasWorkspaceView {
 
     fileprivate func recaptureButton(_ section: CanvasAppSection, label: String, prominent: Bool) -> some View {
         Button {
-            Task { await store.recaptureAppSurface(section.id) }
+            store.requestAppRecapture(section.id)
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: "camera.viewfinder").font(.system(size: 11))
@@ -1229,7 +1238,7 @@ extension CanvasWorkspaceView {
             }
         }
         .buttonStyle(KitButtonStyle(prominent ? .primary : .ghost, compact: true))
-        .help("Builds \(section.surface.label) with Xcode and photographs each screen, light and dark, in its own Simulator (\"Toolroll Canvas\"). Runs \(section.surface.capture); takes a few minutes.")
+        .help("Builds \(section.surface.label) with Xcode and photographs each screen, light and dark, in its own Simulator (\"Toolroll Canvas\"). Takes a few minutes.")
     }
 
     static func relativeTime(_ iso: String) -> String {
@@ -1240,6 +1249,11 @@ extension CanvasWorkspaceView {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
         return formatter.localizedString(for: date, relativeTo: Date())
+    }
+
+    fileprivate func appTileImage(_ board: CanvasArtboard) -> NSImage? {
+        guard let path = board.latestImagePath else { return nil }
+        return CanvasImageCache.shared.image(key: path, maxPixelDimension: 1080) { store.appCaptureImage(board) }
     }
 
     fileprivate func appArtboardView(_ board: CanvasArtboard) -> some View {
@@ -1282,7 +1296,7 @@ extension CanvasWorkspaceView {
 
             ZStack(alignment: .topLeading) {
                 Group {
-                    if let path = board.latestImagePath, let img = CanvasImageCache.shared.image(atPath: path, maxPixelDimension: 1080) {
+                    if let img = appTileImage(board) {
                         Image(nsImage: img)
                             .resizable()
                             .aspectRatio(contentMode: .fill)

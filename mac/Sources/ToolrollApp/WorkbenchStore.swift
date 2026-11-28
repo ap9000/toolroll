@@ -193,6 +193,7 @@ public final class WorkbenchStore {
     public internal(set) var canvasAppArtboards: [CanvasArtboard] = []
     public internal(set) var canvasAppCaptureRuns: [String: AppCaptureRunState] = [:]
     public internal(set) var canvasHeadCommit: String = ""
+    public internal(set) var canvasCaptureConfirmation: String? = nil
     public private(set) var activeAgentSetupTitle: String? = nil
     public private(set) var missingRuntimeInstallCommand: String? = nil
     private var attemptedAutoBootstrap: Bool = false
@@ -739,7 +740,7 @@ public final class WorkbenchStore {
         let fallbackFile = elementFile ?? canvasArtboards.first(where: { $0.path == path })?.sourceFile ?? appBoard?.sourceFile
         let pinId = CanvasPin.newRequestId()
         var savedShot: String? = nil
-        let png = screenshotPNG ?? appBoard?.latestImagePath.flatMap { try? Data(contentsOf: URL(fileURLWithPath: $0)) }
+        let png = screenshotPNG ?? appBoard.flatMap { appCaptureImage($0) }
         if let png, let root = canvasProjectRoot {
             savedShot = YouiCanvasStorage.savePinScreenshot(png, projectRoot: root, pinId: pinId)
         }

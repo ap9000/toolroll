@@ -15,7 +15,8 @@
 #
 # Usage: scripts/canvas-capture-ios.sh [--repo DIR] [--surface ios] [--state-key KEY] [--cache-dir DIR]
 #                                      [--wait SECONDS] [--keep-booted] [--print-state-key]
-# Lines starting "progress:" and "error:" are read by the Mac Canvas; everything else is log.
+# Lines starting "progress:" and "error:" are read by the Mac Canvas; everything else is log. The Mac app runs the
+# copy built into it (mac/scripts/embed-canvas-capture.sh), never a script a project names.
 
 set -euo pipefail
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
@@ -42,12 +43,14 @@ while [ $# -gt 0 ]; do
     --wait) wait_seconds="${2:?}"; shift 2 ;;
     --keep-booted) keep_booted=1; shift ;;
     --print-state-key) print_key=1; shift ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) [ -f "$0" ] && sed -n '2,22p' "$0"; exit 0 ;;
     *) fail "unknown option $1" ;;
   esac
 done
 
 if [ -z "$repo" ]; then
+  # Run from a checkout, the default is that checkout; the Mac app runs its own copy and always names --repo.
+  [ -f "$0" ] || fail "--repo is required"
   repo="$(cd "$(dirname "$0")/.." && pwd -P)"
 fi
 cd "$repo" || fail "can't open $repo"

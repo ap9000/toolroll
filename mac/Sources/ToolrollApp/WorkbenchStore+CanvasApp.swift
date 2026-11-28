@@ -62,22 +62,43 @@ extension WorkbenchStore {
         layoutCanvasAppArtboards()
     }
 
+    var canvasCaptureProjectName: String {
+        canvasProjectName.isEmpty ? ((canvasProjectRoot ?? "this project") as NSString).lastPathComponent : canvasProjectName
+    }
+
+    func requestAppRecapture(_ surfaceId: String) {
+        guard let root = canvasProjectRoot, canvasAppSections.contains(where: { $0.id == surfaceId }) else { return }
+        if CanvasCaptureTrust.isTrusted(projectRoot: root) {
+            Task { await recaptureAppSurface(surfaceId) }
+        } else {
+            canvasCaptureConfirmation = surfaceId
+        }
+    }
+
+    func confirmAppRecapture() {
+        guard let surfaceId = canvasCaptureConfirmation, let root = canvasProjectRoot else { return }
+        canvasCaptureConfirmation = nil
+        CanvasCaptureTrust.trust(projectRoot: root)
+        Task { await recaptureAppSurface(surfaceId) }
+    }
+
+    func cancelAppRecapture() {
+        canvasCaptureConfirmation = nil
+    }
+
     func recaptureAppSurface(_ surfaceId: String) async {
         guard let root = canvasProjectRoot,
+              CanvasCaptureTrust.isTrusted(projectRoot: root),
               let section = canvasAppSections.first(where: { $0.id == surfaceId }),
               canvasAppCaptureRuns[surfaceId]?.isRunning != true
         else { return }
-        guard let script = AppCaptureRunner.scriptPath(projectRoot: root, relative: section.surface.capture) else {
-            canvasAppCaptureRuns[surfaceId] = .failed(reason: "\(section.surface.capture) isn't a file in this project.", log: "")
-            return
-        }
         canvasAppCaptureRuns[surfaceId] = .running(progress: "Starting…")
         let key = await Task.detached(priority: .userInitiated) {
             AppSurfaceStorage.surfaceStateKey(projectRoot: root, pathspecs: AppSurfaceStorage.pathspecs(including: section.surface.paths))
         }.value
         let cacheDir = AppSurfaceStorage.surfaceCacheDir(projectRoot: root, surface: surfaceId).path
         let arguments = ["--repo", root, "--surface", surfaceId, "--state-key", key, "--cache-dir", cacheDir]
-        let outcome = await AppCaptureRunner().run(script: script, arguments: arguments, cwd: root) { [weak self] line in
+        let outcome = await AppCaptureRunner().run(arguments: arguments, cwd: root) { [weak self] line in
             guard case .progress(let words) = line else { return }
             Task { @MainActor in
                 guard let self, self.canvasAppCaptureRuns[surfaceId]?.isRunning == true else { return }
@@ -94,6 +115,13 @@ extension WorkbenchStore {
             let reason = outcome.error ?? outcome.tail.last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) ?? "The capture script stopped (exit \(outcome.status))."
             canvasAppCaptureRuns[surfaceId] = .failed(reason: reason, log: outcome.tail.suffix(20).joined(separator: "\n"))
         }
+    }
+
+    func appCaptureImage(_ board: CanvasArtboard) -> Data? {
+        guard let path = board.latestImagePath,
+              let folder = canvasAppSections.first(where: { $0.id == board.surface })?.captures?.folder
+        else { return nil }
+        return AppSurfaceStorage.captureImage(path: path, within: folder)
     }
 
     func dismissAppCaptureFailure(_ surfaceId: String) {

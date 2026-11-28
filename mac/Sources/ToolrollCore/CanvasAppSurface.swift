@@ -33,7 +33,6 @@ public struct AppSurface: Codable, Sendable, Equatable, Identifiable {
     public let device: String
     public let paths: [String]
     public let appearances: [String]
-    public let capture: String
     public let screens: [AppScreen]
 
     public func appearances(for screen: AppScreen) -> [String] {
@@ -93,7 +92,7 @@ public struct AppCaptureSet: Sendable, Equatable {
               AppSurfaceStorage.isPlainName(entry.file)
         else { return nil }
         let path = (folder as NSString).appendingPathComponent(entry.file)
-        return FileManager.default.fileExists(atPath: path) ? path : nil
+        return AppSurfaceStorage.captureImage(path: path, within: folder, readAll: false) != nil ? path : nil
     }
 }
 
@@ -103,9 +102,48 @@ public enum AppSurfaceStorage {
     static let appearanceWords: Set<String> = ["light", "dark"]
 
     public static func loadManifest(projectRoot: String) -> AppScreensManifest? {
-        let url = URL(fileURLWithPath: projectRoot).appendingPathComponent(manifestPath)
-        guard let data = try? Data(contentsOf: url), data.count <= 256 * 1024 else { return nil }
+        let path = URL(fileURLWithPath: projectRoot).appendingPathComponent(manifestPath).path
+        guard let data = readPlainFile(path: path, cap: 256 * 1024) else { return nil }
         return parseManifest(data)
+    }
+
+    public static let captureImageByteCap = 20 * 1024 * 1024
+    static let pngMagic: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+
+    static func readPlainFile(path: String, cap: Int, prefixOnly: Int? = nil) -> Data? {
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var st = stat()
+        guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_nlink == 1,
+              st.st_size >= 0, Int(st.st_size) <= cap
+        else { return nil }
+        let want = min(Int(st.st_size), prefixOnly ?? Int(st.st_size))
+        var data = Data(count: want)
+        var got = 0
+        let ok = data.withUnsafeMutableBytes { buffer -> Bool in
+            guard let base = buffer.baseAddress else { return want == 0 }
+            while got < want {
+                let n = read(fd, base + got, want - got)
+                if n <= 0 { return false }
+                got += n
+            }
+            return true
+        }
+        return ok ? data : nil
+    }
+
+    public static func captureImage(path: String, within folder: String, readAll: Bool = true) -> Data? {
+        let name = (path as NSString).lastPathComponent
+        guard isPlainName(name), name.lowercased().hasSuffix(".png") else { return nil }
+        let canonicalFolder = URL(fileURLWithPath: folder).resolvingSymlinksInPath().path
+        let parent = URL(fileURLWithPath: (path as NSString).deletingLastPathComponent).resolvingSymlinksInPath().path
+        guard !canonicalFolder.isEmpty, parent == canonicalFolder else { return nil }
+        let full = (canonicalFolder as NSString).appendingPathComponent(name)
+        guard let data = readPlainFile(path: full, cap: captureImageByteCap, prefixOnly: readAll ? nil : pngMagic.count),
+              data.count >= pngMagic.count, Array(data.prefix(pngMagic.count)) == pngMagic
+        else { return nil }
+        return data
     }
 
     public static func parseManifest(_ data: Data) -> AppScreensManifest? {
@@ -114,7 +152,7 @@ public enum AppSurfaceStorage {
         else { return nil }
         let surfaces = raw.surfaces.prefix(8).compactMap { surface -> AppSurface? in
             guard isSlug(surface.id), surface.kind == "ios",
-                  isPlainRelativePath(surface.build.project), isPlainRelativePath(surface.capture),
+                  isPlainRelativePath(surface.build.project),
                   !surface.paths.isEmpty, surface.paths.allSatisfy(isPlainRelativePath),
                   !surface.appearances.isEmpty, surface.appearances.allSatisfy(appearanceWords.contains)
             else { return nil }
@@ -128,7 +166,7 @@ public enum AppSurfaceStorage {
             }
             return AppSurface(id: surface.id, kind: surface.kind, label: surface.label, build: surface.build,
                               device: surface.device, paths: surface.paths, appearances: surface.appearances,
-                              capture: surface.capture, screens: Array(screens))
+                              screens: Array(screens))
         }
         return AppScreensManifest(schema: raw.schema, project: raw.project, surfaces: Array(surfaces))
     }
@@ -163,9 +201,14 @@ public enum AppSurfaceStorage {
         URL(fileURLWithPath: projectRoot).appendingPathComponent(mirrorRoot, isDirectory: true).appendingPathComponent(surface, isDirectory: true)
     }
 
+    static func isRealDirectory(_ path: String) -> Bool {
+        var st = stat()
+        return lstat(path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR
+    }
+
     static func readIndex(folder: URL) -> AppCaptureIndex? {
-        let url = folder.appendingPathComponent("index.json")
-        guard let data = try? Data(contentsOf: url), data.count <= 512 * 1024,
+        guard isRealDirectory(folder.path),
+              let data = readPlainFile(path: folder.appendingPathComponent("index.json").path, cap: 512 * 1024),
               let index = try? JSONDecoder().decode(AppCaptureIndex.self, from: data),
               index.schema == AppCaptureIndex.schemaName
         else { return nil }
@@ -181,13 +224,9 @@ public enum AppSurfaceStorage {
                 return AppCaptureSet(index: index, folder: current.path, isStale: index.stateKey != stateKey)
             }
         }
-        let mirror = mirrorDir(projectRoot: projectRoot, surface: surface)
-        if let index = readIndex(folder: mirror), index.surface == surface {
-            return AppCaptureSet(index: index, folder: mirror.path, isStale: index.stateKey != stateKey)
-        }
         let folders = (try? FileManager.default.contentsOfDirectory(at: cache, includingPropertiesForKeys: nil)) ?? []
         let newest = folders.compactMap { folder -> (URL, AppCaptureIndex)? in
-            guard let index = readIndex(folder: folder), index.surface == surface else { return nil }
+            guard isPlainName(folder.lastPathComponent), let index = readIndex(folder: folder), index.surface == surface else { return nil }
             return (folder, index)
         }.max { $0.1.capturedAt < $1.1.capturedAt }
         guard let (folder, index) = newest else { return nil }
@@ -294,6 +333,26 @@ public enum AppSurfaceStorage {
     }
 }
 
+public enum CanvasCaptureTrust {
+    static let keyPrefix = "toolroll.canvasCaptureTrusted|"
+
+    public static func key(projectRoot: String) -> String {
+        keyPrefix + URL(fileURLWithPath: projectRoot).resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    public static func isTrusted(projectRoot: String, defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: key(projectRoot: projectRoot))
+    }
+
+    public static func trust(projectRoot: String, defaults: UserDefaults = .standard) {
+        defaults.set(true, forKey: key(projectRoot: projectRoot))
+    }
+
+    public static func question(projectName: String) -> String {
+        "Recapture builds and runs \(projectName) in the Simulator. Only do this for projects you trust."
+    }
+}
+
 public enum CanvasProjectRoot {
     public static func resolve(
         projectName: String,
@@ -380,16 +439,6 @@ public final class AppCaptureRunner: @unchecked Sendable {
 
     public init() {}
 
-    public static func scriptPath(projectRoot: String, relative: String) -> String? {
-        guard AppSurfaceStorage.isPlainRelativePath(relative) else { return nil }
-        let root = URL(fileURLWithPath: projectRoot).resolvingSymlinksInPath().path
-        let path = (root as NSString).appendingPathComponent(relative)
-        var st = stat()
-        guard lstat(path, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else { return nil }
-        guard URL(fileURLWithPath: path).resolvingSymlinksInPath().path.hasPrefix(root + "/") else { return nil }
-        return path
-    }
-
     public static func environment(inherited: [String: String], home: String) -> [String: String] {
         var env: [String: String] = [
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
@@ -402,11 +451,15 @@ public final class AppCaptureRunner: @unchecked Sendable {
         return env
     }
 
-    public func run(script: String, arguments: [String], cwd: String, onLine: @escaping @Sendable (AppCaptureLine) -> Void) async -> Outcome {
+    public static func bashArguments(arguments: [String]) -> [String] {
+        ["-c", CanvasCaptureScript.source, CanvasCaptureScript.name] + arguments
+    }
+
+    public func run(arguments: [String], cwd: String, onLine: @escaping @Sendable (AppCaptureLine) -> Void) async -> Outcome {
         await withCheckedContinuation { continuation in
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/bin/bash")
-            proc.arguments = [script] + arguments
+            proc.arguments = Self.bashArguments(arguments: arguments)
             proc.currentDirectoryURL = URL(fileURLWithPath: cwd)
             proc.environment = Self.environment(inherited: ProcessInfo.processInfo.environment,
                                                 home: FileManager.default.homeDirectoryForCurrentUser.path)
