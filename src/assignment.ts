@@ -27,8 +27,9 @@ import { NEEDS, WAITS, processNeedOf, resultHoldUpSentence, type NeedKey, type W
 import { assignmentStageOf, checkBackingOf, completionBlockersOf, receiptChecksOf, requirementWordOf, type ChecksBatch, type CompletionBlocker } from "./task-status.js";
 import { releaseCoverageOf, type ReleaseCoverage, type ReleaseMemo } from "./release-coverage.js";
 import { leadClaimOf, type LeadClaim } from "./lead-voice.js";
-import { isPasskeyFreshProof, verifyPasskeyAction, verifyPasskeyFreshLease, type PasskeyActionProof } from "./companion/passkey-gate.js";
-import { passkeyFreshProofDetail, passkeyProofDetail, sha256 } from "./companion/webauthn.js";
+import { passkeyApprovalWindowMinutes, usesPasskeyLease, verifyPasskeyAction, verifyPasskeyLease, type PasskeyActionProof } from "./companion/passkey-gate.js";
+import { acceptBindingOf, passkeyProofDetail } from "./companion/webauthn.js";
+import { isProtectedWork, protectedChanges } from "./approval-policy.js";
 
 export type AssignmentAccess = WorkSummaryAccess;
 export type AssignmentOwner = { kind: "coordinator" | "lead"; id: string; label: string };
@@ -663,6 +664,23 @@ export function owedAcceptance(receipt: AssignmentReceipt | null, blockers: read
  * request passes its own). */
 export const ACCEPT_PROVED_ACTION = "accept proved";
 
+/** ADR 0005: whether a phone's approvals window (or an Accept that opens one) may carry accepting this result as read:
+ * not publishing, not an exception, no release terms, and no protected work — protection read from the project's rules,
+ * the result's changed files (unreadable counts as protected) and the scope's declared paths, never from whether
+ * separation of duties is already met. One rule for the challenge's hint and the domain gate. */
+export function acceptWindowCovers(store: Store, taskId: string, before: AssignmentSnapshot, publish: boolean, root: string): boolean {
+  const receipt = before.receipt;
+  const owed = before.state === "ready-to-check" ? owedAcceptance(receipt, before.readiness?.blockers ?? []) : null;
+  if (publish || owed === "exception" || receipt === null || before.repo === null) return false;
+  const scope = store.getScope(taskId);
+  if (scope?.releaseTerms != null) return false;
+  const rules = store.approvalRules(before.repo);
+  if (rules.protectProject) return false;
+  if (rules.protectedPaths.length === 0) return true;
+  const changed = familyChangedFiles(store, taskId, receipt.runId, root);
+  return changed !== null && protectedChanges(rules, changed).length === 0 && scope !== null && !isProtectedWork(rules, [...scope.touches]);
+}
+
 export function acceptAndCompleteAsOperator(store: Store, taskId: string, input: { runId: number | null; receiptDigest: string; note: string | null; publish?: boolean; passkey?: PasskeyActionProof },
   who: VerifiedApprover, now: Date, root = evidenceRoot(homedir()),
   finish: (digest: string) => Finished = digest => checkAssignmentAsOperator(store, taskId, digest, who, now, root)): Finished {
@@ -678,74 +696,8 @@ export function acceptAndCompleteAsOperator(store: Store, taskId: string, input:
       if (receipt === null || (input.runId !== null && receipt.runId !== input.runId) || !/^[a-f0-9]{64}$/.test(input.receiptDigest) || receipt.digest !== input.receiptDigest) {
         return { ok: false, reason: "stale", message: "This result changed. Open the current result before accepting it." };
       }
-      // ADR 0005: when initiated via paired phone Passkey, verify and atomically consume the accept challenge (or
-      // verify the bounded in-memory Passkey session window for clean non-publish, non-exception, non-protected results)
-      // inside this savepoint so proof, acceptance, and completion commit or roll back together.
-      let passkeyOutcome: "passkey" | "passkey-fresh" = "passkey";
-      let passkeyDetail: string | null = null;
       const owed = before.state === "ready-to-check" ? owedAcceptance(receipt, before.readiness?.blockers ?? []) : null;
-      if (input.passkey !== undefined) {
-        if (machineActing()) return { ok: false, reason: "person-required", message: MACHINE_CANT_CHECK };
-        if (isPasskeyFreshProof(input.passkey)) {
-          const protectedProblem = store.protectedResultProblem(taskId, familyChangedFiles(store, taskId, receipt.runId, root), who.name);
-          if (input.publish === true || owed === "exception" || protectedProblem !== null) {
-            return { ok: false, reason: "step-up-required", message: "Fresh passkey confirmation is required for this result." };
-          }
-          const verified = verifyPasskeyFreshLease(store, {
-            accountName: who.name,
-            repo: before.repo,
-            proof: input.passkey,
-            now,
-          });
-          if (!verified.ok) {
-            return {
-              ok: false,
-              reason: verified.code === "step_up_required" ? "step-up-required" : "unauthenticated",
-              message: verified.message,
-            };
-          }
-          passkeyOutcome = "passkey-fresh";
-          passkeyDetail = passkeyFreshProofDetail({
-            at: now,
-            provedAtMs: input.passkey.verifiedAtMs,
-            generation: verified.accountGeneration,
-            digest: receipt.digest,
-            verb: "accept",
-            credentialId: verified.credentialId,
-            pairedDeviceId: verified.deviceId,
-            be: verified.be,
-            bs: verified.bs,
-          });
-        } else {
-          const verified = verifyPasskeyAction(store, {
-            accountName: who.name,
-            repo: before.repo,
-            verb: "accept",
-            expectedBinding: {
-              verb: "accept",
-              taskId,
-              runId: input.runId,
-              receiptDigest: input.receiptDigest,
-              noteHash: sha256(input.note ?? "").toString("hex"),
-              publish: input.publish === true,
-            },
-            proof: input.passkey,
-            now,
-            consume: true,
-          });
-          if (!verified.ok) return { ok: false, reason: "unauthenticated", message: verified.message };
-          passkeyDetail = passkeyProofDetail({
-            at: now,
-            generation: verified.accountGeneration,
-            digest: receipt.digest,
-            verb: "accept",
-            credentialId: verified.credentialId,
-            pairedDeviceId: verified.deviceId,
-            be: verified.be,
-            bs: verified.bs,
-          });
-        }
-      }
+      // Every refusal that doesn't need the proof comes before a passkey assertion is consumed.
       // A local owner's acceptance: the same rule as its completion, before any acceptance is written.
       const local = localCompletionRefusal(store, `operator:${who.name}`, [receipt.taskId, taskId, before.rootId], receipt.runId, root);
       if (local !== null) return local;
@@ -753,7 +705,32 @@ export function acceptAndCompleteAsOperator(store: Store, taskId: string, input:
       if (owed === "exception" && input.note === null) return { ok: false, reason: "needs-reason", message: `${ACCEPT_NEEDS_REASON}.` };
       // A person's own check is a person's, whoever holds the approver: never the lead's token or a remote API token in
       // this chain (local-owner plan v2, item 4), whatever the caller decided before calling.
-      if (owed === "person-check" && machineActing()) return { ok: false, reason: "person-required", message: MACHINE_CANT_CHECK };
+      if ((owed === "person-check" || input.passkey !== undefined) && machineActing()) return { ok: false, reason: "person-required", message: MACHINE_CANT_CHECK };
+      // ADR 0005: a paired phone's passkey, verified and consumed (or its approvals window re-checked) inside this
+      // savepoint, so proof, acceptance and completion commit or roll back together; every refusal after it is Undone.
+      let passkeyProof: { outcome: "passkey" | "passkey-fresh"; detail: string } | null = null;
+      if (input.passkey !== undefined) {
+        const routine = acceptWindowCovers(store, taskId, before, input.publish === true, root);
+        const lease = usesPasskeyLease(input.passkey);
+        if (lease && !routine) return { ok: false, reason: "step-up-required", message: "Confirm with your passkey to accept this result." };
+        const verified = usesPasskeyLease(input.passkey)
+          ? verifyPasskeyLease(store, { accountName: who.name, repo: before.repo, proof: input.passkey, now })
+          : verifyPasskeyAction(store, {
+            accountName: who.name,
+            repo: before.repo,
+            verb: "accept",
+            expectedBinding: acceptBindingOf({ taskId, runId: input.runId, receiptDigest: input.receiptDigest, note: input.note, publish: input.publish === true }, receipt.runId),
+            proof: input.passkey,
+            now,
+            ...(routine ? { startsLease: { minutes: passkeyApprovalWindowMinutes(store) } } : {}),
+          });
+        if (!verified.ok) return { ok: false, reason: verified.code === "step_up_required" ? "step-up-required" : "unauthenticated", message: verified.message };
+        passkeyProof = {
+          outcome: lease ? "passkey-fresh" : "passkey",
+          detail: passkeyProofDetail({ at: now, ...(lease ? { provedAtMs: verified.provedAtMs } : {}), generation: verified.accountGeneration, digest: receipt.digest, verb: "accept",
+            credentialId: verified.credentialId, pairedDeviceId: verified.deviceId, be: verified.be, bs: verified.bs }),
+        };
+      }
       let digest = receipt.digest;
       if (owed !== null) {
         store.acceptProof(receipt.runId, who.name, input.note, now);
@@ -762,8 +739,8 @@ export function acceptAndCompleteAsOperator(store: Store, taskId: string, input:
         if (accepted === null || accepted.runId !== receipt.runId) throw new Undone({ ok: false, reason: "stale", message: "This result changed. Open the current result before accepting it." });
         digest = accepted.digest;
       }
-      if (passkeyDetail !== null) {
-        store.recordAction({ at: now.toISOString(), actor: who.name, repo: before.repo, taskId, runId: receipt.runId, action: ACCEPT_PROVED_ACTION, outcome: passkeyOutcome, source: "request", detail: passkeyDetail });
+      if (passkeyProof !== null) {
+        store.recordAction({ at: now.toISOString(), actor: who.name, repo: before.repo, taskId, runId: receipt.runId, action: ACCEPT_PROVED_ACTION, outcome: passkeyProof.outcome, source: "request", detail: passkeyProof.detail });
       }
       const done = finish(digest);
       if (!done.ok) throw new Undone(done);

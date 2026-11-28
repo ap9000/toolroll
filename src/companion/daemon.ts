@@ -134,6 +134,7 @@ export const PAIRED_DEVICE_GATE1_ROUTES = new Set<string>([
 export const PAIRED_DEVICE_GATE2_ROUTES = new Set<string>([
   "passkey.status",
   "passkey.lock",
+  "passkey.unlock",
   "passkey.register.begin",
   "passkey.register.finish",
   "approval.challenge",
@@ -1320,6 +1321,9 @@ export class CompanionDaemonEngine {
           break;
         case "passkey.lock":
           result = await this.actions!.passkeyLock(principal);
+          break;
+        case "passkey.unlock":
+          result = await this.actions!.passkeyUnlock(principal, params);
           break;
         case "passkey.register.begin":
           result = await this.actions!.passkeyRegisterBegin(principal, params);

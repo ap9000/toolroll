@@ -26,7 +26,7 @@ const P256_SPKI_PREFIX = Buffer.from("3059301306072a8648ce3d020106082a8648ce3d03
 const P256_P = BigInt("0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff");
 const P256_B = BigInt("0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b");
 
-export type PasskeyVerb = "approve" | "accept" | "land" | "ship";
+export type PasskeyVerb = "approve" | "accept" | "land" | "ship" | "unlock";
 
 export interface WebAuthnRegistrationPayload {
   credentialId?: string;
@@ -94,7 +94,28 @@ export type VerbChallengeBinding =
   | { verb: "approve"; taskId: string; sawDigest: string }
   | { verb: "accept"; taskId: string; runId: number | null; receiptDigest: string; noteHash: string; publish: boolean }
   | { verb: "land"; taskId: string; planKey: string; into: string | null; undo: boolean }
-  | { verb: "ship"; runId: number; taskId: string; prNumber: number; headSha: string; method: string; anyway: boolean };
+  | { verb: "ship"; runId: number; taskId: string; prNumber: number; headSha: string; method: string; anyway: boolean }
+  /** Unlock routine approvals on this phone for `minutes` (the account and device are bound by the challenge row). */
+  | { verb: "unlock"; minutes: number };
+
+/** An Accept's note as both sides bind it: trimmed, and empty means none. */
+export function normalizeAcceptNote(note: unknown): string | null {
+  return typeof note === "string" && note.trim().length > 0 ? note.trim() : null;
+}
+
+/** THE Accept binding, used by both challenge issuance and the domain gate: an omitted run is the receipt's own run,
+ * and the note is normalized before hashing, so the same request always binds the same bytes. */
+export function acceptBindingOf(input: { taskId: string; runId: number | null; receiptDigest: string; note: unknown; publish: boolean },
+  receiptRunId: number): Extract<VerbChallengeBinding, { verb: "accept" }> {
+  return {
+    verb: "accept",
+    taskId: input.taskId,
+    runId: input.runId ?? receiptRunId,
+    receiptDigest: input.receiptDigest,
+    noteHash: sha256(normalizeAcceptNote(input.note) ?? "").toString("hex"),
+    publish: input.publish,
+  };
+}
 
 /**
  * Builds the canonical verb-specific challenge payload and its SHA-256 base64url digest.
@@ -136,15 +157,25 @@ function wordingForBinding(binding: VerbChallengeBinding): string {
       return `${binding.undo ? "Undo landing" : "Land"} task ${binding.taskId} (${binding.planKey})`;
     case "ship":
       return `Merge PR #${binding.prNumber} for task ${binding.taskId} at ${binding.headSha.slice(0, 10)} (${binding.method})`;
+    case "unlock":
+      return `Unlock approvals for ${minutesWords(binding.minutes)}`;
   }
 }
 
+export function minutesWords(minutes: number): string {
+  return minutes === 60 ? "1 hour" : minutes === 1 ? "1 minute" : `${minutes} minutes`;
+}
+
 /**
- * Structured ADR 0005 honest proof detail JSON (compatible with `scope.ts:proofDetailOf`).
- * Sized strictly under `store.recordAction`'s 300-character detail cap so it is never truncated.
+ * Structured ADR 0005 proof detail JSON (compatible with `scope.ts:proofDetailOf`, which reads `v`, `at`, `digest`).
+ * Kept well under `store.recordAction`'s 300-character detail cap at production lengths (64-hex digests, 20-character
+ * device ids): `cred` is a 16-hex hash of the credential id, `dev` the paired device id. `provedAt` is present only for
+ * an act carried by an approvals window (outcome `passkey-fresh`): the time of the live assertion that opened it.
+ * User verification is implied (the verifier refuses UV=0).
  */
 export function passkeyProofDetail(input: {
   at: Date;
+  provedAtMs?: number;
   generation: number;
   digest: string;
   verb: PasskeyVerb;
@@ -156,46 +187,14 @@ export function passkeyProofDetail(input: {
   return JSON.stringify({
     v: 1,
     at: input.at.toISOString(),
+    ...(input.provedAtMs === undefined ? {} : { provedAt: new Date(input.provedAtMs).toISOString() }),
     generation: input.generation,
     digest: input.digest,
     verb: input.verb,
     cred: sha256(input.credentialId).toString("hex").slice(0, 16),
-    deviceId: input.pairedDeviceId.slice(0, 32),
-    uv: true,
+    dev: input.pairedDeviceId.slice(0, 40),
     be: input.be,
     bs: input.bs,
-    summary: "Passkey user verification",
-  });
-}
-
-/**
- * Structured ADR 0005 honest proof detail JSON for an act authorized under a bounded in-memory Passkey session
- * window (`outcome: "passkey-fresh"`). Records the original Passkey assertion timestamp (`provedAt`) honestly.
- */
-export function passkeyFreshProofDetail(input: {
-  at: Date;
-  provedAtMs: number;
-  generation: number;
-  digest: string;
-  verb: "approve" | "accept";
-  credentialId: string;
-  pairedDeviceId: string;
-  be: boolean;
-  bs: boolean;
-}): string {
-  return JSON.stringify({
-    v: 1,
-    at: input.at.toISOString(),
-    provedAt: new Date(input.provedAtMs).toISOString(),
-    generation: input.generation,
-    digest: input.digest,
-    verb: input.verb,
-    cred: sha256(input.credentialId).toString("hex").slice(0, 12),
-    dev: input.pairedDeviceId.slice(0, 24),
-    uv: true,
-    be: input.be,
-    bs: input.bs,
-    summary: "Passkey session window",
   });
 }
 
@@ -243,7 +242,7 @@ export function p256CoordsToSpkiDer(x: Buffer, y: Buffer): Buffer | null {
 
 // ---- Minimal Strict CBOR Decoder (for WebAuthn attestationObject & COSE_Key) ---------------------------------------
 
-type CborValue = number | string | Buffer | boolean | null | CborValue[] | Map<number | string, CborValue>;
+export type CborValue = number | string | Buffer | boolean | null | CborValue[] | Map<number | string, CborValue>;
 
 function decodeCborItem(buf: Buffer, offset: number, depth: number): { value: CborValue; next: number } {
   if (depth > 8 || offset >= buf.length) throw new Error("cbor_bounds");
@@ -313,35 +312,6 @@ function decodeCborItem(buf: Buffer, offset: number, depth: number): { value: Cb
     default:
       throw new Error("cbor_major");
   }
-}
-
-/** Minimal CBOR encoder used by tests and fixture generators to construct valid WebAuthn attestationObjects / COSE keys. */
-export function encodeCbor(value: CborValue): Buffer {
-  const header = (major: number, n: number): Buffer => {
-    if (n < 24) return Buffer.from([(major << 5) | n]);
-    if (n < 0x100) return Buffer.from([(major << 5) | 24, n]);
-    if (n < 0x10000) { const b = Buffer.alloc(3); b[0] = (major << 5) | 25; b.writeUInt16BE(n, 1); return b; }
-    const b = Buffer.alloc(5); b[0] = (major << 5) | 26; b.writeUInt32BE(n, 1); return b;
-  };
-  if (typeof value === "number") {
-    if (!Number.isInteger(value)) throw new Error("non_integer");
-    return value >= 0 ? header(0, value) : header(1, -1 - value);
-  }
-  if (Buffer.isBuffer(value)) return Buffer.concat([header(2, value.length), value]);
-  if (typeof value === "string") {
-    const b = Buffer.from(value, "utf8");
-    return Buffer.concat([header(3, b.length), b]);
-  }
-  if (Array.isArray(value)) return Buffer.concat([header(4, value.length), ...value.map(encodeCbor)]);
-  if (value instanceof Map) {
-    const parts: Buffer[] = [header(5, value.size)];
-    for (const [k, v] of value.entries()) parts.push(encodeCbor(k), encodeCbor(v));
-    return Buffer.concat(parts);
-  }
-  if (value === false) return Buffer.from([0xf4]);
-  if (value === true) return Buffer.from([0xf5]);
-  if (value === null) return Buffer.from([0xf6]);
-  throw new Error("unsupported_cbor");
 }
 
 function parseClientData(rawB64: unknown): { ok: true; raw: Buffer; type: string; challenge: string; origin: string } | { ok: false; code: string; message: string } {

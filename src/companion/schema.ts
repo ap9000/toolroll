@@ -216,7 +216,7 @@ CREATE TABLE IF NOT EXISTS account_passkeys (
 CREATE INDEX IF NOT EXISTS idx_account_passkeys_owner ON account_passkeys (workspace_id, account_name, recovery_generation);
 CREATE TABLE IF NOT EXISTS passkey_challenges (
   challenge TEXT PRIMARY KEY,
-  kind TEXT NOT NULL CHECK (kind IN ('register', 'approve', 'accept', 'land', 'ship')),
+  kind TEXT NOT NULL CHECK (kind IN ('register', 'approve', 'accept', 'land', 'ship', 'unlock')),
   workspace_id TEXT NOT NULL,
   account_name TEXT NOT NULL,
   device_id TEXT NOT NULL,

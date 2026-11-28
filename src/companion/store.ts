@@ -313,7 +313,7 @@ export function retireCompanionOnRestore(db: CompanionDb): number {
 
 // ---- Gate 2: Passkeys, Single-Use Challenges, and Mutation Idempotency (ADR 0005) ----------------------------------
 
-export type PasskeyChallengeKind = "register" | "approve" | "accept" | "land" | "ship";
+export type PasskeyChallengeKind = "register" | "approve" | "accept" | "land" | "ship" | "unlock";
 
 export interface AccountPasskeyRow {
   credentialId: string;
@@ -425,9 +425,10 @@ export function listAllAccountPasskeys(
   `).all(workspaceId, accountName, recoveryGeneration).map(passkeyRowOf);
 }
 
-export function updateAccountPasskeyUsage(db: CompanionDb, credentialId: string, signCount: number, now: Date): void {
-  db.prepare("UPDATE account_passkeys SET sign_count = ?, last_used_at = ? WHERE credential_id = ? AND revoked_at IS NULL")
-    .run(signCount, now.toISOString(), credentialId);
+/** Advances a credential's signCount from exactly `from` (compare-and-swap; false when it moved, or was revoked, since it was read). */
+export function updateAccountPasskeyUsage(db: CompanionDb, credentialId: string, from: number, signCount: number, now: Date): boolean {
+  return Number(db.prepare("UPDATE account_passkeys SET sign_count = ?, last_used_at = ? WHERE credential_id = ? AND sign_count = ? AND revoked_at IS NULL")
+    .run(signCount, now.toISOString(), credentialId, from).changes) === 1;
 }
 
 export function revokeAccountPasskey(db: CompanionDb, credentialId: string, accountName: string, now: Date): boolean {

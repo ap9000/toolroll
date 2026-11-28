@@ -33,7 +33,7 @@ import { NIGHTLY_CHECK_ONLY, RELEASE_MERGES_ONLY, nightlyTaskRef, refArchived, r
 import { belongsToRelease } from "./release-authority.js";
 import { autoReleaseSealed } from "./release-auto.js";
 import { fullCheckGate, requestFollowUpChecks, type FullCheckGate } from "./result-follow-ups.js";
-import { verifyPasskeyAction, type PasskeyAssertionProof } from "./companion/passkey-gate.js";
+import { checkPasskeyAction, consumePasskeyAction, type PasskeyAssertionProof } from "./companion/passkey-gate.js";
 import { passkeyProofDetail } from "./companion/webauthn.js";
 
 export type MergeMethod = "squash" | "merge" | "rebase";
@@ -437,16 +437,8 @@ export async function mergeAsPerson(
       method,
       anyway: input.anyway === true,
     };
-    const precheck = verifyPasskeyAction(store, {
-      accountName: input.name,
-      repo,
-      verb: "ship",
-      expectedBinding,
-      proof: input.passkey,
-      now: clock(),
-      consume: false,
-    });
-    if (!precheck.ok) return refuse("password", precheck.message);
+    const checked = checkPasskeyAction(store, { accountName: input.name, repo, verb: "ship", expectedBinding, proof: input.passkey, now: clock() });
+    if (!checked.ok) return refuse("password", checked.message);
     return mergePullRequest(store, {
       runId: input.runId,
       by: input.name,
@@ -456,15 +448,7 @@ export async function mergeAsPerson(
       beforeReserve: seen => {
         if (seen.head !== publication.headSha) return { ok: false, message: "The pull request head moved before merging." };
         const now = clock();
-        const consumed = verifyPasskeyAction(store, {
-          accountName: input.name,
-          repo,
-          verb: "ship",
-          expectedBinding,
-          proof: input.passkey!,
-          now,
-          consume: true,
-        });
+        const consumed = consumePasskeyAction(store, checked, { repo, now });
         if (!consumed.ok) return { ok: false, message: consumed.message };
         store.recordAction({
           at: now.toISOString(),
@@ -658,6 +642,8 @@ export async function mergePullRequest(
     return { ok: true, commit: after.commit, ...(input.destination === undefined ? {} : { seen: { base: after.base, url: after.url, head: after.head } }) };
   }
   if (merged.code === 4) return fail("gh-signed-out", "The GitHub CLI isn't signed in on this computer. Run gh auth login, then merge again.");
+  // GitHub couldn't be read after the merge ran: whether it merged is not known (never reported as a plain refusal).
+  if (after === null) return fail("unconfirmed", "GitHub couldn't be read after the merge ran, so whether it merged isn't known yet. Refresh before trying again.");
   return fail("refused", `GitHub didn't merge it: ${plain(firstLine(merged.stderr) || "no reason given", 200)}`);
 }
 

@@ -24,7 +24,7 @@ import { openStore, type Store } from "../store.js";
 import { ACCEPT_PROVED_ACTION, assignmentOf } from "../assignment.js";
 import { LAND_PROVED_ACTION } from "../local-landing.js";
 import { MERGE_PROVED_ACTION } from "../pull-request-flow.js";
-import { APPROVAL_PROOF, addApprover, approvalOf, approve, personApprovalOf, propose } from "../scope.js";
+import { APPROVAL_PROOF, addApprover, approvalOf, approve, personApprovalOf, proofDetailOf, propose } from "../scope.js";
 import { createCompanionActions, CompanionActionError, type CompanionActionHandlers } from "./actions.js";
 import type { CompanionReadRuntime } from "./reads.js";
 import type { PairedDevicePrincipal } from "./daemon.js";
@@ -39,9 +39,9 @@ import {
   savePendingDevice,
   settleDeviceIdempotency,
 } from "./store.js";
+import { encodeCbor } from "./webauthn-test-support.js";
 import {
   derivePasskeyUserHandle,
-  encodeCbor,
   PASSKEY_ORIGIN,
   PASSKEY_RP_ID,
   verifyAssertionResponse,
@@ -49,11 +49,19 @@ import {
   type WebAuthnAssertionPayload,
 } from "./webauthn.js";
 import { storeEvidence } from "../evidence.js";
+import { scopeApprovedForDispatch } from "../dispatch.js";
+import { run as execRun } from "../exec.js";
+import { activePasskeyLease } from "./passkey-gate.js";
+import { revokePairedDeviceRecord, getPasskeyChallenge } from "./store.js";
+import { passkeyProofDetail } from "./webauthn.js";
 import { sealVerificationReceipt } from "../verification-evidence.js";
 import { recordRunCheckLevel } from "../check-levels.js";
 import type { PublishExec } from "../publish.js";
 
 const T0 = new Date("2026-11-28T10:00:00.000Z");
+/** Device ids as the daemon mints them (daemon.ts: `dev_` + 16 hex = 20 characters), so proof rows are sized for real. */
+const DEVICE_1 = "dev_0f1e2d3c4b5a6978";
+const DEVICE_2 = "dev_8796a5b4c3d2e1f0";
 let REPO = "/repo/gate2-passkey";
 
 interface SimulatedPasskey {
@@ -242,7 +250,7 @@ describe("Gate 2: WebAuthn verifier, Passkey enrollment, per-verb transactions, 
     return { digest: scope.digest, taskRef: ref.id };
   }
 
-  function seedReviewableResult(taskId: string): { runId: number; receiptDigest: string; headSha: string } {
+  function seedReviewableResult(taskId: string, opts: { refuted?: boolean } = {}): { runId: number; receiptDigest: string; headSha: string } {
     const BASE = execFileSync("git", ["-C", REPO, "rev-parse", "HEAD"]).toString("utf8").trim();
     const branch = `toolroll/${taskId}`;
     execFileSync("git", ["-C", REPO, "checkout", "-q", "-b", branch, BASE]);
@@ -271,7 +279,8 @@ describe("Gate 2: WebAuthn verifier, Passkey enrollment, per-verb transactions, 
     store.finishRun(runId, { outcome: "built", committed: true, now });
     store.setTaskState(taskId, "done", now);
     recordRunCheckLevel(store, { id: runId, taskId, repo: REPO }, "full", "project", now);
-    store.saveProofVerdict(runId, "verified", [], now, [{ id: "c1", statement: "Tests pass", requiredEvidence: ["check"], state: "pass", detail: [], answered: [{ kind: "check", ref: "true" }], review: null }] as never, "verified");
+    if (opts.refuted === true) store.saveProofVerdict(runId, "refuted", ["The report doesn't match its changes."], now, [{ id: "c1", statement: "Tests pass", requiredEvidence: ["check"], state: "fail", detail: [], answered: [], review: null }] as never, "refuted");
+    else store.saveProofVerdict(runId, "verified", [], now, [{ id: "c1", statement: "Tests pass", requiredEvidence: ["check"], state: "pass", detail: [], answered: [{ kind: "check", ref: "true" }], review: null }] as never, "verified");
     storeEvidence(store, evidenceRoot, runId, "terminal-diff", "diff.patch", Buffer.from(patch), "git diff (exit 0)", now, { captureStatus: "ok" });
     storeEvidence(store, evidenceRoot, runId, "diff-stat", "diff-stat.json", Buffer.from(JSON.stringify({ schema: 1, head: HEAD, base: BASE, filesTruncated: false, fileCount: 1, files: [{ path: "src/auth.ts" }] })), "git diff --numstat", now, { captureStatus: "ok" });
     storeEvidence(store, evidenceRoot, runId, "check-log", "checks.txt", Buffer.from("1 passed\n"), "true", now, { captureStatus: "ok" });
@@ -280,6 +289,40 @@ describe("Gate 2: WebAuthn verifier, Passkey enrollment, per-verb transactions, 
     const assigned = assignmentOf(store, taskId, now, { principal: "operator", repos: [REPO] }, evidenceRoot);
     expect(assigned?.receipt).not.toBeNull();
     return { runId, receiptDigest: assigned!.receipt!.digest, headSha: HEAD };
+  }
+
+  function seedPullRequest(taskId: string, runId: number, headSha: string): void {
+    store.savePublicationGrant({
+      repo: REPO,
+      githubRepo: "ap9000/toolroll",
+      remote: "origin",
+      headPrefix: "toolroll/",
+      base: "main",
+      capabilities: ["push", "pr"],
+      selector: "ours",
+      draft: false,
+      grantedBy: "alex",
+      merge: true,
+      mergeMethod: "squash",
+      mergeDeleteBranch: false,
+    }, now);
+    const refId = store.refFor("built-in", taskId).id;
+    const pubId = store.createPublicationIntent({
+      run: runId,
+      taskRef: refId,
+      githubRepo: "ap9000/toolroll",
+      remote: "origin",
+      base: "main",
+      head: `toolroll/${taskId}`,
+      headSha: headSha,
+      bodyHash: "body-hash-1",
+      draft: false,
+    }, now);
+    store.markPublicationPushed(pubId, now);
+    store.markPublicationOpened(pubId, 42, "https://github.com/ap9000/toolroll/pull/42", now);
+    store.handle
+      .prepare("INSERT INTO pull_request_follow (publication, flow_card, revisions, created_at, updated_at) VALUES (?, NULL, 0, ?, ?)")
+      .run(pubId, now.toISOString(), now.toISOString());
   }
 
   beforeEach(() => {
@@ -303,7 +346,7 @@ describe("Gate 2: WebAuthn verifier, Passkey enrollment, per-verb transactions, 
       store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", now);
     }
     runtime = makeRuntime(store);
-    principal = pairDevice("dev_iphone_1", "alex");
+    principal = pairDevice(DEVICE_1, "alex");
     actions = createCompanionActions({ runtime, workspaceLabel: () => "Studio Mac" });
   });
 
@@ -333,7 +376,7 @@ describe("Gate 2: WebAuthn verifier, Passkey enrollment, per-verb transactions, 
     test("rejects replayed, expired, and cross-device registration challenges", async () => {
       const key1 = createSimulatedPasskey("cred-1");
       const key2 = createSimulatedPasskey("cred-2");
-      const otherDev = pairDevice("dev_iphone_2", "alex");
+      const otherDev = pairDevice(DEVICE_2, "alex");
 
       actions.openEnrollmentWindow("alex", null);
       const begin = (await actions.passkeyRegisterBegin(principal, {})) as { challenge: string };
@@ -388,8 +431,8 @@ describe("Gate 2: WebAuthn verifier, Passkey enrollment, per-verb transactions, 
     });
 
     test("derives distinct 32-byte user.id across two workspaces for the same accountName", () => {
-      const h1 = derivePasskeyUserHandle("ws-mac-studio", "alex");
-      const h2 = derivePasskeyUserHandle("ws-macbook-pro", "alex");
+      const h1 = derivePasskeyUserHandle("ws-first", "alex");
+      const h2 = derivePasskeyUserHandle("ws-second", "alex");
       expect(h1.length).toBe(32);
       expect(h2.length).toBe(32);
       expect(h1.equals(h2)).toBe(false);
@@ -506,11 +549,10 @@ describe("Gate 2: WebAuthn verifier, Passkey enrollment, per-verb transactions, 
         .prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = ? ORDER BY id DESC LIMIT 1")
         .get("t-approve-1", APPROVAL_PROOF) as { outcome: string; detail: string } | undefined;
       expect(proofRow?.outcome).toBe("passkey");
-      const detail = JSON.parse(proofRow!.detail) as { summary: string; deviceId: string; uv: boolean };
-      expect(detail.uv).toBe(true);
-      expect(detail.deviceId).toBe(principal.deviceId);
-      expect(detail.summary).toContain("Passkey user verification");
-      expect(detail.summary.toLowerCase()).not.toContain("face id");
+      const detail = JSON.parse(proofRow!.detail) as { dev: string; verb: string; digest: string };
+      expect(detail).toMatchObject({ dev: principal.deviceId, verb: "approve", digest });
+      expect(proofRow!.detail.toLowerCase()).not.toContain("face id");
+      expect(proofDetailOf(proofRow!.detail)).toEqual({ at: now.toISOString(), digest });
 
       // Replaying the same consumed challenge with a new idempotencyKey is refused.
       const { digest: digest2 } = createTaskWithScope("t-approve-2");
@@ -607,7 +649,7 @@ describe("Gate 2: WebAuthn verifier, Passkey enrollment, per-verb transactions, 
         .prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = ? ORDER BY id DESC LIMIT 1")
         .get("t-accept-1", ACCEPT_PROVED_ACTION) as { outcome: string; detail: string } | undefined;
       expect(proof?.outcome).toBe("passkey");
-      expect(proof?.detail).toContain("Passkey user verification");
+      expect(JSON.parse(proof!.detail)).toMatchObject({ verb: "accept", dev: principal.deviceId });
     });
 
     test("task.land writes land proved inside landing transaction and refuses stale plan key", async () => {
@@ -664,7 +706,7 @@ describe("Gate 2: WebAuthn verifier, Passkey enrollment, per-verb transactions, 
         .prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = ? ORDER BY id DESC LIMIT 1")
         .get("t-land-1", LAND_PROVED_ACTION) as { outcome: string; detail: string } | undefined;
       expect(landProof?.outcome).toBe("passkey");
-      expect(landProof?.detail).toContain("Passkey user verification");
+      expect(JSON.parse(landProof!.detail)).toMatchObject({ verb: "land", digest: planKey, dev: principal.deviceId });
     });
 
     test("task.ship writes merge proved inside reservation transaction before gh pr merge", async () => {
@@ -674,37 +716,7 @@ describe("Gate 2: WebAuthn verifier, Passkey enrollment, per-verb transactions, 
       const userHandle = derivePasskeyUserHandle(store.workspaceIdentity().id, "alex");
 
       const MERGE_SHA = "b".repeat(40);
-      store.savePublicationGrant({
-        repo: REPO,
-        githubRepo: "ap9000/toolroll",
-        remote: "origin",
-        headPrefix: "toolroll/",
-        base: "main",
-        capabilities: ["push", "pr"],
-        selector: "ours",
-        draft: false,
-        grantedBy: "alex",
-        merge: true,
-        mergeMethod: "squash",
-        mergeDeleteBranch: false,
-      }, now);
-      const refId = store.refFor("built-in", "t-ship-1").id;
-      const pubId = store.createPublicationIntent({
-        run: runId,
-        taskRef: refId,
-        githubRepo: "ap9000/toolroll",
-        remote: "origin",
-        base: "main",
-        head: "toolroll/t-ship-1",
-        headSha: HEAD_SHA,
-        bodyHash: "body-hash-1",
-        draft: false,
-      }, now);
-      store.markPublicationPushed(pubId, now);
-      store.markPublicationOpened(pubId, 42, "https://github.com/ap9000/toolroll/pull/42", now);
-      store.handle
-        .prepare("INSERT INTO pull_request_follow (publication, flow_card, revisions, created_at, updated_at) VALUES (?, NULL, 0, ?, ?)")
-        .run(pubId, now.toISOString(), now.toISOString());
+      seedPullRequest("t-ship-1", runId, HEAD_SHA);
 
       let mergedOnRemote = false;
       let proofExistedWhenGhMergeRan = false;
@@ -917,9 +929,10 @@ describe("Gate 2: WebAuthn verifier, Passkey enrollment, per-verb transactions, 
         .prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = ? ORDER BY id DESC LIMIT 1")
         .get("t-win-2", APPROVAL_PROOF) as { outcome: string; detail: string };
       expect(freshProof.outcome).toBe("passkey-fresh");
-      const freshDetail = JSON.parse(freshProof.detail) as { summary: string; provedAt: string };
-      expect(freshDetail.summary).toBe("Passkey session window");
+      const freshDetail = JSON.parse(freshProof.detail) as { provedAt: string; dev: string };
       expect(freshDetail.provedAt).toBe(T0.toISOString());
+      expect(freshDetail.dev).toBe(principal.deviceId);
+      expect(proofDetailOf(freshProof.detail)).toEqual({ at: now.toISOString(), digest: d2 });
 
       // 3. Clean accept (publish: false) works under fresh session; publish: true refuses fresh session!
       const { runId: accRunId, receiptDigest: accDigest } = seedReviewableResult("t-win-accept");
@@ -1014,6 +1027,269 @@ describe("Gate 2: WebAuthn verifier, Passkey enrollment, per-verb transactions, 
         assertion: buildAssertionPayload(key, ch4.challenge, userHandle),
       })) as { freshUntil: string | null };
       expect(r4.freshUntil).toBeNull();
+    });
+  });
+  describe("Fix round: windows only from verified routine acts, outcomes replayed exactly, one Accept binding", () => {
+    const userHandle = () => derivePasskeyUserHandle(store.workspaceIdentity().id, "alex");
+    const refOf = (taskId: string) => store.refFor("built-in", taskId).id;
+
+    async function liveApprove(taskId: string, digest: string, key: SimulatedPasskey, dev = principal): Promise<{ ok: boolean; approved: boolean; freshUntil: string | null; secondApprover?: boolean }> {
+      const ch = (await actions.approvalChallenge(dev, { verb: "approve", task: taskId, digest, forceFresh: true })) as { challenge: string };
+      return (await actions.taskApprove(dev, { task: taskId, digest, challenge: ch.challenge, idempotencyKey: randomUUID(), assertion: buildAssertionPayload(key, ch.challenge, userHandle()) })) as never;
+    }
+
+    async function unlock(key: SimulatedPasskey, minutes?: number): Promise<{ ok: boolean; unlocked: boolean; freshUntil: string | null; minutes: number }> {
+      const params = minutes === undefined ? {} : { minutes };
+      const ch = (await actions.approvalChallenge(principal, { verb: "unlock", ...params })) as { challenge: string; wording: string };
+      return (await actions.passkeyUnlock(principal, { ...params, challenge: ch.challenge, assertion: buildAssertionPayload(key, ch.challenge, userHandle()) })) as never;
+    }
+
+    function protectSrc(): void {
+      store.setApprovalRules(REPO, { notRequester: false, protectProject: false, protectedPaths: ["src/**"] }, "alex", now);
+    }
+
+    test("C1: a land replay (forged assertion) and a ship confer no approvals window", async () => {
+      const key = createSimulatedPasskey();
+      await enrollKey(key);
+      const { runId, receiptDigest } = seedReviewableResult("t-c1");
+      const acceptCh = (await actions.approvalChallenge(principal, { verb: "accept", task: "t-c1", runId, receiptDigest, forceFresh: true })) as { challenge: string };
+      await actions.taskAccept(principal, { task: "t-c1", runId, receiptDigest, challenge: acceptCh.challenge, idempotencyKey: randomUUID(), assertion: buildAssertionPayload(key, acceptCh.challenge, userHandle()) });
+      const landCh = (await actions.approvalChallenge(principal, { verb: "land", task: "t-c1" })) as { challenge: string; binding: { planKey: string } };
+      await actions.taskLand(principal, { task: "t-c1", key: landCh.binding.planKey, challenge: landCh.challenge, idempotencyKey: randomUUID(), assertion: buildAssertionPayload(key, landCh.challenge, userHandle()) });
+      await actions.passkeyLock(principal);
+
+      // The same landing key again, with a made-up assertion: answered as a replay, and it opens nothing.
+      const forged = { ...buildAssertionPayload(key, "not-a-challenge", userHandle()), signature: Buffer.from("forged").toString("base64url") };
+      const replay = (await actions.taskLand(principal, { task: "t-c1", key: landCh.binding.planKey, challenge: "not-a-challenge", idempotencyKey: randomUUID(), assertion: forged })) as { replayed: boolean; freshUntil: string | null };
+      expect(replay.replayed).toBe(true);
+      expect(replay.freshUntil).toBeNull();
+      expect(((await actions.passkeyStatus(principal)) as { freshUntil: string | null }).freshUntil).toBeNull();
+      const { digest } = createTaskWithScope("t-c1-next");
+      await expect(actions.taskApprove(principal, { task: "t-c1-next", digest, idempotencyKey: randomUUID(), useFreshSession: true })).rejects.toMatchObject({ code: "passkey_step_up_required" });
+    });
+
+    test("F3: the domain gate refuses a fabricated window proof (the gate owns the registry)", async () => {
+      const key = createSimulatedPasskey();
+      await enrollKey(key);
+      const { digest } = createTaskWithScope("t-f3");
+      const fabricated = { kind: "fresh", deviceId: principal.deviceId, credentialId: key.credentialId, verifiedAtMs: now.getTime(), expiresAtMs: now.getTime() + 60_000, be: true, bs: true };
+      expect(approve(store, "t-f3", "alex", now, digest, "", {}, undefined, undefined, fabricated as never)).toMatchObject({ ok: false });
+      expect(approve(store, "t-f3", "alex", now, digest, "", {}, undefined, undefined, { kind: "lease", deviceId: principal.deviceId } as never)).toMatchObject({ ok: false });
+      expect(approvalOf(store.getScope("t-f3")).approved).toBe(false);
+    });
+
+    test("C2: a protected result needs a live assertion even when separation of duties is already met; a vote opens no window", async () => {
+      const key = createSimulatedPasskey();
+      await enrollKey(key);
+      expect(addApprover(store, "sam", now, { name: "alex", token: alexToken }).ok).toBe(true);
+      // Open a window with a routine approval (before the project protects anything).
+      const { digest } = createTaskWithScope("t-c2-routine");
+      expect((await liveApprove("t-c2-routine", digest, key)).freshUntil).not.toBeNull();
+      const { runId, receiptDigest } = seedReviewableResult("t-c2");
+      // Two people already approved the exact plan: separation of duties is satisfied for the completer.
+      const approvedDigest = store.getScope("t-c2")!.approvedDigest!;
+      for (const who of ["alex", "sam"]) store.handle.prepare("INSERT INTO scope_approval_vote (task_id, digest, approver, at, proof) VALUES (?, ?, ?, ?, 'password-now')").run("t-c2", approvedDigest, who, now.toISOString());
+      protectSrc();
+      const hint = (await actions.approvalChallenge(principal, { verb: "accept", task: "t-c2", runId, receiptDigest })) as { freshApproved: boolean };
+      expect(hint.freshApproved).toBe(false);
+      await expect(actions.taskAccept(principal, { task: "t-c2", runId, receiptDigest, idempotencyKey: randomUUID(), useFreshSession: true }))
+        .rejects.toMatchObject({ code: "passkey_step_up_required" });
+
+      // A second approver's vote on protected work, by live assertion, opens no window.
+      await actions.passkeyLock(principal);
+      const { digest: pd } = createTaskWithScope("t-c2-vote");
+      const vote = await liveApprove("t-c2-vote", pd, key);
+      expect(vote.secondApprover).toBe(true);
+      expect(((await actions.passkeyStatus(principal)) as { freshUntil: string | null }).freshUntil).toBeNull();
+    });
+
+    test("C4/C6: approvals by live passkey and by window dispatch, and their proofs fit the ledger at production lengths", async () => {
+      const key = createSimulatedPasskey();
+      await enrollKey(key);
+      const { digest } = createTaskWithScope("t-c4-live");
+      expect((await liveApprove("t-c4-live", digest, key)).approved).toBe(true);
+      expect(scopeApprovedForDispatch(store, refOf("t-c4-live"), now)).toBe(true);
+      now = new Date(T0.getTime() + 60_000);
+      const { digest: d2 } = createTaskWithScope("t-c4-window");
+      expect(await actions.taskApprove(principal, { task: "t-c4-window", digest: d2, idempotencyKey: randomUUID(), useFreshSession: true })).toMatchObject({ approved: true });
+      expect(personApprovalOf(store, "t-c4-window")).toMatchObject({ ok: true, method: "passkey-fresh" });
+      expect(scopeApprovedForDispatch(store, refOf("t-c4-window"), now)).toBe(true);
+      for (const [task, d] of [["t-c4-live", digest], ["t-c4-window", d2]] as const) {
+        const row = store.handle.prepare("SELECT detail FROM action_ledger WHERE task_id = ? AND action = ? ORDER BY id DESC LIMIT 1").get(task, APPROVAL_PROOF) as { detail: string };
+        expect(row.detail.length).toBeLessThan(300);
+        expect(proofDetailOf(row.detail)?.digest).toBe(d);
+      }
+      // The longest detail this build writes (window proof, 64-hex digest, long credential id), through recordAction.
+      const detail = passkeyProofDetail({ at: now, provedAtMs: T0.getTime(), generation: 123456, digest: "f".repeat(64), verb: "approve", credentialId: "c".repeat(1024), pairedDeviceId: DEVICE_1, be: true, bs: true });
+      store.recordAction({ at: now.toISOString(), actor: "alex", repo: REPO, taskId: "t-c6", runId: null, action: APPROVAL_PROOF, outcome: "passkey-fresh", source: "work", detail });
+      const kept = store.handle.prepare("SELECT detail FROM action_ledger WHERE task_id = 't-c6'").get() as { detail: string };
+      expect(kept.detail).toBe(detail);
+      expect(proofDetailOf(kept.detail)).toEqual({ at: now.toISOString(), digest: "f".repeat(64) });
+    });
+
+    test("C7: an Accept refused for its missing reason consumes nothing", async () => {
+      const key = createSimulatedPasskey();
+      await enrollKey(key);
+      const { runId, receiptDigest } = seedReviewableResult("t-c7", { refuted: true });
+      const ch = (await actions.approvalChallenge(principal, { verb: "accept", task: "t-c7", runId, receiptDigest })) as { challenge: string };
+      await expect(actions.taskAccept(principal, { task: "t-c7", runId, receiptDigest, challenge: ch.challenge, idempotencyKey: randomUUID(), assertion: buildAssertionPayload(key, ch.challenge, userHandle()) }))
+        .rejects.toMatchObject({ code: "refused", message: expect.stringContaining("Accepting needs a reason") });
+      expect(getPasskeyChallenge(store.handle, ch.challenge)?.consumedAt).toBeNull();
+    });
+
+    test("C8: Land reads the clock right before consuming: a challenge that expired during the git work is refused", async () => {
+      const key = createSimulatedPasskey();
+      await enrollKey(key);
+      const { runId, receiptDigest } = seedReviewableResult("t-c8");
+      const acceptCh = (await actions.approvalChallenge(principal, { verb: "accept", task: "t-c8", runId, receiptDigest })) as { challenge: string };
+      await actions.taskAccept(principal, { task: "t-c8", runId, receiptDigest, challenge: acceptCh.challenge, idempotencyKey: randomUUID(), assertion: buildAssertionPayload(key, acceptCh.challenge, userHandle()) });
+      // Writing the landing commit takes longer than the challenge lives.
+      const slowGit: typeof execRun = async (file, args, options) => {
+        if (args.includes("hash-object")) now = new Date(now.getTime() + 125_000);
+        return execRun(file, args, options);
+      };
+      const slow = createCompanionActions({ runtime, workspaceLabel: () => "Studio Mac", git: slowGit });
+      const landCh = (await slow.approvalChallenge(principal, { verb: "land", task: "t-c8" })) as { challenge: string; binding: { planKey: string } };
+      await expect(slow.taskLand(principal, { task: "t-c8", key: landCh.binding.planKey, challenge: landCh.challenge, idempotencyKey: randomUUID(), assertion: buildAssertionPayload(key, landCh.challenge, userHandle()) }))
+        .rejects.toMatchObject({ code: "refused", message: expect.stringContaining("expired") });
+      expect(store.handle.prepare("SELECT count(*) AS n FROM action_ledger WHERE task_id = ? AND action = ?").get("t-c8", LAND_PROVED_ACTION)).toEqual({ n: 0 });
+    });
+
+    test("C9/C10: a refused request replays as the same error; only an unconfirmed external effect is unknown", async () => {
+      const key = createSimulatedPasskey();
+      await enrollKey(key);
+      // A definite refusal (stale plan) replays as that refusal, never as a success result.
+      const { digest } = createTaskWithScope("t-c9");
+      const ch = (await actions.approvalChallenge(principal, { verb: "approve", task: "t-c9", digest })) as { challenge: string };
+      const stale = { task: "t-c9", digest: "0".repeat(64), challenge: ch.challenge, idempotencyKey: randomUUID(), assertion: buildAssertionPayload(key, ch.challenge, userHandle()) };
+      await expect(actions.taskApprove(principal, stale)).rejects.toMatchObject({ code: "refused" });
+      await expect(actions.taskApprove(principal, stale)).rejects.toMatchObject({ code: "refused" });
+
+      // A landing refused before anything ran (stale plan key) is a definite failure too, not an unknown outcome.
+      const { runId, receiptDigest } = seedReviewableResult("t-c10");
+      const acceptCh = (await actions.approvalChallenge(principal, { verb: "accept", task: "t-c10", runId, receiptDigest })) as { challenge: string };
+      await actions.taskAccept(principal, { task: "t-c10", runId, receiptDigest, challenge: acceptCh.challenge, idempotencyKey: randomUUID(), assertion: buildAssertionPayload(key, acceptCh.challenge, userHandle()) });
+      const landCh = (await actions.approvalChallenge(principal, { verb: "land", task: "t-c10" })) as { challenge: string };
+      const staleLand = { task: "t-c10", key: "0123456789abcdef", challenge: landCh.challenge, idempotencyKey: randomUUID(), assertion: buildAssertionPayload(key, landCh.challenge, userHandle()) };
+      await expect(actions.taskLand(principal, staleLand)).rejects.toMatchObject({ code: "refused" });
+      await expect(actions.taskLand(principal, staleLand)).rejects.toMatchObject({ code: "refused" });
+
+      // A merge that ran but couldn't be read back may have happened: unknown, and it stays unknown on replay.
+      const { runId: shipRun, headSha } = seedReviewableResult("t-c10-ship");
+      seedPullRequest("t-c10-ship", shipRun, headSha);
+      let merged = false;
+      const publishExec: PublishExec = async (_cmd, args) => {
+        const joined = args.join(" ");
+        if (joined.includes("pr merge")) { merged = true; return { ok: true, code: 0, stdout: "", stderr: "" }; }
+        if (joined.includes("pr view") && merged) return { ok: false, code: 1, stdout: "", stderr: "network down" };
+        if (joined.includes("pr view")) {
+          return { ok: true, code: 0, stdout: JSON.stringify({ state: "OPEN", isDraft: false, headRefOid: headSha, baseRefName: "main", url: "https://github.com/ap9000/toolroll/pull/42",
+            mergeCommit: null, statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }] }), stderr: "" };
+        }
+        return { ok: true, code: 0, stdout: "", stderr: "" };
+      };
+      const shipActions = createCompanionActions({ runtime, workspaceLabel: () => "Studio Mac", publishExec });
+      const shipCh = (await shipActions.approvalChallenge(principal, { verb: "ship", runId: shipRun })) as { challenge: string };
+      const ship = { runId: shipRun, challenge: shipCh.challenge, idempotencyKey: randomUUID(), assertion: buildAssertionPayload(key, shipCh.challenge, userHandle()) };
+      await expect(shipActions.taskShip(principal, ship)).rejects.toMatchObject({ code: "outcome_unknown" });
+      await expect(shipActions.taskShip(principal, ship)).rejects.toMatchObject({ code: "outcome_unknown" });
+    });
+
+    test("C11: Accept without a run id and with a padded note binds the same bytes on both sides", async () => {
+      const key = createSimulatedPasskey();
+      await enrollKey(key);
+      const { receiptDigest } = seedReviewableResult("t-c11");
+      const ch = (await actions.approvalChallenge(principal, { verb: "accept", task: "t-c11", receiptDigest, note: "  looks right  " })) as { challenge: string };
+      expect(await actions.taskAccept(principal, { task: "t-c11", receiptDigest, note: "  looks right  ", challenge: ch.challenge, idempotencyKey: randomUUID(), assertion: buildAssertionPayload(key, ch.challenge, userHandle()) }))
+        .toMatchObject({ ok: true, accepted: true });
+    });
+
+    test("windows end on device removal and on a password change (account generation)", async () => {
+      const key = createSimulatedPasskey();
+      await enrollKey(key);
+      const { digest } = createTaskWithScope("t-end-1");
+      expect((await liveApprove("t-end-1", digest, key)).freshUntil).not.toBeNull();
+      store.handle.prepare("UPDATE approver SET generation = generation + 1 WHERE name = 'alex'").run();
+      expect(activePasskeyLease(store, principal.deviceId, "alex", now)).toBeNull();
+
+      const dev2 = pairDevice(DEVICE_2, "alex");
+      const { digest: d2 } = createTaskWithScope("t-end-2");
+      expect((await liveApprove("t-end-2", d2, key, dev2)).freshUntil).not.toBeNull();
+      expect(activePasskeyLease(store, DEVICE_2, "alex", now)).not.toBeNull();
+      expect(revokePairedDeviceRecord(store.handle, DEVICE_2, now)).toBe(true);
+      expect(activePasskeyLease(store, DEVICE_2, "alex", now)).toBeNull();
+    });
+
+    describe("passkey.unlock", () => {
+      test("refused when the Mac asks every time; the phone can tell", async () => {
+        const key = createSimulatedPasskey();
+        await enrollKey(key);
+        setPasskeyApprovalWindowMinutes(store, 0);
+        await expect(actions.approvalChallenge(principal, { verb: "unlock" })).rejects.toMatchObject({ code: "approvals_window_off" });
+        await expect(actions.passkeyUnlock(principal, { challenge: "x", assertion: buildAssertionPayload(key, "x", userHandle()) })).rejects.toMatchObject({ code: "approvals_window_off" });
+      });
+
+      test("an unlock lets a routine approval through without an assertion, and it dispatches; wording names the phone", async () => {
+        const key = createSimulatedPasskey();
+        await enrollKey(key);
+        const ch = (await actions.approvalChallenge(principal, { verb: "unlock" })) as { wording: string; binding: unknown };
+        expect(ch.wording).toBe("Unlock approvals on Alex iPhone 16 Pro for 15 minutes");
+        expect(ch.binding).toEqual({ verb: "unlock", minutes: 15 });
+        const res = await unlock(key);
+        expect(res).toMatchObject({ ok: true, unlocked: true, minutes: 15, freshUntil: new Date(T0.getTime() + 15 * 60_000).toISOString() });
+        expect(store.handle.prepare("SELECT outcome FROM action_ledger WHERE action = 'approvals unlocked'").get()).toEqual({ outcome: "passkey" });
+        const { digest } = createTaskWithScope("t-unlock");
+        const hint = (await actions.approvalChallenge(principal, { verb: "approve", task: "t-unlock", digest })) as { freshApproved: boolean };
+        expect(hint.freshApproved).toBe(true);
+        expect(await actions.taskApprove(principal, { task: "t-unlock", digest, idempotencyKey: randomUUID(), useFreshSession: true })).toMatchObject({ approved: true });
+        expect(scopeApprovedForDispatch(store, refOf("t-unlock"), now)).toBe(true);
+        // Locking (the phone going to the background) ends it.
+        await actions.passkeyLock(principal);
+        expect(((await actions.passkeyStatus(principal)) as { freshUntil: string | null }).freshUntil).toBeNull();
+      });
+
+      test("an unlock never covers a protected accept, land or publish", async () => {
+        const key = createSimulatedPasskey();
+        await enrollKey(key);
+        const { runId, receiptDigest } = seedReviewableResult("t-unlock-protected");
+        protectSrc();
+        expect((await unlock(key)).unlocked).toBe(true);
+        await expect(actions.taskAccept(principal, { task: "t-unlock-protected", runId, receiptDigest, idempotencyKey: randomUUID(), useFreshSession: true }))
+          .rejects.toMatchObject({ code: "passkey_step_up_required" });
+        await expect(actions.taskAccept(principal, { task: "t-unlock-protected", runId, receiptDigest, publish: true, idempotencyKey: randomUUID(), useFreshSession: true }))
+          .rejects.toMatchObject({ code: "passkey_step_up_required" });
+        const landCh = (await actions.approvalChallenge(principal, { verb: "land", task: "t-unlock-protected" }).catch(() => ({ freshApproved: false }))) as { freshApproved: boolean };
+        expect(landCh.freshApproved).toBe(false);
+      });
+
+      test("a replayed or forged unlock opens nothing", async () => {
+        const key = createSimulatedPasskey();
+        await enrollKey(key);
+        const ch = (await actions.approvalChallenge(principal, { verb: "unlock" })) as { challenge: string };
+        const forged = buildAssertionPayload(key, ch.challenge, userHandle(), { corruptSignature: true });
+        await expect(actions.passkeyUnlock(principal, { challenge: ch.challenge, assertion: forged })).rejects.toMatchObject({ code: "passkey_failed" });
+        expect(((await actions.passkeyStatus(principal)) as { freshUntil: string | null }).freshUntil).toBeNull();
+        const good = buildAssertionPayload(key, ch.challenge, userHandle());
+        expect(await actions.passkeyUnlock(principal, { challenge: ch.challenge, assertion: good })).toMatchObject({ unlocked: true });
+        await actions.passkeyLock(principal);
+        await expect(actions.passkeyUnlock(principal, { challenge: ch.challenge, assertion: good })).rejects.toMatchObject({ code: "passkey_failed" });
+        expect(((await actions.passkeyStatus(principal)) as { freshUntil: string | null }).freshUntil).toBeNull();
+        // An approve challenge can't unlock either (verb-bound).
+        const { digest } = createTaskWithScope("t-unlock-cross");
+        const approveCh = (await actions.approvalChallenge(principal, { verb: "approve", task: "t-unlock-cross", digest })) as { challenge: string };
+        await expect(actions.passkeyUnlock(principal, { challenge: approveCh.challenge, assertion: buildAssertionPayload(key, approveCh.challenge, userHandle()) }))
+          .rejects.toMatchObject({ code: "passkey_failed" });
+      });
+
+      test("the phone may ask for less than the Mac's window, never more", async () => {
+        const key = createSimulatedPasskey();
+        await enrollKey(key);
+        expect((await unlock(key, 5)).freshUntil).toBe(new Date(T0.getTime() + 5 * 60_000).toISOString());
+        await actions.passkeyLock(principal);
+        const longer = await unlock(key, 60);
+        expect(longer).toMatchObject({ minutes: 15, freshUntil: new Date(T0.getTime() + 15 * 60_000).toISOString() });
+        await expect(actions.approvalChallenge(principal, { verb: "unlock", minutes: 0 })).rejects.toMatchObject({ code: "invalid_params" });
+      });
     });
   });
 });

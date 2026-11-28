@@ -12,11 +12,11 @@
  * Every paired-device call runs under `PairedDevicePrincipal` (`requestFromThisComputer === false`), never over loopback.
  */
 
-import { acceptAndCompleteAsOperator, assignmentOf, owedAcceptance } from "../assignment.js";
+import { acceptAndCompleteAsOperator, acceptWindowCovers, assignmentOf } from "../assignment.js";
 import { land, readLanding } from "../local-landing.js";
 import { verifyApproverStanding, type VerifiedApprover } from "../principal.js";
 import { completeAndOpenPullRequest, mergeAsPerson } from "../pull-request-flow.js";
-import { approve, freshlyApprovable } from "../scope.js";
+import { approvalWindowCovers, approve } from "../scope.js";
 import { requestContext } from "../server/request-context.js";
 import type { CompanionReadRuntime } from "./reads.js";
 import type { PairedDevicePrincipal } from "./daemon.js";
@@ -36,9 +36,13 @@ import {
   settleDeviceIdempotency,
 } from "./store.js";
 import {
+  acceptBindingOf,
   buildActionChallenge,
   canonicalJson,
   derivePasskeyUserHandle,
+  minutesWords,
+  normalizeAcceptNote,
+  passkeyProofDetail,
   PASSKEY_CHALLENGE_TTL_MS,
   PASSKEY_ORIGIN,
   PASSKEY_RP_ID,
@@ -51,13 +55,19 @@ import {
   type WebAuthnAssertionPayload,
 } from "./webauthn.js";
 import {
+  activePasskeyLease,
+  clearPasskeyLeases,
   passkeyApprovalWindowMinutes,
+  startPasskeyLease,
+  verifyPasskeyAction,
   type PasskeyActionProof,
   type PasskeyAssertionProof,
-  type PasskeyFreshProof,
 } from "./passkey-gate.js";
 import type { PublishExec } from "../publish.js";
 import type { Runner } from "../backend.js";
+
+/** The ledger act an approvals unlock writes (who, which passkey, which phone, for how long). */
+export const APPROVALS_UNLOCKED_ACTION = "approvals unlocked";
 
 /** Mac consent window duration for enrolling a passkey on an iPhone (5 minutes). */
 export const PASSKEY_ENROLLMENT_WINDOW_MS = 5 * 60 * 1000;
@@ -79,6 +89,7 @@ export class CompanionActionError extends Error {
       | "in_progress"
       | "outcome_unknown"
       | "refused"
+      | "approvals_window_off"
       | "unavailable",
     message: string,
   ) {
@@ -96,13 +107,15 @@ export interface CompanionActionHandlers {
   taskAccept: (principal: PairedDevicePrincipal, params: Record<string, unknown>) => Promise<unknown> | unknown;
   taskLand: (principal: PairedDevicePrincipal, params: Record<string, unknown>) => Promise<unknown> | unknown;
   taskShip: (principal: PairedDevicePrincipal, params: Record<string, unknown>) => Promise<unknown> | unknown;
+  /** `passkey.unlock`: one live passkey assertion opens this phone's approvals window (routine approve/accept only). */
+  passkeyUnlock: (principal: PairedDevicePrincipal, params: Record<string, unknown>) => Promise<unknown> | unknown;
   /** Open a signed-in Mac consent window allowing an approver's iPhone to register a Passkey. */
   openEnrollmentWindow: (accountName: string, deviceId?: string | null) => { expiresAtMs: number };
   /** Check whether an enrollment window is currently open for an account/device. */
   isEnrollmentOpen: (accountName: string, deviceId?: string | null) => boolean;
   /** Close any open enrollment window for an account. */
   closeEnrollmentWindow: (accountName: string) => void;
-  /** Clear in-memory Passkey freshness leases (on passkey revoke, window change, device removal, or lock). */
+  /** End approvals windows (passkey revoke, window change, device removal, lock): delegates to the gate's registry. */
   clearFreshLeases: (accountName?: string, deviceId?: string) => void;
   /** Sweep expired challenges & bounded idempotency retention (called on daemon startup & hourly sweep). */
   sweep: () => void;
@@ -124,30 +137,6 @@ interface EnrollmentWindow {
   accountName: string;
   deviceId: string | null;
   expiresAtMs: number;
-}
-
-/** In-memory bounded Passkey session lease (never persisted to disk; cleared on restart, lock, revoke, or expiry). */
-interface FreshPasskeyLease {
-  deviceId: string;
-  accountName: string;
-  credentialId: string;
-  recoveryGeneration: string;
-  accountGeneration: number;
-  verifiedAtMs: number;
-  expiresAtMs: number;
-  be: boolean;
-  bs: boolean;
-}
-
-function assertionBackupFlags(assertion: WebAuthnAssertionPayload): { be: boolean; bs: boolean } {
-  try {
-    const authData = Buffer.from(assertion.authenticatorData, "base64url");
-    if (authData.length >= 33) {
-      const flags = authData[32]!;
-      return { be: (flags & 0x08) !== 0, bs: (flags & 0x10) !== 0 };
-    }
-  } catch { /* fall through */ }
-  return { be: false, bs: false };
 }
 
 function parseAssertion(raw: unknown): WebAuthnAssertionPayload {
@@ -194,75 +183,36 @@ export function createCompanionActions(deps: CompanionActionDeps): CompanionActi
   const rpId = deps.rpId ?? PASSKEY_RP_ID;
   const expectedOrigin = deps.expectedOrigin ?? PASSKEY_ORIGIN;
   const windows = new Map<string, EnrollmentWindow>();
-  const freshLeases = new Map<string, FreshPasskeyLease>();
 
-  const leaseKey = (deviceId: string, accountName: string): string => `${deviceId}\0${accountName}`;
-
-  function clearFreshLeases(accountName?: string, deviceId?: string): void {
-    for (const [k, lease] of freshLeases.entries()) {
-      if ((accountName === undefined || lease.accountName === accountName)
-        && (deviceId === undefined || lease.deviceId === deviceId)) {
-        freshLeases.delete(k);
-      }
+  const clearFreshLeases = (accountName?: string, deviceId?: string): void => clearPasskeyLeases(store, accountName, deviceId);
+  /** When this device's approvals window ends, or null (the gate's registry, re-checked now). */
+  const windowUntil = (principal: PairedDevicePrincipal): string | null => {
+    const lease = activePasskeyLease(store, principal.deviceId, principal.accountName, now());
+    return lease === null ? null : new Date(lease.expiresAtMs).toISOString();
+  };
+  /** After a committed act: a live routine approve/accept opens the window (the gate decides); else what stands. */
+  const windowAfter = (principal: PairedDevicePrincipal, proof: PasskeyActionProof): string | null =>
+    (proof.kind === "lease" ? null : startPasskeyLease(store, { deviceId: principal.deviceId, accountName: principal.accountName, challenge: proof.challenge }))
+      ?? windowUntil(principal);
+  /** The proof a request carries: this device's approvals window (only where `lease` is allowed) or a live assertion. */
+  const proofOf = (principal: PairedDevicePrincipal, params: Record<string, unknown>, lease: boolean): PasskeyActionProof => {
+    if (params["useFreshSession"] === true) {
+      if (!lease) throw new CompanionActionError("passkey_step_up_required", "Confirm with your passkey for this action.");
+      return { kind: "lease", deviceId: principal.deviceId };
     }
-  }
-
-  /** Returns the active in-memory fresh Passkey lease if valid under current window policy and credential standing. */
-  function activeFreshLease(principal: PairedDevicePrincipal, accountName: string, accountGeneration: number): FreshPasskeyLease | null {
-    const key = leaseKey(principal.deviceId, accountName);
-    const lease = freshLeases.get(key);
-    if (lease === undefined) return null;
-    const windowMinutes = passkeyApprovalWindowMinutes(store);
-    if (windowMinutes <= 0) {
-      freshLeases.delete(key);
-      return null;
-    }
-    const nowMs = now().getTime();
-    const effectiveExpiresMs = Math.min(lease.expiresAtMs, lease.verifiedAtMs + windowMinutes * 60_000);
-    const identity = store.workspaceIdentity();
-    if (
-      nowMs >= effectiveExpiresMs ||
-      lease.recoveryGeneration !== identity.recoveryGeneration ||
-      lease.accountGeneration !== accountGeneration
-    ) {
-      freshLeases.delete(key);
-      return null;
-    }
-    const cred = getAccountPasskey(store.handle, lease.credentialId);
-    if (
-      cred === null ||
-      cred.revokedAt !== null ||
-      cred.workspaceId !== identity.id ||
-      cred.accountName !== accountName ||
-      cred.recoveryGeneration !== identity.recoveryGeneration
-    ) {
-      freshLeases.delete(key);
-      return null;
-    }
-    return { ...lease, expiresAtMs: effectiveExpiresMs };
-  }
-
-  /** Starts a fixed-duration in-memory Passkey session lease after a verified live WebAuthn assertion. */
-  function recordFreshLease(principal: PairedDevicePrincipal, accountName: string, accountGeneration: number, assertion: WebAuthnAssertionPayload): string | null {
-    const windowMinutes = passkeyApprovalWindowMinutes(store);
-    if (windowMinutes <= 0) return null;
-    const nowMs = now().getTime();
-    const expiresAtMs = nowMs + windowMinutes * 60_000;
-    const { be, bs } = assertionBackupFlags(assertion);
-    const identity = store.workspaceIdentity();
-    freshLeases.set(leaseKey(principal.deviceId, accountName), {
-      deviceId: principal.deviceId,
-      accountName,
-      credentialId: assertion.credentialId,
-      recoveryGeneration: identity.recoveryGeneration,
-      accountGeneration,
-      verifiedAtMs: nowMs,
-      expiresAtMs,
-      be,
-      bs,
-    });
-    return new Date(expiresAtMs).toISOString();
-  }
+    return liveProofOf(principal, params);
+  };
+  const liveProofOf = (principal: PairedDevicePrincipal, params: Record<string, unknown>): PasskeyAssertionProof =>
+    ({ kind: "assertion", deviceId: principal.deviceId, challenge: requireString(params, "challenge"), assertion: parseAssertion(params["assertion"]), rpId, expectedOrigin });
+  /** An unlock's length: the phone may ask for less than the Mac's window, never more. */
+  const unlockMinutes = (params: Record<string, unknown>, windowMinutes: number): number => {
+    const raw = params["minutes"];
+    if (raw === undefined || raw === null) return windowMinutes;
+    if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0) throw new CompanionActionError("invalid_params", "minutes must be a positive whole number");
+    return Math.min(raw, windowMinutes);
+  };
+  const windowOff = (): CompanionActionError =>
+    new CompanionActionError("approvals_window_off", "Your Mac asks for your passkey on every approval, so approvals can't be unlocked.");
 
   // Startup reconciliation (threat-model-and-routes.md §3): move lingering in_flight rows to unknown.
   reconcileIdempotencyOnStartup(store.handle, runtime.clock());
@@ -320,55 +270,72 @@ export function createCompanionActions(deps: CompanionActionDeps): CompanionActi
     windows.delete(accountName);
   }
 
-  /** Executes a Gate 2 mutation under `device_idempotency` state machine (conflict / in_flight / completed / unknown). */
+  /**
+   * Runs a Gate 2 mutation under the `device_idempotency` state machine (conflict / in_flight / completed / unknown).
+   * A finished request's outcome is stored discriminated: a replay returns the same result, or throws the same error.
+   * `unknown` only when the outcome may have happened without being confirmed: a domain answer of `outcome_unknown`
+   * (an external effect that ran but couldn't be read back) or an unexpected exception. Every other refusal is a
+   * definite failure, replayed as that error.
+   */
   async function withIdempotency<T>(
     principal: PairedDevicePrincipal,
     method: string,
     idempotencyKey: string,
     canonicalTarget: Record<string, unknown>,
-    opts: { externalSideEffect?: boolean },
     work: () => Promise<T> | T,
   ): Promise<T> {
     const requestHash = sha256(canonicalJson({ method, target: canonicalTarget })).toString("hex");
-    const claim = claimDeviceIdempotency(store.handle, {
-      deviceId: principal.deviceId,
-      idempotencyKey,
-      method,
-      requestHash,
-      now: now(),
-    });
+    const claim = claimDeviceIdempotency(store.handle, { deviceId: principal.deviceId, idempotencyKey, method, requestHash, now: now() });
     if (claim.status === "conflict") {
       throw new CompanionActionError("idempotency_key_conflict", "This idempotency key was already used for a different request.");
     }
-    if (claim.status === "in_flight") {
-      throw new CompanionActionError("in_progress", "That action is already running on your Mac.");
-    }
+    if (claim.status === "in_flight") throw new CompanionActionError("in_progress", "That action is already running on your Mac.");
     if (claim.status === "unknown") {
       throw new CompanionActionError("outcome_unknown", "The previous attempt didn't finish cleanly. Refresh to check the current state.");
     }
     if (claim.status === "completed") {
-      return JSON.parse(claim.outcomeJson) as T;
-    }
-    try {
-      const outcome = await work();
-      settleDeviceIdempotency(store.handle, principal.deviceId, idempotencyKey, "completed", JSON.stringify(outcome), now());
-      pruneDeviceIdempotency(store.handle, now());
-      return outcome;
-    } catch (error) {
-      if (opts.externalSideEffect === true) {
-        // ADR 0004: an unexpected error mid-external side effect (git/gh) moves to `unknown`, never blindly retried.
-        settleDeviceIdempotency(store.handle, principal.deviceId, idempotencyKey, "unknown", null, now());
-        if (error instanceof CompanionActionError) throw error;
-        throw new CompanionActionError("outcome_unknown", "The outcome couldn't be confirmed. Refresh before trying again.");
+      const stored = JSON.parse(claim.outcomeJson) as { kind?: unknown; value?: unknown; code?: unknown; message?: unknown };
+      if (stored.kind === "ok") return stored.value as T;
+      if (stored.kind === "error" && typeof stored.code === "string" && typeof stored.message === "string") {
+        throw new CompanionActionError(stored.code as CompanionActionError["code"], stored.message);
       }
-      if (error instanceof CompanionActionError) {
-        const storedErr = { ok: false, code: error.code, message: error.message };
-        settleDeviceIdempotency(store.handle, principal.deviceId, idempotencyKey, "completed", JSON.stringify(storedErr), now());
+      throw new CompanionActionError("outcome_unknown", "The previous attempt didn't finish cleanly. Refresh to check the current state.");
+    }
+    const settle = (state: "completed" | "unknown", outcome: unknown): void => {
+      settleDeviceIdempotency(store.handle, principal.deviceId, idempotencyKey, state, outcome === null ? null : JSON.stringify(outcome), now());
+      pruneDeviceIdempotency(store.handle, now());
+    };
+    let outcome: T;
+    try {
+      outcome = await work();
+    } catch (error) {
+      if (error instanceof CompanionActionError && error.code !== "outcome_unknown") {
+        settle("completed", { kind: "error", code: error.code, message: error.message });
         throw error;
       }
-      settleDeviceIdempotency(store.handle, principal.deviceId, idempotencyKey, "unknown", null, now());
+      settle("unknown", null);
+      if (error instanceof CompanionActionError) throw error;
       throw new CompanionActionError("outcome_unknown", "Something went wrong on your Mac. Refresh to check the current state.");
     }
+    settle("completed", { kind: "ok", value: outcome });
+    return outcome;
+  }
+
+  /** One verb: the device's standing, its idempotency key, then the work under the state machine (live UI refreshed after). */
+  async function perform<T>(
+    principal: PairedDevicePrincipal,
+    params: Record<string, unknown>,
+    method: string,
+    target: Record<string, unknown>,
+    work: (standing: ReturnType<typeof standsApprover>) => Promise<T> | T,
+  ): Promise<T> {
+    const standing = standsApprover(principal);
+    const idempotencyKey = requireIdempotencyKey(params);
+    return withIdempotency(principal, method, idempotencyKey, target, async () => {
+      const out = await work(standing);
+      deps.onMutated?.();
+      return out;
+    });
   }
 
   return {
@@ -383,24 +350,19 @@ export function createCompanionActions(deps: CompanionActionDeps): CompanionActi
       for (const [k, w] of windows.entries()) {
         if (t.getTime() > w.expiresAtMs) windows.delete(k);
       }
-      for (const [k, l] of freshLeases.entries()) {
-        if (t.getTime() >= l.expiresAtMs) freshLeases.delete(k);
-      }
     },
 
     passkeyStatus: async principal => {
-      const { accountName, account } = standsApprover(principal);
+      const { accountName } = standsApprover(principal);
       const identity = store.workspaceIdentity();
       const active = listActiveAccountPasskeys(store.handle, identity.id, accountName, identity.recoveryGeneration);
-      const windowMinutes = passkeyApprovalWindowMinutes(store);
-      const lease = activeFreshLease(principal, accountName, account.generation);
       return {
         registered: active.length > 0,
         count: active.length,
         enrollmentOpen: isEnrollmentOpen(accountName, principal.deviceId),
         rpId,
-        windowMinutes,
-        freshUntil: lease === null ? null : new Date(lease.expiresAtMs).toISOString(),
+        windowMinutes: passkeyApprovalWindowMinutes(store),
+        freshUntil: windowUntil(principal),
       };
     },
 
@@ -528,7 +490,7 @@ export function createCompanionActions(deps: CompanionActionDeps): CompanionActi
     },
 
     approvalChallenge: async (principal, params) => {
-      const { accountName, account, who } = standsApprover(principal);
+      const { accountName, who, deviceName } = standsApprover(principal);
       const identity = store.workspaceIdentity();
       const activeCreds = listActiveAccountPasskeys(store.handle, identity.id, accountName, identity.recoveryGeneration);
       if (activeCreds.length === 0) {
@@ -536,8 +498,8 @@ export function createCompanionActions(deps: CompanionActionDeps): CompanionActi
       }
 
       const verbRaw = requireString(params, "verb");
-      if (verbRaw !== "approve" && verbRaw !== "accept" && verbRaw !== "land" && verbRaw !== "ship") {
-        throw new CompanionActionError("invalid_params", "verb must be approve, accept, land, or ship");
+      if (verbRaw !== "approve" && verbRaw !== "accept" && verbRaw !== "land" && verbRaw !== "ship" && verbRaw !== "unlock") {
+        throw new CompanionActionError("invalid_params", "verb must be approve, accept, land, ship, or unlock");
       }
       const verb = verbRaw as PasskeyVerb;
       const forceFresh = params["forceFresh"] === true;
@@ -545,7 +507,9 @@ export function createCompanionActions(deps: CompanionActionDeps): CompanionActi
       prunePasskeyChallenges(store.handle, t);
 
       let binding: VerbChallengeBinding;
-      let eligibleForFreshWindow = false;
+      /** Whether this device's approvals window may carry the act (the domain gate's own rule, asked here as a hint). */
+      let windowCovers = false;
+      let wording: string | null = null;
       if (verb === "approve") {
         const taskId = requireString(params, "task");
         if (!TASK_ID.test(taskId)) throw new CompanionActionError("invalid_params", "Invalid task id.");
@@ -559,9 +523,7 @@ export function createCompanionActions(deps: CompanionActionDeps): CompanionActi
         if (sawDigest !== scope.digest) {
           throw new CompanionActionError("refused", "This plan changed. Refresh before approving.");
         }
-        const gate = store.approvalGate(family.current.id, accountName, "person");
-        eligibleForFreshWindow = gate.verdict === "seal" && !gate.protectedWork && scope.releaseTerms == null
-          && freshlyApprovable(store, family.current.id, scope, true);
+        windowCovers = approvalWindowCovers(store, family.current.id, accountName);
         binding = { verb: "approve", taskId: family.current.id, sawDigest };
       } else if (verb === "accept") {
         const taskId = requireString(params, "task");
@@ -571,16 +533,14 @@ export function createCompanionActions(deps: CompanionActionDeps): CompanionActi
           throw new CompanionActionError("not_found", "No such task.");
         }
         if (before.receipt === null) throw new CompanionActionError("refused", "This task has no result ready to accept.");
-        const runId = typeof params["runId"] === "number" ? params["runId"] : before.receipt.runId;
+        const runId = typeof params["runId"] === "number" ? params["runId"] : null;
         const receiptDigest = typeof params["receiptDigest"] === "string" && params["receiptDigest"].length > 0 ? params["receiptDigest"] : before.receipt.digest;
-        const note = typeof params["note"] === "string" ? params["note"] : null;
         const publish = params["publish"] === true;
         if (receiptDigest !== before.receipt.digest || (runId !== null && runId !== before.receipt.runId)) {
           throw new CompanionActionError("refused", "This result changed. Refresh before accepting.");
         }
-        const owed = before.state === "ready-to-check" ? owedAcceptance(before.receipt, before.readiness?.blockers ?? []) : null;
-        eligibleForFreshWindow = !publish && owed !== "exception";
-        binding = { verb: "accept", taskId, runId, receiptDigest, noteHash: sha256(note ?? "").toString("hex"), publish };
+        windowCovers = acceptWindowCovers(store, taskId, before, publish, runtime.evidenceRoot);
+        binding = acceptBindingOf({ taskId, runId, receiptDigest, note: params["note"], publish }, before.receipt.runId);
       } else if (verb === "land") {
         const taskId = requireString(params, "task");
         if (!TASK_ID.test(taskId)) throw new CompanionActionError("invalid_params", "Invalid task id.");
@@ -597,7 +557,7 @@ export function createCompanionActions(deps: CompanionActionDeps): CompanionActi
         const planKey = typeof params["key"] === "string" && params["key"].length > 0 ? params["key"] : read.plan.key;
         if (planKey !== read.plan.key) throw new CompanionActionError("refused", "The landing plan changed. Refresh first.");
         binding = { verb: "land", taskId, planKey, into, undo };
-      } else {
+      } else if (verb === "ship") {
         const runIdRaw = params["runId"];
         if (typeof runIdRaw !== "number" || !Number.isInteger(runIdRaw) || runIdRaw <= 0) {
           throw new CompanionActionError("invalid_params", "runId is required");
@@ -615,6 +575,12 @@ export function createCompanionActions(deps: CompanionActionDeps): CompanionActi
         const method = grant?.mergeMethod ?? "squash";
         const anyway = params["anyway"] === true;
         binding = { verb: "ship", runId: runIdRaw, taskId: taskRef.externalId, prNumber: publication.prNumber, headSha: publication.headSha, method, anyway };
+      } else {
+        const windowMinutes = passkeyApprovalWindowMinutes(store);
+        if (windowMinutes <= 0) throw windowOff();
+        const minutes = unlockMinutes(params, windowMinutes);
+        binding = { verb: "unlock", minutes };
+        wording = `Unlock approvals on ${deviceName} for ${minutesWords(minutes)}`;
       }
 
       const built = buildActionChallenge({
@@ -624,22 +590,11 @@ export function createCompanionActions(deps: CompanionActionDeps): CompanionActi
         deviceId: principal.deviceId,
         binding,
       });
+      const allowCredentials = activeCreds.map(c => ({ id: c.credentialId, type: "public-key" }));
 
-      const activeLease = !forceFresh && eligibleForFreshWindow ? activeFreshLease(principal, accountName, account.generation) : null;
-      if (activeLease !== null) {
-        const freshUntil = new Date(activeLease.expiresAtMs).toISOString();
-        return {
-          challenge: "",
-          rpId,
-          allowCredentials: activeCreds.map(c => ({ id: c.credentialId, type: "public-key" })),
-          userVerification: "required",
-          verb,
-          wording: built.wording,
-          expiresAt: freshUntil,
-          binding,
-          freshApproved: true,
-          freshUntil,
-        };
+      const freshUntil = !forceFresh && windowCovers ? windowUntil(principal) : null;
+      if (freshUntil !== null) {
+        return { challenge: "", rpId, allowCredentials, userVerification: "required", verb, wording: built.wording, expiresAt: freshUntil, binding, freshApproved: true, freshUntil };
       }
 
       const expiresAt = new Date(t.getTime() + PASSKEY_CHALLENGE_TTL_MS).toISOString();
@@ -653,113 +608,63 @@ export function createCompanionActions(deps: CompanionActionDeps): CompanionActi
         bindingJson: built.bindingJson,
         expiresAt,
       });
-
       return {
-        challenge: built.challenge,
-        rpId,
-        allowCredentials: activeCreds.map(c => ({ id: c.credentialId, type: "public-key" })),
-        userVerification: "required",
-        verb,
-        wording: built.wording,
-        expiresAt,
-        binding,
-        freshApproved: false,
-        freshUntil: null,
+        challenge: built.challenge, rpId, allowCredentials, userVerification: "required", verb, wording: wording ?? built.wording, expiresAt, binding,
+        freshApproved: false, freshUntil: null,
       };
     },
 
+    passkeyUnlock: async (principal, params) => {
+      const { accountName } = standsApprover(principal);
+      const proof = liveProofOf(principal, params);
+      const windowMinutes = passkeyApprovalWindowMinutes(store);
+      if (windowMinutes <= 0) throw windowOff();
+      const minutes = unlockMinutes(params, windowMinutes);
+      store.transact(() => {
+        const t = now();
+        const unlocked = verifyPasskeyAction(store, {
+          accountName, repo: null, anyProject: true, verb: "unlock", expectedBinding: { verb: "unlock", minutes }, proof, now: t, startsLease: { minutes },
+        });
+        if (!unlocked.ok) throw new CompanionActionError("passkey_failed", unlocked.message);
+        store.recordAction({ at: t.toISOString(), actor: accountName, repo: null, taskId: null, runId: null, action: APPROVALS_UNLOCKED_ACTION, outcome: "passkey", source: "request",
+          detail: passkeyProofDetail({ at: t, generation: unlocked.accountGeneration, digest: `${minutes}m`, verb: "unlock", credentialId: unlocked.credentialId,
+            pairedDeviceId: unlocked.deviceId, be: unlocked.be, bs: unlocked.bs }) });
+      });
+      const freshUntil = startPasskeyLease(store, { deviceId: principal.deviceId, accountName, challenge: proof.challenge });
+      return { ok: true, unlocked: freshUntil !== null, minutes, windowMinutes, freshUntil };
+    },
+
     taskApprove: async (principal, params) => {
-      const { accountName, account } = standsApprover(principal);
-      const idempotencyKey = requireIdempotencyKey(params);
       const taskId = requireString(params, "task");
       const sawDigest = requireString(params, "digest");
-      const useFreshSession = params["useFreshSession"] === true;
-      const challenge = useFreshSession ? "" : requireString(params, "challenge");
-      const assertion = useFreshSession ? null : parseAssertion(params["assertion"]);
-
-      return withIdempotency(principal, "task.approve", idempotencyKey, { taskId, sawDigest }, { externalSideEffect: false }, () => {
+      const proof = proofOf(principal, params, true);
+      return perform(principal, params, "task.approve", { taskId, sawDigest }, ({ accountName }) => {
         const family = requestContext.run({ csrf: "", returnTo: "/", actor: accountName }, () => runtime.familyOf(taskId));
         if (family === null || family.problem !== null || !runtime.visible(family.current.repo) || !store.accountCanAccess(accountName, family.current.repo)) {
           throw new CompanionActionError("not_found", "No such task.");
         }
-        let proof: PasskeyActionProof;
-        if (useFreshSession) {
-          const lease = activeFreshLease(principal, accountName, account.generation);
-          if (lease === null) {
-            throw new CompanionActionError("passkey_step_up_required", "Your passkey window expired. Confirm with your passkey.");
-          }
-          const freshProof: PasskeyFreshProof = {
-            kind: "fresh",
-            deviceId: principal.deviceId,
-            credentialId: lease.credentialId,
-            verifiedAtMs: lease.verifiedAtMs,
-            expiresAtMs: lease.expiresAtMs,
-            be: lease.be,
-            bs: lease.bs,
-          };
-          proof = freshProof;
-        } else {
-          proof = { kind: "assertion", deviceId: principal.deviceId, challenge, assertion: assertion!, rpId, expectedOrigin };
-        }
         const res = approve(store, family.current.id, accountName, now(), sawDigest, "", {}, undefined, undefined, proof);
         if (!res.ok) {
-          if (res.reason === "password-now") {
-            throw new CompanionActionError("passkey_step_up_required", "Fresh passkey confirmation is required for this task.");
-          }
+          if (res.reason === "password-now") throw new CompanionActionError("passkey_step_up_required", "Confirm with your passkey to approve this task.");
           if (res.reason === "changed") throw new CompanionActionError("refused", "This plan changed. Refresh and review the latest terms.");
           if (res.reason === "policy") throw new CompanionActionError("refused", res.message);
-          if (res.reason === "second-approver") {
-            if (!useFreshSession && assertion !== null) recordFreshLease(principal, accountName, account.generation, assertion);
-            deps.onMutated?.();
-            return { ok: true, approved: false, secondApprover: true, have: res.have, need: res.need };
-          }
+          // A second approver's vote is recorded, and opens no approvals window.
+          if (res.reason === "second-approver") return { ok: true, approved: false, secondApprover: true, have: res.have, need: res.need };
           throw new CompanionActionError("refused", `Couldn't approve this task (${res.reason}).`);
         }
-        const freshUntil = !useFreshSession && assertion !== null
-          ? recordFreshLease(principal, accountName, account.generation, assertion)
-          : (() => {
-            const lease = activeFreshLease(principal, accountName, account.generation);
-            return lease === null ? null : new Date(lease.expiresAtMs).toISOString();
-          })();
-        deps.onMutated?.();
-        return { ok: true, approved: true, task: family.current.id, digest: res.scope.digest, freshUntil };
+        return { ok: true, approved: true, task: family.current.id, digest: res.scope.digest, freshUntil: windowAfter(principal, proof) };
       });
     },
 
     taskAccept: async (principal, params) => {
-      const { accountName, account, who } = standsApprover(principal);
-      const idempotencyKey = requireIdempotencyKey(params);
       const taskId = requireString(params, "task");
       const receiptDigest = requireString(params, "receiptDigest");
       const runId = typeof params["runId"] === "number" ? params["runId"] : null;
-      const note = typeof params["note"] === "string" && params["note"].trim().length > 0 ? params["note"].trim() : null;
+      const note = normalizeAcceptNote(params["note"]);
       const publish = params["publish"] === true;
-      const useFreshSession = params["useFreshSession"] === true;
-      const challenge = useFreshSession ? "" : requireString(params, "challenge");
-      const assertion = useFreshSession ? null : parseAssertion(params["assertion"]);
-
-      return withIdempotency(principal, "task.accept", idempotencyKey, { taskId, runId, receiptDigest, note, publish }, { externalSideEffect: publish }, () => {
-        let proof: PasskeyActionProof;
-        if (useFreshSession) {
-          if (publish) {
-            throw new CompanionActionError("passkey_step_up_required", "Publishing a pull request requires a fresh passkey confirmation.");
-          }
-          const lease = activeFreshLease(principal, accountName, account.generation);
-          if (lease === null) {
-            throw new CompanionActionError("passkey_step_up_required", "Your passkey window expired. Confirm with your passkey.");
-          }
-          proof = {
-            kind: "fresh",
-            deviceId: principal.deviceId,
-            credentialId: lease.credentialId,
-            verifiedAtMs: lease.verifiedAtMs,
-            expiresAtMs: lease.expiresAtMs,
-            be: lease.be,
-            bs: lease.bs,
-          };
-        } else {
-          proof = { kind: "assertion", deviceId: principal.deviceId, challenge, assertion: assertion!, rpId, expectedOrigin };
-        }
+      // Publishing always takes a live assertion; the domain gate refuses a window for anything else that isn't routine.
+      const proof = proofOf(principal, params, !publish);
+      return perform(principal, params, "task.accept", { taskId, runId, receiptDigest, note, publish }, ({ who }) => {
         let openedPrUrl: string | null = null;
         let openedPrNumber: number | null = null;
         const done = publish
@@ -773,73 +678,43 @@ export function createCompanionActions(deps: CompanionActionDeps): CompanionActi
             return { ok: true, digest };
           })
           : acceptAndCompleteAsOperator(store, taskId, { runId, receiptDigest, note, publish: false, passkey: proof }, who, now(), runtime.evidenceRoot);
-        if (!done.ok) {
-          if (done.reason === "step-up-required") {
-            throw new CompanionActionError("passkey_step_up_required", done.message);
-          }
-          throw new CompanionActionError("refused", done.message);
-        }
-        const freshUntil = !useFreshSession && assertion !== null
-          ? recordFreshLease(principal, accountName, account.generation, assertion)
-          : (() => {
-            const lease = activeFreshLease(principal, accountName, account.generation);
-            return lease === null ? null : new Date(lease.expiresAtMs).toISOString();
-          })();
-        deps.onMutated?.();
-        return { ok: true, accepted: true, published: publish, prUrl: openedPrUrl, prNumber: openedPrNumber, freshUntil };
+        // Every refusal here rolled back whole (the pull request is only owed inside the same savepoint): a definite failure.
+        if (!done.ok) throw new CompanionActionError(done.reason === "step-up-required" ? "passkey_step_up_required" : "refused", done.message);
+        return { ok: true, accepted: true, published: publish, prUrl: openedPrUrl, prNumber: openedPrNumber, freshUntil: windowAfter(principal, proof) };
       });
     },
 
     taskLand: async (principal, params) => {
-      const { accountName, account, who } = standsApprover(principal);
-      const idempotencyKey = requireIdempotencyKey(params);
       const taskId = requireString(params, "task");
       const key = requireString(params, "key");
       const into = typeof params["into"] === "string" && params["into"].length > 0 ? params["into"] : undefined;
       const undo = params["undo"] === true;
-      const challenge = requireString(params, "challenge");
-      const assertion = parseAssertion(params["assertion"]);
-
-      return withIdempotency(principal, "task.land", idempotencyKey, { taskId, key, into: into ?? null, undo }, { externalSideEffect: true }, async () => {
-        const proof: PasskeyAssertionProof = { kind: "assertion", deviceId: principal.deviceId, challenge, assertion, rpId, expectedOrigin };
+      const proof = liveProofOf(principal, params);
+      return perform(principal, params, "task.land", { taskId, key, into: into ?? null, undo }, async ({ who }) => {
         const res = await land(
           store,
           taskId,
           { key, ...(into === undefined ? {} : { into }), ...(undo ? { undo: true } : {}) },
-          { kind: "passkey", who, proof },
+          { kind: "passkey", who, proof, clock: runtime.clock },
           { repos: who.repos },
           now(),
           { root: runtime.evidenceRoot, ...(deps.git === undefined ? {} : { git: deps.git }) },
         );
+        // land() refuses only when nothing landed; a crash mid-landing throws and settles `unknown`. A landing (or a
+        // replay of one) never opens an approvals window.
         if (!res.ok) throw new CompanionActionError("refused", res.message);
-        const freshUntil = recordFreshLease(principal, accountName, account.generation, assertion);
-        deps.onMutated?.();
-        return {
-          ok: true,
-          landed: true,
-          replayed: res.replayed,
-          branch: res.branch,
-          commit: res.commit,
-          mode: res.mode,
-          handoffCommand: res.handoff?.command ?? null,
-          freshUntil,
-        };
+        return { ok: true, landed: true, replayed: res.replayed, branch: res.branch, commit: res.commit, mode: res.mode, handoffCommand: res.handoff?.command ?? null, freshUntil: windowUntil(principal) };
       });
     },
 
     taskShip: async (principal, params) => {
-      const { accountName, account } = standsApprover(principal);
-      const idempotencyKey = requireIdempotencyKey(params);
       const runIdRaw = params["runId"];
       if (typeof runIdRaw !== "number" || !Number.isInteger(runIdRaw) || runIdRaw <= 0) {
         throw new CompanionActionError("invalid_params", "runId is required");
       }
       const anyway = params["anyway"] === true;
-      const challenge = requireString(params, "challenge");
-      const assertion = parseAssertion(params["assertion"]);
-
-      return withIdempotency(principal, "task.ship", idempotencyKey, { runId: runIdRaw, anyway }, { externalSideEffect: true }, async () => {
-        const proof: PasskeyAssertionProof = { kind: "assertion", deviceId: principal.deviceId, challenge, assertion, rpId, expectedOrigin };
+      const proof = liveProofOf(principal, params);
+      return perform(principal, params, "task.ship", { runId: runIdRaw, anyway }, async ({ accountName }) => {
         const res = await mergeAsPerson(store, {
           runId: runIdRaw,
           name: accountName,
@@ -848,10 +723,12 @@ export function createCompanionActions(deps: CompanionActionDeps): CompanionActi
           ...(deps.publishExec === undefined ? {} : { exec: deps.publishExec }),
           clock: runtime.clock,
         });
-        if (!res.ok) throw new CompanionActionError("refused", res.message);
-        const freshUntil = recordFreshLease(principal, accountName, account.generation, assertion);
-        deps.onMutated?.();
-        return { ok: true, shipped: true, commit: res.commit, freshUntil };
+        if (!res.ok) {
+          // The merge ran but GitHub couldn't be read back: it may have merged. Anything else merged nothing.
+          if (res.reason === "unconfirmed") throw new CompanionActionError("outcome_unknown", res.message);
+          throw new CompanionActionError("refused", res.message);
+        }
+        return { ok: true, shipped: true, commit: res.commit, freshUntil: windowUntil(principal) };
       });
     },
   };

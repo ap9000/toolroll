@@ -19,7 +19,7 @@ import { revokeCoordinator } from "./coordinator.js";
 export const MAX_STAGE_BYTES = 128 * 1024 * 1024;
 const SUPPORTED_SCHEMA = 188;
 const SCHEMA_OBJECT_COUNT = 742;
-const SCHEMA_DIGEST = "c6fb50b3bb33ff7ac6f69c532998ae80c39071abc1fad183a1328ff827f21f1a";
+const SCHEMA_DIGEST = "bedb1b5708c775d809b70fef9f3b655909b7057c99ecf698c528b49c3c96fd61";
 const INVENTORY = [
   ["person-credentials", "store.ts:revokeApiToken", "credential", true],
   ["lead-credentials", "store.ts:revokeLeadCredentials", "credential", true],

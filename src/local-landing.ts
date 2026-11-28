@@ -54,7 +54,7 @@ import { localActNow, LOCAL_OWNER_LAPSED } from "./local-owner.js";
 import { publishingOf } from "./pull-request-flow.js";
 import { readGit, wholeChangeBaseOf } from "./task-base.js";
 import { catchUpConflictOf } from "./revision-catch-up.js";
-import { verifyPasskeyAction, type PasskeyAssertionProof } from "./companion/passkey-gate.js";
+import { checkPasskeyAction, consumePasskeyAction, type PasskeyAssertionProof } from "./companion/passkey-gate.js";
 import { passkeyProofDetail } from "./companion/webauthn.js";
 import { deviceAccountStands, getPairedDevice } from "./companion/store.js";
 
@@ -71,7 +71,7 @@ export const LAND_HANDOFF_SETTLED = "land handoff settled";
  * (ADR 0005), or this computer's local owner acting as exactly `land-task` (the same authority as Accept on a solo install). */
 export type LandAuthority =
   | { kind: "person"; who: VerifiedApprover }
-  | { kind: "passkey"; who: VerifiedApprover; proof: PasskeyAssertionProof }
+  | { kind: "passkey"; who: VerifiedApprover; proof: PasskeyAssertionProof; /** Read right before the challenge is consumed (after the lock and the git work). */ clock: () => Date }
   | { kind: "local" };
 
 export type LandingPlan = {
@@ -684,32 +684,19 @@ export async function land(store: Store, taskId: string, input: { key: string; i
     const pre = standing(store, authority, plan.repo);
     if (!pre.ok) return pre;
     const landBinding = { verb: "land" as const, taskId, planKey: plan.key, into: input.into ?? null, undo: input.undo === true };
-    if (authority.kind === "passkey") {
-      const prePasskey = verifyPasskeyAction(store, {
-        accountName: authority.who.name,
-        repo: plan.repo,
-        verb: "land",
-        expectedBinding: landBinding,
-        proof: authority.proof,
-        now,
-        consume: false,
-      });
-      if (!prePasskey.ok) return refuse("authority", prePasskey.message);
-    }
+    // A phone's passkey: verified now, before the commit is made, and consumed with the intent below (a replay of a
+    // landing or handoff above writes nothing, consumes nothing and grants nothing).
+    const passkeyChecked = authority.kind !== "passkey" ? null
+      : checkPasskeyAction(store, { accountName: authority.who.name, repo: plan.repo, verb: "land", expectedBinding: landBinding, proof: authority.proof, now });
+    if (passkeyChecked !== null && !passkeyChecked.ok) return refuse("authority", passkeyChecked.message);
     const consumeLandPasskey = (): void => {
-      if (authority.kind !== "passkey") return;
-      const consumed = verifyPasskeyAction(store, {
-        accountName: authority.who.name,
-        repo: plan.repo,
-        verb: "land",
-        expectedBinding: landBinding,
-        proof: authority.proof,
-        now,
-        consume: true,
-      });
+      if (authority.kind !== "passkey" || passkeyChecked === null || !passkeyChecked.ok) return;
+      // The clock read now, after the project lock and the git work: a challenge that expired meanwhile is refused.
+      const at = authority.clock();
+      const consumed = consumePasskeyAction(store, passkeyChecked, { repo: plan.repo, now: at });
       if (!consumed.ok) throw new Refused(refuse("authority", consumed.message));
       store.recordAction({
-        at: now.toISOString(),
+        at: at.toISOString(),
         actor: authority.who.name,
         repo: plan.repo,
         taskId: plan.rootId,
@@ -718,7 +705,7 @@ export async function land(store: Store, taskId: string, input: { key: string; i
         outcome: "passkey",
         source: "request",
         detail: passkeyProofDetail({
-          at: now,
+          at,
           generation: consumed.accountGeneration,
           digest: plan.key,
           verb: "land",
