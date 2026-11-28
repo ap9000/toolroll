@@ -26,12 +26,14 @@ export type AccentPreset = { id: string; name: string; year: number | null; hex:
 export const DEFAULT_ACCENT = "#171717";
 const PAPER_LIGHT = "#ffffff", FRAME_LIGHT = "#efefef", PAPER_DARK = "#161616", INK_DARK = "#0a0a0a";
 
-/** Ink (the default), violet, chart magenta, then Pantone's colours of the year, newest first. The greys and whites (Sand Dollar 2006,
+/** Ink (the default), Signal blue, Chart magenta, Built mint, Violet, then Pantone's colours of the year, newest first. The greys and whites (Sand Dollar 2006,
  * Ultimate Gray 2021, Cloud Dancer 2026) are left out: a grey can't mark what needs a person here. */
 export const ACCENT_PRESETS: AccentPreset[] = ([
   [null, "Ink", DEFAULT_ACCENT],
-  [null, "Violet", "#6e56cf"],
+  [null, "Signal blue", "#3b82f6"],
   [null, "Chart magenta", "#c0267e"],
+  [null, "Built mint", "#16a34a"],
+  [null, "Violet", "#6e56cf"],
   [2025, "Mocha Mousse", "#a47864"], [2024, "Peach Fuzz", "#ffbe98"], [2023, "Viva Magenta", "#bb2649"],
   [2022, "Very Peri", "#6667ab"], [2021, "Illuminating", "#f5df4d"], [2020, "Classic Blue", "#0f4c81"],
   [2019, "Living Coral", "#ff6f61"], [2018, "Ultra Violet", "#5f4b8b"], [2017, "Greenery", "#88b04b"],

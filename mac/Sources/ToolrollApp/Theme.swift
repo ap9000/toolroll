@@ -378,6 +378,23 @@ public final class CanvasImageCache {
         cache.totalCostLimit = 96 * 1024 * 1024
     }
 
+    public func image(key path: String, maxPixelDimension: Int? = nil, data load: () -> Data?) -> NSImage? {
+        let mtime = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let key = "data:\(path)#\(Int(mtime))#\(maxPixelDimension ?? 0)" as NSString
+        if let hit = cache.object(forKey: key) { return hit }
+        guard let data = load(), let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let opts: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelDimension ?? 4096,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, opts as CFDictionary) else { return nil }
+        let img = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        cache.setObject(img, forKey: key, cost: cg.bytesPerRow * cg.height)
+        return img
+    }
+
     public func image(atPath path: String, maxPixelDimension: Int? = nil) -> NSImage? {
         let mtime = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
         let key = "\(path)#\(Int(mtime))#\(maxPixelDimension ?? 0)" as NSString

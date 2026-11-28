@@ -321,6 +321,16 @@ public actor ToolrollClient {
     }
 
     private func sendFormActOnce(path: String, fields: [(String, String)], defaultDone: String) async throws -> String {
+        try await sendFormActReply(path: path, fields: fields, defaultDone: defaultDone).words
+    }
+
+    private struct FormActReply {
+        let words: String
+        let landedAt: URL?
+        let location: String?
+    }
+
+    private func sendFormActReply(path: String, fields: [(String, String)], defaultDone: String) async throws -> FormActReply {
         guard case .localSession(let s) = transport else {
             throw ToolrollClientError.refused("This action requires a local or signed-in session.")
         }
@@ -357,7 +367,8 @@ public actor ToolrollClient {
             if outcome == "refused" || http.statusCode >= 400 {
                 throw Self.refusal(words.isEmpty ? "Action refused (\(http.statusCode))." : words)
             }
-            return words.isEmpty ? defaultDone : words
+            return FormActReply(words: words.isEmpty ? defaultDone : words, landedAt: http.url,
+                                location: http.value(forHTTPHeaderField: "Location"))
         }
 
         let redirectOutcome = Self.parseRedirectFeedback(
@@ -367,12 +378,13 @@ public actor ToolrollClient {
         if let problem = redirectOutcome.problem {
             throw Self.refusal(problem)
         }
+        let location = http.value(forHTTPHeaderField: "Location")
         if let said = redirectOutcome.said {
-            return said
+            return FormActReply(words: said, landedAt: http.url, location: location)
         }
 
         if (200...399).contains(http.statusCode) {
-            return defaultDone
+            return FormActReply(words: defaultDone, landedAt: http.url, location: location)
         }
         throw ToolrollClientError.httpStatus(http.statusCode, "Action failed (HTTP \(http.statusCode)).")
     }
@@ -1421,11 +1433,29 @@ public actor ToolrollClient {
     }
 
     public func createTask(title: String, project: String?, body: String, planFirst: Bool) async throws -> String {
+        try await fileTask(title: title, project: project, body: body, planFirst: planFirst).message
+    }
+
+    /// The task id a filing landed on: the console answers a filing with its new task's page, `…/t/<id>`.
+    public static func filedTaskId(landedAt: URL?, location: String?) -> String? {
+        let candidates: [URL] = [location.flatMap { URL(string: $0, relativeTo: landedAt) }, landedAt].compactMap { $0 }
+        for url in candidates {
+            let parts = url.path.split(separator: "/", omittingEmptySubsequences: true)
+            guard parts.count >= 2, parts[parts.count - 2] == "t" else { continue }
+            let id = String(parts[parts.count - 1])
+            if id.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"#, options: .regularExpression) != nil { return id }
+        }
+        return nil
+    }
+
+    /// File a task and say which one it is: the id comes from the page the filing landed on; nil when the console
+    /// didn't say (a remote workspace answers through the CLI, which names no page).
+    public func fileTask(title: String, project: String?, body: String, planFirst: Bool) async throws -> (message: String, taskId: String?) {
         if !transport.isLocalSession {
             var argv = ["task", "add", title]
             if let project, !project.isEmpty { argv += ["--repo", project] }
             if !body.isEmpty { argv += ["--body", body] }
-            return try await runRemoteCli(argv: argv, defaultDone: "Task filed.")
+            return (try await runRemoteCli(argv: argv, defaultDone: "Task filed."), nil)
         }
         var fields = [
             ("title", title),
@@ -1441,11 +1471,10 @@ public actor ToolrollClient {
         if !body.isEmpty {
             fields.append(("goal", body))
         }
-        return try await sendFormAct(
-            path: "/tasks/add",
-            fields: fields,
-            defaultDone: planFirst ? "Filed. A plan comes first." : "Filed."
-        )
+        let reply = try await renewingStaleSession {
+            try await sendFormActReply(path: "/tasks/add", fields: fields, defaultDone: planFirst ? "Filed. A plan comes first." : "Filed.")
+        }
+        return (reply.words, Self.filedTaskId(landedAt: reply.landedAt, location: reply.location))
     }
 
     public func steerTask(taskId: String, note: String, liveRun: Int? = nil) async throws -> String {

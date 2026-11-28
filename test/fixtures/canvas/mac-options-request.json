@@ -1,0 +1,60 @@
+{
+  "author" : {
+    "kind" : "person",
+    "name" : "Rosa"
+  },
+  "body" : "Make the primary button calmer.",
+  "canvas" : {
+    "isDraft" : false,
+    "linkedTaskId" : null,
+    "route" : "/flows",
+    "screenshot" : null,
+    "selector" : null,
+    "xFrac" : 0.4,
+    "yFrac" : 0.3
+  },
+  "createdAt" : "2026-11-01T12:00:00Z",
+  "id" : "r-0123456789",
+  "kind" : "options",
+  "project" : "shop",
+  "schema" : "youi.request/v1",
+  "status" : "open",
+  "target" : {
+    "file" : "src/button.tsx",
+    "line" : 12,
+    "name" : "Button",
+    "route" : "/flows",
+    "scope" : "element"
+  },
+  "task" : {
+    "acceptance" : [
+      {
+        "evidence" : [
+          "changed-path"
+        ],
+        "statement" : ".youi/proposals/p-0123456789.json holds 2–4 options for Button as youi.proposal/v1"
+      }
+    ],
+    "goal" : "Propose 2–4 options (A–D) for Button on /flows, as asked on the Toolroll Canvas:\n\nMake the primary button calmer.\n\nIt is drawn by src/button.tsx:12. Write them as youi.proposal/v1 to .youi/proposals/p-0123456789.json (for: r-0123456789). Change no other file: a person picks one before anything is built.",
+    "not" : [
+      "Changes to any file other than .youi/proposals/p-0123456789.json"
+    ],
+    "offer" : {
+      "choices" : {
+
+      },
+      "file" : ".youi/proposals/p-0123456789.json",
+      "proposal" : "p-0123456789",
+      "text" : true
+    },
+    "title" : "[UI Options A/B/C/D] Button: Make the primary button calmer.",
+    "touches" : [
+      ".youi/proposals/p-0123456789.json"
+    ],
+    "touchesKnown" : true
+  },
+  "thread" : [
+
+  ],
+  "updatedAt" : "2026-11-01T12:00:00Z"
+}

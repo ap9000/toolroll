@@ -32,6 +32,10 @@ output/
 !/.youi/screens/
 /.youi/screens/*
 !/.youi/screens/screens.json
+# The app screens the Canvas photographs (toolroll.app-screens/v1) are tracked; their captures, mirrored by
+# scripts/canvas-capture-ios.sh, stay local.
+!/.youi/screens/app.json
+/.youi/screens/toolroll/
 
 # A test run's fake outer home (test/temp-root.ts), removed with the run
 /.test-outer/

@@ -194,3 +194,90 @@ export function adoptLegacyCompanion(db: Database, now: Date): void {
   }
   db.exec(V187_SCHEMA);
 }
+
+/**
+ * v188 (ADR 0005 / Gate 2): WebAuthn Passkeys for phone approvals, single-use verb-specific challenges, and
+ * mutation idempotency tracking. All three tables are wiped unconditionally on backup restore (ADR 0001).
+ */
+export const V188_SCHEMA = `
+CREATE TABLE IF NOT EXISTS account_passkeys (
+  credential_id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  account_name TEXT NOT NULL,
+  user_handle TEXT NOT NULL,
+  public_key_spki TEXT NOT NULL,
+  sign_count INTEGER NOT NULL CHECK (sign_count >= 0),
+  label TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_used_at TEXT,
+  recovery_generation TEXT NOT NULL,
+  revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_account_passkeys_owner ON account_passkeys (workspace_id, account_name, recovery_generation);
+CREATE TABLE IF NOT EXISTS passkey_challenges (
+  challenge TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('register', 'approve', 'accept', 'land', 'ship', 'unlock')),
+  workspace_id TEXT NOT NULL,
+  account_name TEXT NOT NULL,
+  device_id TEXT NOT NULL,
+  recovery_generation TEXT NOT NULL,
+  binding_json TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  consumed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_passkey_challenges_expires ON passkey_challenges (expires_at);
+CREATE TABLE IF NOT EXISTS device_idempotency (
+  device_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  method TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('in_flight', 'completed', 'unknown')),
+  outcome_json TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (device_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_device_idempotency_updated ON device_idempotency (device_id, state, updated_at);
+CREATE TABLE IF NOT EXISTS passkey_approval_policy (
+  scope TEXT PRIMARY KEY,
+  required INTEGER NOT NULL CHECK (required IN (0, 1)),
+  window_minutes INTEGER NOT NULL DEFAULT 15 CHECK (window_minutes IN (0, 15, 60))
+);
+`;
+
+export const V188_STEPS = Object.freeze(["companion-passkey"] as const);
+export const V188_TABLES = Object.freeze(["account_passkeys", "passkey_challenges", "device_idempotency", "passkey_approval_policy"] as const);
+
+const PASSKEYS_V188: Column[] = [
+  ["credential_id", "TEXT", 0, 1], ["workspace_id", "TEXT", 1, 0], ["account_name", "TEXT", 1, 0],
+  ["user_handle", "TEXT", 1, 0], ["public_key_spki", "TEXT", 1, 0], ["sign_count", "INTEGER", 1, 0],
+  ["label", "TEXT", 1, 0], ["created_at", "TEXT", 1, 0], ["last_used_at", "TEXT", 0, 0],
+  ["recovery_generation", "TEXT", 1, 0], ["revoked_at", "TEXT", 0, 0],
+];
+const CHALLENGES_V188: Column[] = [
+  ["challenge", "TEXT", 0, 1], ["kind", "TEXT", 1, 0], ["workspace_id", "TEXT", 1, 0],
+  ["account_name", "TEXT", 1, 0], ["device_id", "TEXT", 1, 0], ["recovery_generation", "TEXT", 1, 0],
+  ["binding_json", "TEXT", 1, 0], ["expires_at", "TEXT", 1, 0], ["consumed_at", "TEXT", 0, 0],
+];
+const IDEMPOTENCY_V188: Column[] = [
+  ["device_id", "TEXT", 1, 1], ["idempotency_key", "TEXT", 1, 2], ["method", "TEXT", 1, 0],
+  ["request_hash", "TEXT", 1, 0], ["state", "TEXT", 1, 0], ["outcome_json", "TEXT", 0, 0],
+  ["updated_at", "TEXT", 1, 0],
+];
+const POLICY_V188: Column[] = [
+  ["scope", "TEXT", 0, 1], ["required", "INTEGER", 1, 0], ["window_minutes", "INTEGER", 1, 0],
+];
+
+const TARGET_V188: Record<(typeof V188_TABLES)[number], string> = {
+  account_passkeys: shapeOf(PASSKEYS_V188),
+  passkey_challenges: shapeOf(CHALLENGES_V188),
+  device_idempotency: shapeOf(IDEMPOTENCY_V188),
+  passkey_approval_policy: shapeOf(POLICY_V188),
+};
+
+export function companionPasskeyShapeProblem(db: Database): string | null {
+  for (const table of V188_TABLES) {
+    if (!tableExists(db, table)) return `the passkey approval table ${table} is missing`;
+    if (shapeOf(columnsOf(db, table)) !== TARGET_V188[table]) return `the passkey approval table ${table} has an unknown shape`;
+  }
+  return null;
+}

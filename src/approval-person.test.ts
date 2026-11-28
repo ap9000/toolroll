@@ -90,7 +90,7 @@ afterEach(() => {
 
 describe("whose proof it is", () => {
   test("every credential method is classified; the chat tap and a passkey are a person; anything else is not", () => {
-    for (const method of ["password-now", "sso-now", "fresh-password", "fresh-sso", "session", "cli-login", "chat", "passkey"]) expect(personProof(method), method).toBe(true);
+    for (const method of ["password-now", "sso-now", "fresh-password", "fresh-sso", "session", "cli-login", "chat", "passkey", "passkey-fresh"]) expect(personProof(method), method).toBe(true);
     for (const method of ["lead-token", "remote-token", "", "Password-now", "toString", "__proto__", "constructor", "bogus"]) expect(personProof(method), method).toBe(false);
     expect(personProof(null)).toBe(false);
     expect(personProof(undefined)).toBe(false);

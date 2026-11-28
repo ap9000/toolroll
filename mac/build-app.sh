@@ -60,6 +60,9 @@ if command -v node >/dev/null 2>&1 && [[ -f "$REPO_ROOT/scripts/lint-comments.mj
   (cd "$REPO_ROOT" && node scripts/lint-comments.mjs mac/Sources mac/Tests)
 fi
 
+echo "==> Checking the Canvas capture script built into the app..."
+"$SCRIPT_DIR/scripts/embed-canvas-capture.sh" --check
+
 SWIFT_BUILD_ARGS=(-c release)
 if [[ "$UNIVERSAL" -eq 1 ]]; then
   echo "==> Building ToolrollApp (release, universal arm64 + x86_64)..."
