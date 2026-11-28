@@ -86,7 +86,7 @@ struct HardenedGitTests {
         defer { try? FileManager.default.removeItem(atPath: root) }
         #expect(HardenedGit.refusal(in: root) == nil)
         let first = YouiCanvasStorage.gitStateKey(projectRoot: root)
-        #expect(first.hasPrefix("nogit-"))
+        #expect(first.hasPrefix("s-"))
         try "hello, longer\n".write(toFile: "\(root)/a.txt", atomically: true, encoding: .utf8)
         #expect(YouiCanvasStorage.gitStateKey(projectRoot: root) != first)
     }

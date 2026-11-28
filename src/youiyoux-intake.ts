@@ -180,12 +180,22 @@ function readRequests(dir: string, taken: ReadonlySet<string>): Read {
     if (parsed.value.id !== id) { out.invalid.push(`${name}: its id is ${parsed.value.id}`); continue; }
     // Comments, requests already addressed or closed, and changes with no task are someone else's to act on.
     if (parsed.value.kind === "comment" || parsed.value.status !== "open") continue;
+    // A pin still a draft on Toolroll's Mac Canvas (`canvas.isDraft`, Toolroll's own block) asks for nothing yet: the
+    // person files it with Create Tasks, which rewrites it with its task. It is skipped, never counted unreadable.
+    if (canvasDraft(raw)) continue;
     const options = optionsProblem(parsed.value);
     if (options !== null) { out.invalid.push(`${name}: ${options}`); continue; }
     if (parsed.value.task === undefined) continue;
     out.requests.push(parsed.value);
   }
   return out;
+}
+
+/** Whether a request is a draft pin on Toolroll's Mac Canvas: its `canvas.isDraft` is exactly true. */
+function canvasDraft(raw: unknown): boolean {
+  if (typeof raw !== "object" || raw === null) return false;
+  const canvas = (raw as { canvas?: unknown }).canvas;
+  return typeof canvas === "object" && canvas !== null && (canvas as { isDraft?: unknown }).isDraft === true;
 }
 
 // ------------------------------------------------------------ the task

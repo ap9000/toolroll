@@ -120,6 +120,11 @@ public struct CanvasArtboard: Sendable, Equatable, Identifiable {
     public var isLiveInteractive: Bool
     public var isHydrating: Bool
     public var compareSplit: Double
+    public var surface: String = "web"
+    public var appearance: String?
+    public var title: String?
+
+    public var isAppScreen: Bool { surface != "web" }
 
     public init(
         id: String = UUID().uuidString,
@@ -171,6 +176,7 @@ public struct CanvasPin: Codable, Sendable, Equatable, Identifiable {
     public let kind: CanvasPinKind
     public let body: String
     public let author: String
+    public let authorKind: String
     public let elementName: String?
     public let elementSelector: String?
     public let elementFile: String?
@@ -179,6 +185,12 @@ public struct CanvasPin: Codable, Sendable, Equatable, Identifiable {
     public var isDraft: Bool
     public var linkedTaskId: String?
     public let createdAt: String
+    public let surface: String?
+    public let appearance: String?
+    public let device: String?
+    public let captureStateKey: String?
+
+    public var isAppPin: Bool { surface != nil }
 
     public init(
         id: String = CanvasPin.newRequestId(),
@@ -188,7 +200,8 @@ public struct CanvasPin: Codable, Sendable, Equatable, Identifiable {
         yFrac: Double,
         kind: CanvasPinKind,
         body: String,
-        author: String = "alex",
+        author: String,
+        authorKind: String = "person",
         elementName: String? = nil,
         elementSelector: String? = nil,
         elementFile: String? = nil,
@@ -196,7 +209,11 @@ public struct CanvasPin: Codable, Sendable, Equatable, Identifiable {
         screenshotPath: String? = nil,
         isDraft: Bool = true,
         linkedTaskId: String? = nil,
-        createdAt: String = ISO8601DateFormatter().string(from: Date())
+        createdAt: String = ISO8601DateFormatter().string(from: Date()),
+        surface: String? = nil,
+        appearance: String? = nil,
+        device: String? = nil,
+        captureStateKey: String? = nil
     ) {
         self.id = id
         self.artboardRoute = artboardRoute
@@ -206,6 +223,7 @@ public struct CanvasPin: Codable, Sendable, Equatable, Identifiable {
         self.kind = kind
         self.body = body
         self.author = author
+        self.authorKind = authorKind == "agent" ? "agent" : "person"
         self.elementName = elementName
         self.elementSelector = elementSelector
         self.elementFile = elementFile
@@ -214,12 +232,26 @@ public struct CanvasPin: Codable, Sendable, Equatable, Identifiable {
         self.isDraft = isDraft
         self.linkedTaskId = linkedTaskId
         self.createdAt = createdAt
+        self.surface = surface
+        self.appearance = appearance
+        self.device = device
+        self.captureStateKey = captureStateKey
     }
 
     public static func newRequestId() -> String {
         let hex = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(10)
         return "r-\(hex)"
     }
+
+    public static let unnamedAuthor = "you"
+
+    public static func authorName(account: String?) -> String {
+        let trimmed = account?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? unnamedAuthor : trimmed
+    }
+
+    public var proposalId: String { "p-" + id.dropFirst(2) }
+    public var proposalFile: String { ".youi/proposals/\(proposalId).json" }
 }
 
 public enum ElementCategory: String, Sendable, Equatable {
@@ -610,34 +642,8 @@ public enum YouiCanvasStorage {
         return try? JSONDecoder().decode(YouiScreensManifest.self, from: data)
     }
 
-    public static func gitStateKey(projectRoot: String) -> String {
-        guard HardenedGit.refusal(in: projectRoot) == nil else { return "unread" }
-        let head = HardenedGit.text(["rev-parse", "--short=10", "HEAD"], in: projectRoot) ?? "nogit"
-        let tracked = HardenedGit.run(["ls-files", "-z"], in: projectRoot).flatMap { $0.status == 0 ? $0.stdout : nil } ?? Data()
-        let untracked = HardenedGit.run(["ls-files", "-z", "-o", "--exclude-standard"], in: projectRoot).flatMap { $0.status == 0 ? $0.stdout : nil } ?? Data()
-        guard let digest = fileFingerprint(projectRoot: projectRoot, tracked: tracked, untracked: untracked) else { return head }
-        return "\(head)-\(digest)"
-    }
-
-    static func fileFingerprint(projectRoot: String, tracked: Data, untracked: Data, limit: Int = 50_000) -> String? {
-        var hasher = SHA256()
-        var count = 0
-        for (tag, list) in [("t", tracked), ("u", untracked)] {
-            for entry in list.split(separator: 0) where count < limit {
-                count += 1
-                let rel = String(decoding: entry, as: UTF8.self)
-                var st = stat()
-                let line: String
-                if lstat(projectRoot + "/" + rel, &st) == 0 {
-                    line = "\(tag)\u{0}\(rel)\u{0}\(st.st_size)\u{0}\(st.st_mtimespec.tv_sec).\(st.st_mtimespec.tv_nsec)\n"
-                } else {
-                    line = "\(tag)\u{0}\(rel)\u{0}missing\n"
-                }
-                hasher.update(data: Data(line.utf8))
-            }
-        }
-        guard count > 0 else { return nil }
-        return hasher.finalize().prefix(4).map { String(format: "%02x", $0) }.joined()
+    public static func gitStateKey(projectRoot: String, excluding: [String] = []) -> String {
+        AppSurfaceStorage.surfaceStateKey(projectRoot: projectRoot, pathspecs: AppSurfaceStorage.pathspecs(excluding: excluding))
     }
 
     public static func mainBranchKey(projectRoot: String) -> String {
@@ -691,7 +697,8 @@ public enum YouiCanvasStorage {
         stateKey: String = "latest",
         baselineKey: String = "baseline",
         columns: Int = 3,
-        viewport: CanvasViewportPreset = .desktop
+        viewport: CanvasViewportPreset = .desktop,
+        originY: Double = 56
     ) -> [CanvasArtboard] {
         let gapX: Double = 44
         let gapY: Double = 60
@@ -703,7 +710,7 @@ public enum YouiCanvasStorage {
             let col = idx % cols
             let row = idx / cols
             let x = 60 + Double(col) * (w + gapX)
-            let y = 56 + Double(row) * (h + gapY)
+            let y = originY + Double(row) * (h + gapY)
             var board = CanvasArtboard(
                 id: entry.id,
                 route: entry.route,
@@ -779,42 +786,86 @@ public enum YouiCanvasStorage {
         }
     }
 
+    public static func youiRequestPayload(projectName: String, pin: CanvasPin) -> [String: Any] {
+        var target: [String: Any] = [
+            "route": pin.artboardPath,
+            "scope": pin.elementName != nil ? "element" : "here",
+            "name": clip(pin.elementName ?? pin.artboardRoute, 200),
+        ]
+        if let file = pin.elementFile, !file.isEmpty { target["file"] = file }
+        if let line = pin.elementLine, line > 0 { target["line"] = line }
+        if let shot = pin.screenshotPath, !shot.isEmpty { target["screenshot"] = shot }
+
+        var canvas: [String: Any] = [
+            "xFrac": pin.xFrac,
+            "yFrac": pin.yFrac,
+            "route": pin.artboardRoute,
+            "selector": pin.elementSelector as Any,
+            "screenshot": pin.screenshotPath as Any,
+            "isDraft": pin.isDraft,
+            "linkedTaskId": pin.linkedTaskId as Any,
+        ]
+        if let surface = pin.surface { canvas["surface"] = surface }
+        if let appearance = pin.appearance { canvas["state"] = appearance }
+        if let device = pin.device { canvas["device"] = device }
+        if let key = pin.captureStateKey { canvas["captureStateKey"] = key }
+
+        var payload: [String: Any] = [
+            "schema": "youi.request/v1",
+            "id": pin.id,
+            "project": projectName,
+            "kind": pin.kind.rawValue,
+            "status": "open",
+            "body": clip(pin.body, 4000),
+            "author": ["kind": pin.authorKind, "name": clip(pin.author, 100)],
+            "createdAt": pin.createdAt,
+            "updatedAt": pin.createdAt,
+            "target": target,
+            "canvas": canvas,
+            "thread": [],
+        ]
+        if pin.kind == .options && !pin.isDraft {
+            payload["task"] = optionsTask(for: pin)
+        }
+        return payload
+    }
+
+    static func optionsTask(for pin: CanvasPin) -> [String: Any] {
+        let place = pin.elementName ?? pin.artboardRoute
+        var goal = "Propose 2–4 options (A–D) for \(place) on \(pin.artboardPath), as asked on the Toolroll Canvas:\n\n\(pin.body)\n\n"
+        if let file = pin.elementFile {
+            goal += "It is drawn by \(pin.elementLine.map { "\(file):\($0)" } ?? file). "
+        }
+        goal += "Write them as youi.proposal/v1 to \(pin.proposalFile) (for: \(pin.id)). Change no other file: a person picks one before anything is built."
+        return [
+            "title": clip("[UI Options A/B/C/D] \(place): \(pin.body)", 120),
+            "goal": clip(goal, 4000),
+            "touches": [pin.proposalFile],
+            "touchesKnown": true,
+            "not": ["Changes to any file other than \(pin.proposalFile)"],
+            "acceptance": [[
+                "statement": clip("\(pin.proposalFile) holds 2–4 options for \(place) as youi.proposal/v1", 300),
+                "evidence": ["changed-path"],
+            ]],
+            "offer": [
+                "proposal": pin.proposalId,
+                "file": pin.proposalFile,
+                "choices": [String: Any](),
+                "text": true,
+            ],
+        ]
+    }
+
+    private static func clip(_ text: String, _ max: Int) -> String {
+        text.count <= max ? text : String(text.prefix(max - 1)) + "…"
+    }
+
     @discardableResult
     public static func writeYouiRequest(projectRoot: String, projectName: String, pin: CanvasPin) -> URL? {
         let dir = URL(fileURLWithPath: projectRoot).appendingPathComponent(".youi/requests", isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            var target: [String: Any] = [
-                "route": pin.artboardPath,
-                "scope": pin.elementName != nil ? "element" : "here",
-                "name": pin.elementName ?? pin.artboardRoute,
-            ]
-            if let file = pin.elementFile, !file.isEmpty { target["file"] = file }
-            if let line = pin.elementLine, line > 0 { target["line"] = line }
-            if let shot = pin.screenshotPath, !shot.isEmpty { target["screenshot"] = shot }
-
-            let payload: [String: Any] = [
-                "schema": "youi.request/v1",
-                "id": pin.id,
-                "project": projectName,
-                "kind": pin.kind.rawValue,
-                "status": "open",
-                "body": pin.body,
-                "author": ["kind": "person", "name": pin.author],
-                "createdAt": pin.createdAt,
-                "updatedAt": pin.createdAt,
-                "target": target,
-                "canvas": [
-                    "xFrac": pin.xFrac,
-                    "yFrac": pin.yFrac,
-                    "route": pin.artboardRoute,
-                    "selector": pin.elementSelector as Any,
-                    "screenshot": pin.screenshotPath as Any,
-                    "isDraft": pin.isDraft,
-                    "linkedTaskId": pin.linkedTaskId as Any,
-                ],
-                "thread": [],
-            ]
+            let payload = youiRequestPayload(projectName: projectName, pin: pin)
             let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
             let fileURL = dir.appendingPathComponent("\(pin.id).json")
             try data.write(to: fileURL, options: .atomic)
@@ -846,7 +897,7 @@ public enum YouiCanvasStorage {
                 let taskMeta = dir.appendingPathComponent("\(id).task.json")
                 if let tData = try? Data(contentsOf: taskMeta),
                    let tObj = try? JSONSerialization.jsonObject(with: tData) as? [String: Any] {
-                    linkedTaskId = tObj["task"] as? String
+                    linkedTaskId = ((tObj["task"] as? [String: Any])?["id"] as? String) ?? (tObj["task"] as? String)
                 }
             }
 
@@ -858,15 +909,20 @@ public enum YouiCanvasStorage {
                 yFrac: (canvas?["yFrac"] as? Double) ?? 0.35,
                 kind: kind,
                 body: body,
-                author: (authorObj?["name"] as? String) ?? "alex",
-                elementName: target?["name"] as? String,
+                author: CanvasPin.authorName(account: authorObj?["name"] as? String),
+                authorKind: (authorObj?["kind"] as? String) ?? "person",
+                elementName: (target?["scope"] as? String) == "element" ? target?["name"] as? String : nil,
                 elementSelector: canvas?["selector"] as? String,
                 elementFile: target?["file"] as? String,
                 elementLine: target?["line"] as? Int,
                 screenshotPath: (target?["screenshot"] as? String) ?? (canvas?["screenshot"] as? String),
                 isDraft: (canvas?["isDraft"] as? Bool) ?? (linkedTaskId == nil),
                 linkedTaskId: linkedTaskId,
-                createdAt: (obj["createdAt"] as? String) ?? ""
+                createdAt: (obj["createdAt"] as? String) ?? "",
+                surface: canvas?["surface"] as? String,
+                appearance: canvas?["state"] as? String,
+                device: canvas?["device"] as? String,
+                captureStateKey: canvas?["captureStateKey"] as? String
             ))
         }
         return pins.sorted { $0.createdAt < $1.createdAt }

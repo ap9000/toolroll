@@ -62,7 +62,7 @@ struct ScreenFocusLightboxView: View {
     }
 
     private var pinsOnScreen: [CanvasPin] {
-        store.canvasPins.filter { $0.artboardPath == board.path || $0.artboardRoute == board.route }
+        store.canvasPins.filter { !$0.isAppPin && ($0.artboardPath == board.path || $0.artboardRoute == board.route) }
     }
 
     private var hasBeforeAfter: Bool {

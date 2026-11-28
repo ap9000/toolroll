@@ -1,0 +1,30 @@
+{
+  "schema": "toolroll.app-screens/v1",
+  "project": "toolroll",
+  "surfaces": [
+    {
+      "id": "ios",
+      "kind": "ios",
+      "label": "iPhone companion",
+      "build": { "project": "ios/ToolrollCompanion.xcodeproj", "scheme": "ToolrollCompanion", "bundleId": "dev.toolroll.ios" },
+      "device": "iPhone 17 Pro",
+      "paths": ["ios"],
+      "appearances": ["light", "dark"],
+      "capture": "scripts/canvas-capture-ios.sh",
+      "screens": [
+        { "id": "welcome", "title": "Welcome", "launch": [], "view": "ios/ToolrollCompanion/WelcomePairingView.swift", "note": "unpaired: a fresh Simulator, no --demo" },
+        { "id": "pair-paste", "title": "Pair · paste code", "launch": ["--screen", "paste"], "view": "ios/ToolrollCompanion/WelcomePairingView.swift" },
+        { "id": "pairing-code", "title": "Pairing · confirm code", "launch": ["--debug-state", "pairing-code"], "view": "ios/ToolrollCompanion/WelcomePairingView.swift" },
+        { "id": "inbox", "title": "Work · needs you", "launch": ["--demo"], "view": "ios/ToolrollCompanion/WorkInboxView.swift" },
+        { "id": "inbox-all", "title": "Work · all", "launch": ["--demo", "--screen", "all"], "view": "ios/ToolrollCompanion/WorkInboxView.swift" },
+        { "id": "task-decide", "title": "Task · needs you", "launch": ["--demo", "--screen", "task:t-auth-refresh"], "view": "ios/ToolrollCompanion/TaskDetailView.swift" },
+        { "id": "task-review", "title": "Task · ready", "launch": ["--demo", "--screen", "task:t-frame-limits"], "view": "ios/ToolrollCompanion/TaskDetailView.swift" },
+        { "id": "live", "title": "Live watch", "launch": ["--demo", "--screen", "live:t-live-watch"], "view": "ios/ToolrollCompanion/LiveWatchView.swift" },
+        { "id": "diff", "title": "Diff file", "launch": ["--demo", "--screen", "diff:t-frame-limits:0"], "view": "ios/ToolrollCompanion/DiffFileView.swift" },
+        { "id": "settings", "title": "Settings", "launch": ["--demo", "--screen", "settings"], "view": "ios/ToolrollCompanion/SettingsView.swift" },
+        { "id": "unreachable", "title": "Can't reach your Mac", "launch": ["--debug-state", "unreachable:offline"], "view": "ios/ToolrollCompanion/WorkInboxView.swift" },
+        { "id": "refused", "title": "Phone removed", "launch": ["--debug-state", "refused"], "view": "ios/ToolrollCompanion/WorkInboxView.swift" }
+      ]
+    }
+  ]
+}
