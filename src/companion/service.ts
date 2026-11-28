@@ -18,6 +18,7 @@
 import type { Socket } from "node:net";
 import { WebSocket } from "ws";
 import { CompanionDaemonEngine, relayEnvelopeLink, type CompanionReadHandlers, type PairingQrPayload, type PeerLink } from "./daemon.js";
+import type { CompanionActionHandlers } from "./actions.js";
 import { startDirectServer, type RunningDirectServer } from "./direct-server.js";
 import { startBonjour, type BonjourAdvert, type Spawner } from "./bonjour.js";
 import { PACING_PER_HOSTED_LINK, TokenBucket } from "./framing.js";
@@ -52,6 +53,7 @@ export interface CompanionServiceStatus {
 export interface CompanionServiceOptions {
   store: Store;
   reads: CompanionReadHandlers;
+  actions?: CompanionActionHandlers;
   /** The direct listener (null: no direct path): the configured port, then `fallbackPorts` in order if it is taken.
    * `preferredPort` (the last bound one) is tried first when it is one of those; `onBound` hears the port it got. */
   direct: { port: number; host?: string; fallbackPorts?: readonly number[]; preferredPort?: number | null; onBound?: (port: number) => void } | null;
@@ -224,6 +226,7 @@ export class CompanionService {
     this.engine = new CompanionDaemonEngine({
       store: opts.store,
       handlers: opts.reads,
+      ...(opts.actions === undefined ? {} : { actions: opts.actions }),
       // A confirmed pairing: the connected hosted relay must admit the phone before the phone is told (a refusal fails
       // the pairing). A relay that isn't connected right now learns of it from the full PUT on its next connect.
       onDeviceRegistered: async (deviceId, deviceRelayPub) => {

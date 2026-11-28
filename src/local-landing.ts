@@ -54,18 +54,25 @@ import { localActNow, LOCAL_OWNER_LAPSED } from "./local-owner.js";
 import { publishingOf } from "./pull-request-flow.js";
 import { readGit, wholeChangeBaseOf } from "./task-base.js";
 import { catchUpConflictOf } from "./revision-catch-up.js";
+import { checkPasskeyAction, consumePasskeyAction, type PasskeyAssertionProof } from "./companion/passkey-gate.js";
+import { passkeyProofDetail } from "./companion/webauthn.js";
+import { deviceAccountStands, getPairedDevice } from "./companion/store.js";
 
 export const LAND_DESTINATION = "land destination";
 export const LAND_INTENT = "land intent";
+export const LAND_PROVED_ACTION = "land proved";
 export const LAND_SETTLED = "land settled";
 /** A landing commit made for the person to bring in themselves (the destination was checked out): recorded pending,
  * then settled once its commit is kept at its ref. */
 export const LAND_HANDOFF = "land handoff";
 export const LAND_HANDOFF_SETTLED = "land handoff settled";
 
-/** Who lands: a person proved by password (or a browser session's approver), or this computer's local owner acting as
- * exactly `land-task` (the same authority as Accept on a solo install). */
-export type LandAuthority = { kind: "person"; who: VerifiedApprover } | { kind: "local" };
+/** Who lands: a person proved by password (or a browser session's approver), a paired phone's WebAuthn Passkey
+ * (ADR 0005), or this computer's local owner acting as exactly `land-task` (the same authority as Accept on a solo install). */
+export type LandAuthority =
+  | { kind: "person"; who: VerifiedApprover }
+  | { kind: "passkey"; who: VerifiedApprover; proof: PasskeyAssertionProof; /** Read right before the challenge is consumed (after the lock and the git work). */ clock: () => Date }
+  | { kind: "local" };
 
 export type LandingPlan = {
   kind: "land" | "undo";
@@ -569,6 +576,14 @@ function standing(store: Store, authority: LandAuthority, repo: string): { ok: t
   }
   const proved = reproveApprover(store, authority.who);
   if (!proved.ok || !authority.who.repos.includes(repo) || !store.accountCanAccess(authority.who.name, repo)) return refuse("authority", "Your access changed. Sign in again.");
+  if (authority.kind === "passkey") {
+    const dev = getPairedDevice(store.handle, authority.proof.deviceId);
+    const identity = store.workspaceIdentity();
+    if (dev === null || dev.revokedAt !== null || dev.activatedAt === null || dev.accountName !== authority.who.name
+      || dev.recoveryGeneration !== identity.recoveryGeneration || !deviceAccountStands(dev, store.accountOf(authority.who.name))) {
+      return refuse("authority", "This iPhone is no longer paired or your account changed.");
+    }
+  }
   return { ok: true, actor: `operator:${authority.who.name}` };
 }
 
@@ -668,6 +683,39 @@ export async function land(store: Store, taskId: string, input: { key: string; i
     // temporary checkout of its own.
     const pre = standing(store, authority, plan.repo);
     if (!pre.ok) return pre;
+    const landBinding = { verb: "land" as const, taskId, planKey: plan.key, into: input.into ?? null, undo: input.undo === true };
+    // A phone's passkey: verified now, before the commit is made, and consumed with the intent below (a replay of a
+    // landing or handoff above writes nothing, consumes nothing and grants nothing).
+    const passkeyChecked = authority.kind !== "passkey" ? null
+      : checkPasskeyAction(store, { accountName: authority.who.name, repo: plan.repo, verb: "land", expectedBinding: landBinding, proof: authority.proof, now });
+    if (passkeyChecked !== null && !passkeyChecked.ok) return refuse("authority", passkeyChecked.message);
+    const consumeLandPasskey = (): void => {
+      if (authority.kind !== "passkey" || passkeyChecked === null || !passkeyChecked.ok) return;
+      // The clock read now, after the project lock and the git work: a challenge that expired meanwhile is refused.
+      const at = authority.clock();
+      const consumed = consumePasskeyAction(store, passkeyChecked, { repo: plan.repo, now: at });
+      if (!consumed.ok) throw new Refused(refuse("authority", consumed.message));
+      store.recordAction({
+        at: at.toISOString(),
+        actor: authority.who.name,
+        repo: plan.repo,
+        taskId: plan.rootId,
+        runId: plan.runId,
+        action: LAND_PROVED_ACTION,
+        outcome: "passkey",
+        source: "request",
+        detail: passkeyProofDetail({
+          at,
+          generation: consumed.accountGeneration,
+          digest: plan.key,
+          verb: "land",
+          credentialId: consumed.credentialId,
+          pairedDeviceId: consumed.deviceId,
+          be: consumed.be,
+          bs: consumed.bs,
+        }),
+      });
+    };
     const made = plan.kind === "undo" ? await revertCommit(git, plan, options.scratch) : await squashCommit(git, plan, options.scratch);
     if (!made.ok) return made;
     const commit = made.commit;
@@ -690,6 +738,7 @@ export async function land(store: Store, taskId: string, input: { key: string; i
           if (!who.ok) throw new Refused(who);
           const earlier = handoffRows(store, plan.repo).find(one => one.key === plan.key && one.commit === commit);
           if (earlier !== undefined) { replayed = earlier.settled; return earlier.id; }
+          consumeLandPasskey();
           if (!plan.recorded) recordActionWhole(store.handle, { at: now.toISOString(), actor: who.actor, repo: plan.repo, taskId: null, runId: null, action: LAND_DESTINATION, outcome: plan.ref, source: "request" },
             { v: 1, ref: plan.ref, common: project.common });
           return recordActionWhole(store.handle, { at: now.toISOString(), actor: who.actor, repo: plan.repo, taskId: plan.rootId, runId: plan.runId, action: LAND_HANDOFF, outcome: "pending", source: "request" },
@@ -715,6 +764,7 @@ export async function land(store: Store, taskId: string, input: { key: string; i
         const who = stillStands();
         if (!who.ok) throw new Refused(who);
         if (intents(store, "repo = ?", [plan.repo]).some(one => settledOf(store, one.id) === null)) throw new Refused(refuse("busy", "Another landing in this project hasn't finished. Try again in a moment."));
+        consumeLandPasskey();
         if (!plan.recorded) recordActionWhole(store.handle, { at: now.toISOString(), actor: who.actor, repo: plan.repo, taskId: null, runId: null, action: LAND_DESTINATION, outcome: plan.ref, source: "request" },
           { v: 1, ref: plan.ref, common: project.common });
         return recordActionWhole(store.handle, { at: now.toISOString(), actor: who.actor, repo: plan.repo, taskId: plan.rootId, runId: plan.runId, action: LAND_INTENT, outcome: "pending", source: "request" },

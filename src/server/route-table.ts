@@ -867,6 +867,10 @@ post("settings", "settings.phone-confirm", "/settings/phone/confirm", { limited:
 post("settings", "settings.phone-cancel", "/settings/phone/cancel", { limited: "self", ...approver("An approver can pair their own phone.", "/settings") });
 post("settings", "settings.phone-rename", "/settings/phone/rename", { limited: "self", ...approver("An approver can rename their own phone.", "/settings") });
 post("settings", "settings.phone-remove", "/settings/phone/remove", { limited: "self", scope: "step-up", ...approver("An approver can remove their own phone.", "/settings") });
+post("settings", "settings.phone-passkey-enable", "/settings/phone/passkey/enable", { limited: "self", scope: "step-up", ...approver("An approver can enable passkey approvals for their own iPhone.", "/settings") });
+post("settings", "settings.phone-passkey-revoke", "/settings/phone/passkey/revoke", { limited: "self", scope: "step-up", ...approver("An approver can revoke their own passkey.", "/settings") });
+// The passkey prompt is one workspace-wide setting (every approver's phone), so it is an instance operator's, as phone access is.
+post("settings", "settings.phone-passkey-window", "/settings/phone/passkey/window", { limited: "deny", scope: "step-up", ...operator("An instance operator sets the passkey prompt.", "/settings/phone") });
 for (const one of ["messaging", "permission-default", "quality-default", "notifications", "notifications/mute", "telegram-digest", "provider-key-clear", "email-test", "email-read-test", "google/disconnect"]) {
   post("settings", `settings.${one.replaceAll("/", "-")}-send`, `/settings/${one}`);
 }

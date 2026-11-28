@@ -17,6 +17,7 @@
 import { hostname } from "node:os";
 import type { Store } from "../store.js";
 import type { CompanionReadHandlers } from "./daemon.js";
+import type { CompanionActionHandlers } from "./actions.js";
 import { CompanionService, relayAddressesOf } from "./service.js";
 import { readCompanionHostKeys, type CompanionHostKeys } from "./store.js";
 
@@ -116,7 +117,7 @@ export interface PhoneAccess {
 }
 
 export function createPhoneAccess(opts: {
-  store: Store; reads: CompanionReadHandlers; env?: NodeJS.ProcessEnv; log?: (line: string) => void;
+  store: Store; reads: CompanionReadHandlers; actions?: CompanionActionHandlers; env?: NodeJS.ProcessEnv; log?: (line: string) => void;
   /** This console's own address for the phone's Handoff links (device.hello's consoleUrl). */
   consoleUrl?: () => string | null;
   /** Advertise the direct listener over Bonjour (the console does; tests don't). */
@@ -138,6 +139,7 @@ export function createPhoneAccess(opts: {
     const wantHosted = hosted.ok && approved !== null && approved === relayIdentityOf(hosted.url);
     const service = new CompanionService({
       store: opts.store, reads: opts.reads,
+      ...(opts.actions === undefined ? {} : { actions: opts.actions }),
       direct: port.ok ? { port: port.port, fallbackPorts: FALLBACK_DIRECT_PORTS, preferredPort: saved.directPort, onBound: bound => saveDirectPort(opts.store.handle, bound) } : null,
       hosted: wantHosted ? hosted.url : null,
       ...(opts.log === undefined ? {} : { log: opts.log }),

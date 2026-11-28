@@ -478,7 +478,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>telegramPairAct@82><anonymous>@1": 1,
     // Settings → Phone (settings-phone.ts): one typed-password check for its three acts.
     "src/server/settings-phone.ts#<module>": 2,
-    "src/server/settings-phone.ts#createPhoneSettingsHandlers@6>passwordHolds@2": 1,
+    "src/server/settings-phone.ts#createPhoneSettingsHandlers@7>passwordHolds@2": 1,
     "src/tokens-cli.ts#<module>": 2,
     "src/tokens-cli.ts#runTokensCommand@1": 1,
     // `toolroll map`: a sign-in limits a read to that person's projects; no window is honoured there.
@@ -903,6 +903,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/send-back-build.ts#sessionYesPossible@1>withFreshness(approve-standard,_)@1": 1,
   },
   "mergeAsPerson": {
+    "src/companion/actions.ts#<module>": 2,
+    "src/companion/actions.ts#createCompanionActions@5>taskShip@25>perform(principal,params,task.ship,_,_)@1": 1,
     "src/pull-request-flow.ts#mergeAsPerson@22": 1,
     "src/server/tasks.ts#<module>": 2,
     "src/server/tasks.ts#createTasksHandlers@2>taskMerge@28": 1,

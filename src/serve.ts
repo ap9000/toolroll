@@ -199,6 +199,7 @@ import { createPagesHandlers } from './server/pages.js';
 import { createPhoneSettingsHandlers } from './server/settings-phone.js';
 import { createPhoneAccess, workspaceLabelOf } from './companion/access.js';
 import { createCompanionReads } from './companion/reads.js';
+import { createCompanionActions } from './companion/actions.js';
 import { createPeopleHandlers } from './server/people-tokens.js';
 import type { RouteDeclaration } from './server/route-table.js';
 import type { ServerRuntime } from './server/runtime.js';
@@ -2495,10 +2496,13 @@ function buildDecisionServer(options: ServeOptions, leaveRehearsal: (() => void)
   // Engine API's own, for the paired device's account, in this process (companion/reads.ts).
   const companionReads = createCompanionReads({ runtime: handlerRuntime, readWorkRows: pagesHandlers.readWorkRows, subscribeBus: listener => liveBus.subscribe(() => listener()),
     workspaceLabel: workspaceLabelOf, toolrollVersion: PACKAGE_VERSION });
+  const companionActions = createCompanionActions({ runtime: handlerRuntime, workspaceLabel: workspaceLabelOf,
+    onMutated: () => liveBus.publish({ revision: `phone:${Date.now()}` }) });
   phoneReadsByServer.set(server, companionReads);
   const phoneAccess = createPhoneAccess({
     store,
     reads: companionReads,
+    actions: companionActions,
     log: line => console.error(line),
     // Where a phone's Handoff opens this console on the Mac: its public address when it has one, else its own loopback.
     consoleUrl: () => publicOrigin !== null ? publicOrigin.origin : servedPort() === null ? null : `http://127.0.0.1:${servedPort()}`,
