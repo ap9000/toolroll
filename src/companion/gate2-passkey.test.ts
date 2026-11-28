@@ -21,7 +21,8 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "../store.js";
-import { ACCEPT_PROVED_ACTION, assignmentOf } from "../assignment.js";
+import { ACCEPT_PROVED_ACTION, acceptAndCompleteAsOperator, assignmentOf } from "../assignment.js";
+import { verifyApproverByPassword } from "../principal.js";
 import { LAND_PROVED_ACTION } from "../local-landing.js";
 import { MERGE_PROVED_ACTION } from "../pull-request-flow.js";
 import { APPROVAL_PROOF, addApprover, approvalOf, approve, personApprovalOf, proofDetailOf, propose } from "../scope.js";
@@ -51,7 +52,7 @@ import {
 import { storeEvidence } from "../evidence.js";
 import { scopeApprovedForDispatch } from "../dispatch.js";
 import { run as execRun } from "../exec.js";
-import { activePasskeyLease } from "./passkey-gate.js";
+import { activePasskeyLease, startPasskeyLease } from "./passkey-gate.js";
 import { revokePairedDeviceRecord, getPasskeyChallenge } from "./store.js";
 import { passkeyProofDetail } from "./webauthn.js";
 import { sealVerificationReceipt } from "../verification-evidence.js";
@@ -236,21 +237,21 @@ describe("Gate 2: WebAuthn verifier, Passkey enrollment, per-verb transactions, 
     expect(fin.credentialId).toBe(key.credentialId);
   }
 
-  function createTaskWithScope(taskId: string): { digest: string; taskRef: string } {
+  function createTaskWithScope(taskId: string, touches: string[] = ["src/auth.ts"]): { digest: string; taskRef: string } {
     store.createTask({ id: taskId, title: `Task ${taskId}` }, now);
     const ref = store.refFor("built-in", taskId);
     store.placeTask(ref.id, REPO, {}, now);
     const scope = propose(store, {
       taskId,
       goal: `Complete ${taskId}`,
-      touches: ["src/auth.ts"],
+      touches,
       acceptance: [{ id: "c1", statement: "Tests pass", how: null, evidence: ["check"] }],
       now,
     });
     return { digest: scope.digest, taskRef: ref.id };
   }
 
-  function seedReviewableResult(taskId: string, opts: { refuted?: boolean } = {}): { runId: number; receiptDigest: string; headSha: string } {
+  function seedReviewableResult(taskId: string, opts: { refuted?: boolean; touches?: string[] } = {}): { runId: number; receiptDigest: string; headSha: string } {
     const BASE = execFileSync("git", ["-C", REPO, "rev-parse", "HEAD"]).toString("utf8").trim();
     const branch = `toolroll/${taskId}`;
     execFileSync("git", ["-C", REPO, "checkout", "-q", "-b", branch, BASE]);
@@ -261,7 +262,7 @@ describe("Gate 2: WebAuthn verifier, Passkey enrollment, per-verb transactions, 
     const patch = execFileSync("git", ["-C", REPO, "diff", BASE, HEAD]).toString("utf8");
     execFileSync("git", ["-C", REPO, "checkout", "-q", "main"]);
     store.setVerifyCommand({ repo: REPO, command: "true", timeoutMs: 30_000, approvedBy: "alex" }, now);
-    const { digest, taskRef } = createTaskWithScope(taskId);
+    const { digest, taskRef } = createTaskWithScope(taskId, opts.touches);
     expect(store.sealScopeApproval(taskId, "alex", now)).toBe(true);
     const authority = store.routeAuthorityFor(taskRef, "builder");
     if (!authority?.ok) throw new Error("route authority unavailable");
@@ -1218,6 +1219,52 @@ describe("Gate 2: WebAuthn verifier, Passkey enrollment, per-verb transactions, 
       expect(activePasskeyLease(store, DEVICE_2, "alex", now)).not.toBeNull();
       expect(revokePairedDeviceRecord(store.handle, DEVICE_2, now)).toBe(true);
       expect(activePasskeyLease(store, DEVICE_2, "alex", now)).toBeNull();
+    });
+
+    test("R1: an Accept named by the root reads protection from its current revision and the whole ancestry", async () => {
+      const key = createSimulatedPasskey();
+      await enrollKey(key);
+      const { digest } = createTaskWithScope("t-r1-routine");
+      expect((await liveApprove("t-r1-routine", digest, key)).freshUntil).not.toBeNull();
+      // The root declared only src/auth.ts; its revision also declares a file the project protects.
+      const rootRun = seedReviewableResult("t-r1").runId;
+      seedReviewableResult("t-r1-v2", { touches: ["src/auth.ts", "config/keys.json"] });
+      const brief = Number(store.handle.prepare("INSERT INTO artifact (run, kind, key, bytes_original, bytes_stored, sha256, capture, created_at) VALUES (?, 'revision-brief', 'brief-r1', 0, 0, ?, 'fixture', ?)")
+        .run(rootRun, "0".repeat(64), now.toISOString()).lastInsertRowid);
+      store.handle.prepare("UPDATE task_ref SET revision_of = 't-r1', revision_brief_artifact = ? WHERE backend = 'built-in' AND external_id = 't-r1-v2'").run(brief);
+      store.setApprovalRules(REPO, { notRequester: false, protectProject: false, protectedPaths: ["config/**"] }, "alex", now);
+      const before = assignmentOf(store, "t-r1", now, { principal: "operator", repos: [REPO] }, evidenceRoot)!;
+      expect(before.receipt?.taskId).toBe("t-r1-v2");
+      const { runId, digest: receiptDigest } = before.receipt!;
+      const hint = (await actions.approvalChallenge(principal, { verb: "accept", task: "t-r1", runId, receiptDigest })) as { freshApproved: boolean };
+      expect(hint.freshApproved).toBe(false);
+      await expect(actions.taskAccept(principal, { task: "t-r1", runId, receiptDigest, idempotencyKey: randomUUID(), useFreshSession: true }))
+        .rejects.toMatchObject({ code: "passkey_step_up_required" });
+      expect(store.handle.prepare("SELECT count(*) AS n FROM action_ledger WHERE action = ?").get(ACCEPT_PROVED_ACTION)).toEqual({ n: 0 });
+    });
+
+    test("R2: a window grant from a rolled-back Accept never opens after the same challenge is consumed for protected work", async () => {
+      const key = createSimulatedPasskey();
+      await enrollKey(key);
+      expect(addApprover(store, "sam", now, { name: "alex", token: alexToken }).ok).toBe(true);
+      const { runId, receiptDigest } = seedReviewableResult("t-r2");
+      const ch = (await actions.approvalChallenge(principal, { verb: "accept", task: "t-r2", runId, receiptDigest })) as { challenge: string };
+      const proof = { deviceId: principal.deviceId, challenge: ch.challenge, assertion: buildAssertionPayload(key, ch.challenge, userHandle()) };
+      const who = verifyApproverByPassword(store, "alex", alexToken, [REPO]);
+      if (!who.ok) throw new Error("alex sign-in failed");
+      // Routine at first: the consumption parks a window grant, then the completion is refused and all of it rolls back.
+      expect(acceptAndCompleteAsOperator(store, "t-r2", { runId, receiptDigest, note: null, passkey: proof }, who.who, now, evidenceRoot,
+        () => ({ ok: false, reason: "refused", message: "Not now." }))).toMatchObject({ ok: false, message: "Not now." });
+      expect(getPasskeyChallenge(store.handle, ch.challenge)?.consumedAt).toBeNull();
+      // Now the work is protected (separation of duties already met): the same challenge is consumed for it and commits.
+      const approvedDigest = store.getScope("t-r2")!.approvedDigest!;
+      for (const name of ["alex", "sam"]) store.handle.prepare("INSERT INTO scope_approval_vote (task_id, digest, approver, at, proof) VALUES (?, ?, ?, ?, 'password-now')").run("t-r2", approvedDigest, name, now.toISOString());
+      protectSrc();
+      expect(acceptAndCompleteAsOperator(store, "t-r2", { runId, receiptDigest, note: null, passkey: proof }, who.who, now, evidenceRoot)).toMatchObject({ ok: true });
+      expect(getPasskeyChallenge(store.handle, ch.challenge)?.consumedAt).not.toBeNull();
+      // The stale routine grant is gone: nothing opens.
+      expect(startPasskeyLease(store, { deviceId: principal.deviceId, accountName: "alex", challenge: ch.challenge })).toBeNull();
+      expect(activePasskeyLease(store, principal.deviceId, "alex", now)).toBeNull();
     });
 
     describe("passkey.unlock", () => {

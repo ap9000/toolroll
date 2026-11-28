@@ -539,7 +539,7 @@ export function createCompanionActions(deps: CompanionActionDeps): CompanionActi
         if (receiptDigest !== before.receipt.digest || (runId !== null && runId !== before.receipt.runId)) {
           throw new CompanionActionError("refused", "This result changed. Refresh before accepting.");
         }
-        windowCovers = acceptWindowCovers(store, taskId, before, publish, runtime.evidenceRoot);
+        windowCovers = acceptWindowCovers(store, before, publish, runtime.evidenceRoot);
         binding = acceptBindingOf({ taskId, runId, receiptDigest, note: params["note"], publish }, before.receipt.runId);
       } else if (verb === "land") {
         const taskId = requireString(params, "task");

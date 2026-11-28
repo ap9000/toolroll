@@ -226,6 +226,13 @@ export function consumePasskeyAction(
 ): PasskeyGateResult {
   if (!CHECKED.has(checked)) return { ok: false, code: "not_verified", message: "That passkey confirmation wasn't verified." };
   CHECKED.delete(checked);
+  // A challenge's window grant belongs to its latest consumption only. An earlier one may have rolled back with its
+  // domain transaction (the grant lives outside SQLite), so every attempt first drops whatever grant the challenge holds
+  // and only a routine one that consumes parks its own. Transactions are synchronous and one at a time, so the grant
+  // left when a consumption commits is that consumption's, or none: a rolled-back routine attempt followed by a
+  // committed non-routine one never opens the stale window.
+  const pending = registry(PENDING, store);
+  pending.delete(checked.challenge);
   const standing = standingProblem(store, { ...checked, repo: input.repo, ...(input.anyProject === true ? { anyProject: true as const } : {}) });
   if (!("account" in standing)) return { ok: false, ...standing };
   if (standing.account.generation !== checked.accountGeneration) {
@@ -245,7 +252,6 @@ export function consumePasskeyAction(
   }
   const provedAtMs = input.now.getTime();
   if (input.startsLease !== undefined && (checked.verb === "approve" || checked.verb === "accept" || checked.verb === "unlock")) {
-    const pending = registry(PENDING, store);
     for (const [k, one] of pending) if (provedAtMs - one.provedAtMs > PASSKEY_CHALLENGE_TTL_MS) pending.delete(k);
     pending.set(checked.challenge, {
       deviceId: checked.deviceId,

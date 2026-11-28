@@ -666,19 +666,24 @@ export const ACCEPT_PROVED_ACTION = "accept proved";
 
 /** ADR 0005: whether a phone's approvals window (or an Accept that opens one) may carry accepting this result as read:
  * not publishing, not an exception, no release terms, and no protected work — protection read from the project's rules,
- * the result's changed files (unreadable counts as protected) and the scope's declared paths, never from whether
- * separation of duties is already met. One rule for the challenge's hint and the domain gate. */
-export function acceptWindowCovers(store: Store, taskId: string, before: AssignmentSnapshot, publish: boolean, root: string): boolean {
+ * the result's changed files (unreadable counts as protected) and the declared paths of the receipt's own task and every
+ * task it revises (a missing scope or a broken ancestry counts as protected), never from whether separation of duties is
+ * already met, and never from the task id a caller named (a root resolves to its current revision). One rule for the
+ * challenge's hint and the domain gate. */
+export function acceptWindowCovers(store: Store, before: AssignmentSnapshot, publish: boolean, root: string): boolean {
   const receipt = before.receipt;
   const owed = before.state === "ready-to-check" ? owedAcceptance(receipt, before.readiness?.blockers ?? []) : null;
   if (publish || owed === "exception" || receipt === null || before.repo === null) return false;
-  const scope = store.getScope(taskId);
-  if (scope?.releaseTerms != null) return false;
+  const ancestry = store.revisionAncestryStatus(receipt.taskId);
+  if (ancestry.problem !== null || ancestry.chain.length === 0) return false;
+  const scopes = ancestry.chain.map(id => store.getScope(id));
+  if (scopes.some(scope => scope?.releaseTerms != null)) return false;
   const rules = store.approvalRules(before.repo);
   if (rules.protectProject) return false;
   if (rules.protectedPaths.length === 0) return true;
-  const changed = familyChangedFiles(store, taskId, receipt.runId, root);
-  return changed !== null && protectedChanges(rules, changed).length === 0 && scope !== null && !isProtectedWork(rules, [...scope.touches]);
+  if (scopes.some(scope => scope === null || isProtectedWork(rules, [...scope.touches]))) return false;
+  const changed = familyChangedFiles(store, receipt.taskId, receipt.runId, root);
+  return changed !== null && protectedChanges(rules, changed).length === 0;
 }
 
 export function acceptAndCompleteAsOperator(store: Store, taskId: string, input: { runId: number | null; receiptDigest: string; note: string | null; publish?: boolean; passkey?: PasskeyActionProof },
@@ -710,7 +715,7 @@ export function acceptAndCompleteAsOperator(store: Store, taskId: string, input:
       // savepoint, so proof, acceptance and completion commit or roll back together; every refusal after it is Undone.
       let passkeyProof: { outcome: "passkey" | "passkey-fresh"; detail: string } | null = null;
       if (input.passkey !== undefined) {
-        const routine = acceptWindowCovers(store, taskId, before, input.publish === true, root);
+        const routine = acceptWindowCovers(store, before, input.publish === true, root);
         const lease = usesPasskeyLease(input.passkey);
         if (lease && !routine) return { ok: false, reason: "step-up-required", message: "Confirm with your passkey to accept this result." };
         const verified = usesPasskeyLease(input.passkey)
