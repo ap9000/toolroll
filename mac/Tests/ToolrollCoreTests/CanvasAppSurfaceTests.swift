@@ -197,8 +197,8 @@ struct CanvasAppSurfaceTests {
         #expect(resolve("../etc", []) == nil)
     }
 
-    private func pin(kind: CanvasPinKind = .change, draft: Bool = true, app: Bool = false, author: String = "you") -> CanvasPin {
-        CanvasPin(id: "r-0123456789", artboardRoute: app ? "Work · needs you" : "/flows", artboardPath: app ? "app:ios/inbox" : "/flows",
+    private func pin(id: String = "r-0123456789", kind: CanvasPinKind = .change, draft: Bool = true, app: Bool = false, author: String = "you") -> CanvasPin {
+        CanvasPin(id: id, artboardRoute: app ? "Work · needs you" : "/flows", artboardPath: app ? "app:ios/inbox" : "/flows",
                   xFrac: 0.4, yFrac: 0.3, kind: kind, body: "Make the primary button calmer.", author: author,
                   elementName: app ? nil : "Button", elementFile: app ? "ios/ToolrollCompanion/WorkInboxView.swift" : "src/button.tsx",
                   elementLine: app ? nil : 12, isDraft: draft, createdAt: "2026-11-01T12:00:00Z",
@@ -399,5 +399,33 @@ struct CanvasAppSurfaceTests {
         try FileManager.default.createSymbolicLink(atPath: cache.appendingPathComponent("s-1").path, withDestinationPath: elsewhere)
         #expect(AppSurfaceStorage.latestCaptures(projectRoot: root, surface: "ios", stateKey: "s-1", home: home) == nil)
         #expect(AppSurfaceStorage.latestCaptures(projectRoot: root, surface: "ios", stateKey: "s-other", home: home) == nil)
+    }
+
+    @Test("A pin's id is a plain file name: a path in it is never written, and a loaded pin must match its file")
+    func pinIdsArePlainNames() throws {
+        #expect(CanvasPin.isPlainRequestId("r-0123456789"))
+        for bad in ["", "../escape", "a/b", ".hidden", "r-..", String(repeating: "a", count: 65), "r 1"] {
+            #expect(!CanvasPin.isPlainRequestId(bad))
+        }
+        let root = try tempDir("pin-id")
+        let evil = pin(id: "../../escaped", draft: false)
+        #expect(YouiCanvasStorage.writeYouiRequest(projectRoot: root, projectName: "p", pin: evil) == nil)
+        #expect(YouiCanvasStorage.savePinScreenshot(Data([0x89, 0x50]), projectRoot: root, pinId: "../shot") == nil)
+        #expect(!FileManager.default.fileExists(atPath: (root as NSString).appendingPathComponent("escaped.json")))
+
+        let dir = (root as NSString).appendingPathComponent(".youi/requests")
+        try write(#"{"id":"../../planted","body":"x"}"#, (dir as NSString).appendingPathComponent("r-aaaaaaaaaa.json"))
+        try write(#"{"id":"r-bbbbbbbbbb","body":"x"}"#, (dir as NSString).appendingPathComponent("r-cccccccccc.json"))
+        try write(#"{"id":"r-dddddddddd","body":"ok"}"#, (dir as NSString).appendingPathComponent("r-dddddddddd.json"))
+        #expect(YouiCanvasStorage.loadPins(projectRoot: root).map(\.id) == ["r-dddddddddd"])
+    }
+
+    @Test("A linked .youi/requests folder is never written through")
+    func linkedRequestsFolderRefused() throws {
+        let root = try tempDir("pin-link"), elsewhere = try tempDir("pin-elsewhere")
+        try FileManager.default.createDirectory(atPath: (root as NSString).appendingPathComponent(".youi"), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: (root as NSString).appendingPathComponent(".youi/requests"), withDestinationPath: elsewhere)
+        #expect(YouiCanvasStorage.writeYouiRequest(projectRoot: root, projectName: "p", pin: pin(draft: false)) == nil)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: elsewhere).isEmpty)
     }
 }
