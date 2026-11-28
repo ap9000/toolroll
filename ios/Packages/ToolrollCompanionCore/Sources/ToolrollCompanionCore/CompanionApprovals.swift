@@ -41,10 +41,20 @@ public enum ApprovalResult: Equatable, Sendable {
 /// The companion contract (`docs/plans/central-workspace-tui-contract.md`): an unconfirmed response keeps its request
 /// key, so the retry is the same request and the Mac replays what happened instead of acting twice. A key is dropped on
 /// success and on a definite refusal; it is kept when the outcome is unknown to the phone (the socket closed, the call
-/// timed out, the Mac says it is still running it).
+/// timed out, the Mac says it is still running it). With the key the ledger keeps what was sent under it (the challenge
+/// and the assertion): the retry re-sends exactly that before anything else, because a committed action can change what
+/// a new challenge is checked against (an Accept replaces the receipt) and the new challenge would then be refused.
 @MainActor
 public final class ApprovalKeyLedger {
+    /// What one key carried to the Mac: re-sent as is on a retry.
+    public struct Submission: Equatable, Sendable {
+        public let key: String
+        public let challenge: String
+        public let assertion: WebAuthnAssertion?
+    }
+
     private var keys: [ApprovalIntent: String] = [:]
+    private var submissions: [ApprovalIntent: Submission] = [:]
     private let mint: () -> String
 
     public init(mint: @escaping () -> String = { UUID().uuidString.lowercased() }) {
@@ -63,13 +73,26 @@ public final class ApprovalKeyLedger {
     public func rotate(for intent: ApprovalIntent) -> String {
         let key = mint()
         keys[intent] = key
+        submissions[intent] = nil
         return key
     }
 
-    /// The attempt ended: forget the key unless the outcome is unknown.
+    /// Records what is about to be sent under the intent's key.
+    func record(_ intent: ApprovalIntent, key: String, challenge: String, assertion: WebAuthnAssertion?) {
+        submissions[intent] = Submission(key: key, challenge: challenge, assertion: assertion)
+    }
+
+    /// The submission an unconfirmed attempt sent, if the intent still has its key.
+    public func pendingSubmission(for intent: ApprovalIntent) -> Submission? {
+        guard let kept = submissions[intent], kept.key == keys[intent] else { return nil }
+        return kept
+    }
+
+    /// The attempt ended: forget the key (and what it sent) unless the outcome is unknown.
     public func settle(_ intent: ApprovalIntent, error: Error?) {
         if let error, Self.outcomeUnknownToPhone(error) { return }
         keys[intent] = nil
+        submissions[intent] = nil
     }
 
     public func pendingKey(for intent: ApprovalIntent) -> String? { keys[intent] }
@@ -98,6 +121,10 @@ public enum ApprovalRunner {
     /// `alwaysAsk`: this iPhone's "Always ask" setting. The phone then asks the Mac for a live challenge
     /// (`forceFresh: true`) and never uses the unlocked window: it can only tighten what the Mac allows.
     /// `confirm` runs the passkey ceremony for a challenge (and shows its wording).
+    ///
+    /// A retry of an unconfirmed attempt first re-sends that attempt's submission under its key: the Mac replays the
+    /// outcome if it got it. The Mac can't say it never saw a key; it runs the request instead, and the old challenge
+    /// then comes back refused (expired or unknown). Only that starts a new ceremony, under a new key (Codex final-3 #6).
     @MainActor
     public static func run(
         _ intent: ApprovalIntent,
@@ -106,21 +133,50 @@ public enum ApprovalRunner {
         alwaysAsk: Bool,
         confirm: (ApprovalChallengeResponse) async throws -> WebAuthnAssertion
     ) async throws -> ApprovalResult {
+        // "Always ask" turned on since: a submission that used the window isn't sent again (the phone only tightens).
+        if let kept = keys.pendingSubmission(for: intent), !(alwaysAsk && kept.assertion == nil) {
+            do {
+                return try await submit(intent, source: source, key: kept.key, challenge: kept.challenge, assertion: kept.assertion)
+            } catch let rpc as CompanionRPCError where startsOver(rpc, verb: intent.verb) {
+                _ = keys.rotate(for: intent)
+            }
+        }
         let challenge = try await requestChallenge(intent, source: source, forceFresh: alwaysAsk ? true : nil)
         if challenge.freshApproved == true, !alwaysAsk {
             do {
-                return try await submit(intent, source: source, key: keys.key(for: intent), challenge: "", assertion: nil)
+                return try await send(intent, source: source, keys: keys, key: keys.key(for: intent), challenge: "", assertion: nil)
             } catch let rpc as CompanionRPCError where rpc.code == ApprovalCopy.stepUpRequired {
                 // The window ran out (or this action always asks): step up once with a live passkey. This MUST use a new
                 // key: the Mac settled the first one with the step-up refusal, and re-sending it would replay that.
                 let key = keys.rotate(for: intent)
                 let live = try await requestChallenge(intent, source: source, forceFresh: true)
                 let assertion = try await confirm(live)
-                return try await submit(intent, source: source, key: key, challenge: live.challenge, assertion: assertion)
+                return try await send(intent, source: source, keys: keys, key: key, challenge: live.challenge, assertion: assertion)
             }
         }
         let assertion = try await confirm(challenge)
-        return try await submit(intent, source: source, key: keys.key(for: intent), challenge: challenge.challenge, assertion: assertion)
+        return try await send(intent, source: source, keys: keys, key: keys.key(for: intent), challenge: challenge.challenge, assertion: assertion)
+    }
+
+    /// A re-sent submission came back with a definite refusal of its proof (the challenge expired or was used, or the
+    /// window it relied on closed): nothing was done, so a new ceremony may start. A stale plan or result is reported
+    /// as is (a new challenge would be refused the same way), and so is every other answer.
+    static func startsOver(_ rpc: CompanionRPCError, verb: PasskeyApprovalVerb) -> Bool {
+        switch rpc.code {
+        case ApprovalCopy.stepUpRequired, ApprovalCopy.passkeyFailed: return true
+        case ApprovalCopy.refused: return ApprovalCopy.failure(code: rpc.code, message: rpc.message, verb: verb).kind != .changed
+        default: return false
+        }
+    }
+
+    /// Keeps what is sent under `key`, then sends it.
+    @MainActor
+    static func send(
+        _ intent: ApprovalIntent, source: any CompanionDataSource, keys: ApprovalKeyLedger, key: String, challenge: String,
+        assertion: WebAuthnAssertion?
+    ) async throws -> ApprovalResult {
+        keys.record(intent, key: key, challenge: challenge, assertion: assertion)
+        return try await submit(intent, source: source, key: key, challenge: challenge, assertion: assertion)
     }
 
     static func requestChallenge(_ intent: ApprovalIntent, source: any CompanionDataSource, forceFresh: Bool?) async throws -> ApprovalChallengeResponse {

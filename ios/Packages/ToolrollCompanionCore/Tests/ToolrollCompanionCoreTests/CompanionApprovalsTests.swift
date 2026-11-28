@@ -14,40 +14,54 @@ private final class ScriptedApprovals: CompanionDataSource, @unchecked Sendable 
 
     private let lock = NSLock()
     private var _sent: [Sent] = []
+    private var _submittedChallenges: [String] = []
     private var submits: [Result<Void, Error>]
+    private var challenges: [Result<Void, Error>]
+    private var minted = 0
     private let freshApproved: Bool
 
-    init(freshApproved: Bool = false, submits: [Result<Void, Error>]) {
+    init(freshApproved: Bool = false, challenges: [Result<Void, Error>] = [], submits: [Result<Void, Error>]) {
         self.freshApproved = freshApproved
+        self.challenges = challenges
         self.submits = submits
     }
 
     var sent: [Sent] { lock.withLock { _sent } }
+    /// The challenge each task.approve / task.accept carried, in order.
+    var submittedChallenges: [String] { lock.withLock { _submittedChallenges } }
 
     private func record(_ s: Sent) { lock.withLock { _sent.append(s) } }
-    private func nextSubmit() throws {
-        let next: Result<Void, Error> = lock.withLock { submits.isEmpty ? .success(()) : submits.removeFirst() }
+    private func nextSubmit(challenge: String) throws {
+        let next: Result<Void, Error> = lock.withLock {
+            _submittedChallenges.append(challenge)
+            return submits.isEmpty ? .success(()) : submits.removeFirst()
+        }
         try next.get()
     }
 
     func approvalChallenge(verb: PasskeyApprovalVerb, task: String, digest: String?, runId: Int?, receiptDigest: String?, note: String?, publish: Bool?, forceFresh: Bool?) async throws -> ApprovalChallengeResponse {
         record(Sent(method: "approval.challenge", key: nil, fresh: nil, forceFresh: forceFresh, hasAssertion: false))
+        let (next, n): (Result<Void, Error>, Int) = lock.withLock {
+            minted += 1
+            return (challenges.isEmpty ? .success(()) : challenges.removeFirst(), minted)
+        }
+        try next.get()
         let fresh = freshApproved && forceFresh != true
         return ApprovalChallengeResponse(
-            challenge: fresh ? "" : "Y2hhbGxlbmdl", rpId: "toolroll.dev", allowCredentials: [], userVerification: "required",
+            challenge: fresh ? "" : "challenge-\(n)", rpId: "toolroll.dev", allowCredentials: [], userVerification: "required",
             verb: verb.rawValue, wording: "Approve task \(task) plan", expiresAt: "2026-11-27T10:00:00Z", freshApproved: fresh
         )
     }
 
     func approveTask(task: String, digest: String, challenge: String, idempotencyKey: String, assertion: WebAuthnAssertion?, useFreshSession: Bool) async throws -> TaskApproveResponse {
         record(Sent(method: "task.approve", key: idempotencyKey, fresh: useFreshSession, forceFresh: nil, hasAssertion: assertion != nil))
-        try nextSubmit()
+        try nextSubmit(challenge: challenge)
         return TaskApproveResponse(ok: true, approved: true, task: task, digest: digest)
     }
 
     func acceptTask(task: String, runId: Int?, receiptDigest: String, note: String?, publish: Bool, challenge: String, idempotencyKey: String, assertion: WebAuthnAssertion?, useFreshSession: Bool) async throws -> TaskAcceptResponse {
         record(Sent(method: "task.accept", key: idempotencyKey, fresh: useFreshSession, forceFresh: nil, hasAssertion: assertion != nil))
-        try nextSubmit()
+        try nextSubmit(challenge: challenge)
         return TaskAcceptResponse(ok: true, accepted: true, published: publish)
     }
 
@@ -113,6 +127,68 @@ func refusalDropsKey() async {
     for _ in 0..<4 { _ = await attempt(source, keys) }
     let approveKeys = source.sent.filter { $0.method == "task.approve" }.map(\.key)
     #expect(approveKeys == ["key-1", "key-1", "key-1", "key-2"])
+    // The retries re-send the kept submission; only the first attempt and the one after the refusal ask for a challenge.
+    #expect(source.sent.filter { $0.method == "approval.challenge" }.count == 2)
+}
+
+@Test("a committed accept whose answer was lost: the retry re-sends the original submission and gets the Mac's replay")
+@MainActor
+func lostAnswerReplaysOriginalSubmission() async {
+    let keys = counterLedger()
+    let accept = ApprovalIntent.accept(task: "t-1", runId: 7, receiptDigest: "r-1", note: "Known flake", publish: false)
+    // The accept committed and changed the receipt: a new challenge for the old receipt is refused.
+    let source = ScriptedApprovals(
+        challenges: [.success(()), .failure(CompanionRPCError(code: "refused", message: "This result changed. Open the current result before accepting it."))],
+        submits: [.failure(CompanionConnectionError.closed), .success(())]
+    )
+    var prompted = 0
+    func run() async -> Error? {
+        do {
+            _ = try await ApprovalRunner.run(accept, source: source, keys: keys, alwaysAsk: false) { _ in prompted += 1; return assertion }
+            keys.settle(accept, error: nil)
+            return nil
+        } catch {
+            keys.settle(accept, error: error)
+            return error
+        }
+    }
+    #expect(await run() is CompanionConnectionError)
+    #expect(await run() == nil)
+    #expect(prompted == 1)
+    #expect(source.sent.map(\.method) == ["approval.challenge", "task.accept", "task.accept"])
+    #expect(source.sent.filter { $0.method == "task.accept" }.map(\.key) == ["key-1", "key-1"])
+    #expect(source.sent.last?.hasAssertion == true)
+    #expect(source.submittedChallenges == ["challenge-1", "challenge-1"])
+    #expect(keys.pendingKey(for: accept) == nil)
+}
+
+@Test("a kept submission the Mac never ran, whose challenge expired: one new passkey ceremony with a new key")
+@MainActor
+func expiredReplayStartsOneNewCeremony() async {
+    let keys = counterLedger()
+    let source = ScriptedApprovals(submits: [
+        .failure(CompanionConnectionError.closed),
+        .failure(CompanionRPCError(code: "refused", message: "That approval challenge expired. Try again.")),
+        .success(()),
+    ])
+    #expect(await attempt(source, keys) is CompanionConnectionError)
+    #expect(await attempt(source, keys) == nil)
+    #expect(source.sent.map(\.method) == ["approval.challenge", "task.approve", "task.approve", "approval.challenge", "task.approve"])
+    #expect(source.sent.filter { $0.method == "task.approve" }.map(\.key) == ["key-1", "key-1", "key-2"])
+    #expect(source.submittedChallenges == ["challenge-1", "challenge-1", "challenge-2"])
+}
+
+@Test("Always ask turned on since: a kept window submission isn't re-sent; the retry asks for a live passkey")
+@MainActor
+func alwaysAskSkipsWindowReplay() async {
+    let keys = counterLedger()
+    let source = ScriptedApprovals(freshApproved: true, submits: [.failure(CompanionConnectionError.closed), .success(())])
+    #expect(await attempt(source, keys, alwaysAsk: false) is CompanionConnectionError)
+    #expect(await attempt(source, keys, alwaysAsk: true) == nil)
+    let sent = source.sent
+    #expect(sent.map(\.method) == ["approval.challenge", "task.approve", "approval.challenge", "task.approve"])
+    #expect(sent[2].forceFresh == true)
+    #expect(sent[3].hasAssertion && sent[3].fresh == false)
 }
 
 @Test("a changed intent (new digest) gets its own key")

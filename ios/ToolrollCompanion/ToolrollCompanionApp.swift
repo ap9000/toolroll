@@ -70,7 +70,9 @@ private struct UnlockCover: View {
                     .font(.system(size: 26, weight: .semibold))
                     .tracking(-0.5)
                     .foregroundStyle(ToolrollTheme.ink)
-                Text("Unlock to see your work. Routine approvals stay unlocked for a while after.")
+                // Viewing only is a possible outcome (offline, Always ask, the Mac asks every time): promise nothing about
+                // approvals here. What approvals do shows after the unlock, where they are.
+                Text("Unlock to see your work.")
                     .font(.subheadline)
                     .foregroundStyle(ToolrollTheme.muted)
                     .multilineTextAlignment(.center)
@@ -97,7 +99,7 @@ private struct UnlockCover: View {
                 }
                 .buttonStyle(SignalButtonStyle())
                 .disabled(appState.lockState == .unlocking)
-                Text("\(appState.workspaceLabel) · One passkey unlocks your work and routine approvals")
+                Text(appState.workspaceLabel)
                     .font(.system(size: 12.5))
                     .foregroundStyle(ToolrollTheme.muted)
                     .multilineTextAlignment(.center)
