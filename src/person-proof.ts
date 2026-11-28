@@ -16,6 +16,12 @@ const METHOD_IS_PERSON: Record<AuthMethod, boolean> = {
 /** Proofs that aren't credential methods: the paired-chat tap, the phone plan's passkey ceremony, and its bounded fresh session window. */
 const OTHER_PERSON_PROOFS: ReadonlySet<string> = new Set(["chat", "passkey", "passkey-fresh"]);
 
+/** Every proof that is a person's, in one list: the SQL dispatch predicate (approval-authority.ts) reads this same list. */
+export const PERSON_PROOFS: readonly string[] = Object.freeze([
+  ...Object.entries(METHOD_IS_PERSON).filter(([, person]) => person).map(([method]) => method),
+  ...OTHER_PERSON_PROOFS,
+]);
+
 /** Whether a recorded proof is a person's. A runtime string: a missing, corrupt or future value is never a person. */
 export function personProof(proof: string | null | undefined): boolean {
   if (typeof proof !== "string") return false;
