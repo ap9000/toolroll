@@ -176,7 +176,7 @@ describe.skipIf(!REAL_MAC)("deploy check on this Mac (sandbox-exec)", () => {
     writeFileSync(join(copyDir, "telegram-token"), "123456:ABCDEF\n", { mode: 0o600 });
     const said: string[] = [];
     const outcome = await rehearse({ checkout, copy }, { say: line => said.push(line) });
-    expect(outcome, said.join("\n")).toMatchObject({ ok: true });
+    expect(outcome, [JSON.stringify(outcome), ...said].join("\n")).toMatchObject({ ok: true });
     expect(said.some(line => /still running/.test(line))).toBe(false);
     // The copy and the throwaway computer are gone; no console of it is left running.
     expect(existsSync(copy)).toBe(false);
