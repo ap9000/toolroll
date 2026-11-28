@@ -31,7 +31,22 @@ Apple's Associated Domain (`webcredentials:toolroll.dev`) only permits the iOS a
 - **Assertion:**
   - Server MUST send `allowCredentials` listing only the active `credentialId`(s) registered for `(workspaceId, accountName)` on this Mac (preventing ambiguity when a user pairs multiple Macs under `toolroll.dev`).
   - Verification: `clientDataJSON.type === "webauthn.get"`, `clientDataJSON.challenge === base64url(SHA-256(canonicalActionChallenge))`, `clientDataJSON.origin === "https://toolroll.dev"`, `authData.rpIdHash === SHA-256("toolroll.dev")`, flags **`UP=1` AND `UV=1`**, `response.userHandle` matches the stored `userHandle` for `(workspaceId, accountName)` (required for our resident credentials), valid ECDSA-SHA256 signature over `authData || SHA-256(clientDataJSON)`, and `signCount` policy: accept `0 → 0` (standard for Apple synced passkeys), otherwise require strictly increasing `newSignCount > storedSignCount` and persist the new count.
-- **Honest wording & threat limits:** iOS passkeys sync via iCloud Keychain and carry `attestation: "none"`, so `UV=1` proves only that **a passkey registered to this account reported user verification** — NOT that the key is non-exportable hardware on one specific phone, and NOT that biometrics were used (iOS `UV=1` also accepts the device passcode, so someone who observed the passcode can satisfy `UV=1`). Proof rows record the passkey credential and the transport `pairedDeviceId` separately: `{ v: 1, at, generation, digest, verb, credentialId, pairedDeviceId, uv: true, be, bs }`, and audit wording states *"Passkey user verification via paired device `<deviceId>`"*, never *"Face ID"* or *"hardware-proven phone"*.
+- **Honest wording & threat limits:** iOS passkeys sync via iCloud Keychain and carry `attestation: "none"`, so `UV=1` proves only that **a passkey registered to this account reported user verification** — NOT that the key is non-exportable hardware on one specific phone, and NOT that biometrics were used (iOS `UV=1` also accepts the device passcode, so someone who observed the passcode can satisfy `UV=1`). Proof rows record the passkey credential and the transport `pairedDeviceId` separately: `{ v: 1, at, generation, digest, verb, cred, deviceId, uv: true, be, bs }`, and audit wording states *"Passkey user verification"*, never *"Face ID"* or *"hardware-proven phone"*.
+
+## Tiered Passkey Freshness Window (Mirroring Mac `FRESH_WINDOW_MS`)
+
+To avoid prompting Face ID / Passkey repeatedly when triaging routine work while keeping high-impact acts strictly per-ceremony, a Workspace configures a fixed **Approval prompt window** in Mac `Settings → Phone` (`Every time [0]` · `15 minutes [15, default]` · `1 hour [60]`):
+
+- **Eligible inside the window (`outcome: "passkey-fresh"`):**
+  - Routine **`Approve`** that satisfies `scope.ts:freshlyApprovable` (single approver, standard permissions, non-protected, non-release, not quarantined).
+  - Clean **`Accept`** with no exception owed (`owedAcceptance !== "exception"`), non-protected result, and `publish === false`.
+- **Never cached (always requires a live WebAuthn assertion right now):**
+  - **`Ship`** (merge PR) and **`Land`** (mutate local branch) — compile-time and runtime restricted to live assertions only.
+  - Protected scopes, escalated terms, release scopes, quarantined filings, second-approver votes, exception accepts, and `Accept + Open PR`.
+- **In-memory session binding & immediate invalidation:**
+  - The freshness lease lives **in memory only on the Mac daemon**, bound to `(deviceId, accountName, credentialId, accountGeneration, recoveryGeneration)` for a fixed span (never extended by use).
+  - Immediately cleared on `passkey.lock` (*Lock approvals now* in iOS Settings), passkey revocation, tightening/disabling the window on Mac, device unpair, password change, backup restore, or daemon restart.
+  - Audit rows honestly record `outcome: "passkey-fresh"` with `provedAt` (the original Passkey assertion timestamp) and `"summary": "Passkey session window"`.
 
 ## Considered Options
 

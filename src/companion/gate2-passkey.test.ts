@@ -28,7 +28,7 @@ import { APPROVAL_PROOF, addApprover, approvalOf, approve, personApprovalOf, pro
 import { createCompanionActions, CompanionActionError, type CompanionActionHandlers } from "./actions.js";
 import type { CompanionReadRuntime } from "./reads.js";
 import type { PairedDevicePrincipal } from "./daemon.js";
-import { setPasskeyRequiredForApprovals } from "./passkey-gate.js";
+import { setPasskeyApprovalWindowMinutes, setPasskeyRequiredForApprovals } from "./passkey-gate.js";
 import {
   activatePendingDevice,
   claimDeviceIdempotency,
@@ -319,8 +319,8 @@ describe("Gate 2: WebAuthn verifier, Passkey enrollment, per-verb transactions, 
       const key = createSimulatedPasskey();
       await enrollKey(key);
 
-      const status = (await actions.passkeyStatus(principal)) as { registered: boolean; count: number; enrollmentOpen: boolean; rpId: string };
-      expect(status).toEqual({ registered: true, count: 1, enrollmentOpen: false, rpId: PASSKEY_RP_ID });
+      const status = (await actions.passkeyStatus(principal)) as { registered: boolean; count: number; enrollmentOpen: boolean; rpId: string; windowMinutes: number; freshUntil: string | null };
+      expect(status).toEqual({ registered: true, count: 1, enrollmentOpen: false, rpId: PASSKEY_RP_ID, windowMinutes: 15, freshUntil: null });
 
       // Duplicate credentialId must be rejected even with a brand-new enrollment window.
       actions.openEnrollmentWindow("alex", principal.deviceId);
@@ -524,7 +524,7 @@ describe("Gate 2: WebAuthn verifier, Passkey enrollment, per-verb transactions, 
 
       // Cross-verb replay: an `approve` challenge cannot be submitted to `task.accept`.
       const { runId, receiptDigest } = seedReviewableResult("t-cross-verb");
-      const approveCh = (await actions.approvalChallenge(principal, { verb: "approve", task: "t-approve-2", digest: digest2 })) as { challenge: string };
+      const approveCh = (await actions.approvalChallenge(principal, { verb: "approve", task: "t-approve-2", digest: digest2, forceFresh: true })) as { challenge: string };
       await expect(actions.taskAccept(principal, {
         task: "t-cross-verb",
         runId,
@@ -871,6 +871,149 @@ describe("Gate 2: WebAuthn verifier, Passkey enrollment, per-verb transactions, 
         store.handle.prepare("SELECT count(*) AS n FROM device_idempotency WHERE device_id = ?").get(principal.deviceId)?.["n"],
       );
       expect(count).toBe(1_000);
+    });
+  });
+
+  describe("Tiered Passkey approval freshness window (Every time / 15 min / 1 hour)", () => {
+    test("caches routine approve and clean accept inside the fixed window, records honest passkey-fresh proof, and enforces step-up for high-impact acts & revocation", async () => {
+      const key = createSimulatedPasskey();
+      await enrollKey(key);
+      const userHandle = derivePasskeyUserHandle(store.workspaceIdentity().id, "alex");
+
+      // 1. First approval requires a live Passkey assertion and starts the 15-min window.
+      const { digest: d1 } = createTaskWithScope("t-win-1");
+      const ch1 = (await actions.approvalChallenge(principal, { verb: "approve", task: "t-win-1", digest: d1 })) as {
+        challenge: string;
+        freshApproved: boolean;
+      };
+      expect(ch1.freshApproved).toBe(false);
+      const r1 = (await actions.taskApprove(principal, {
+        task: "t-win-1",
+        digest: d1,
+        challenge: ch1.challenge,
+        idempotencyKey: randomUUID(),
+        assertion: buildAssertionPayload(key, ch1.challenge, userHandle),
+      })) as { ok: boolean; approved: boolean; freshUntil: string | null };
+      expect(r1.approved).toBe(true);
+      expect(r1.freshUntil).toBe(new Date(T0.getTime() + 15 * 60_000).toISOString());
+
+      // 2. Routine second approve 5 minutes later uses fresh session without WebAuthn prompt.
+      now = new Date(T0.getTime() + 5 * 60_000);
+      const { digest: d2 } = createTaskWithScope("t-win-2");
+      const ch2 = (await actions.approvalChallenge(principal, { verb: "approve", task: "t-win-2", digest: d2 })) as {
+        freshApproved: boolean;
+        freshUntil: string | null;
+      };
+      expect(ch2.freshApproved).toBe(true);
+      const r2 = (await actions.taskApprove(principal, {
+        task: "t-win-2",
+        digest: d2,
+        idempotencyKey: randomUUID(),
+        useFreshSession: true,
+      })) as { ok: boolean; approved: boolean };
+      expect(r2.approved).toBe(true);
+      expect(personApprovalOf(store, "t-win-2")).toMatchObject({ ok: true, by: "alex", method: "passkey-fresh" });
+      const freshProof = store.handle
+        .prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = ? ORDER BY id DESC LIMIT 1")
+        .get("t-win-2", APPROVAL_PROOF) as { outcome: string; detail: string };
+      expect(freshProof.outcome).toBe("passkey-fresh");
+      const freshDetail = JSON.parse(freshProof.detail) as { summary: string; provedAt: string };
+      expect(freshDetail.summary).toBe("Passkey session window");
+      expect(freshDetail.provedAt).toBe(T0.toISOString());
+
+      // 3. Clean accept (publish: false) works under fresh session; publish: true refuses fresh session!
+      const { runId: accRunId, receiptDigest: accDigest } = seedReviewableResult("t-win-accept");
+      const pubCh = (await actions.approvalChallenge(principal, {
+        verb: "accept",
+        task: "t-win-accept",
+        runId: accRunId,
+        receiptDigest: accDigest,
+        publish: true,
+      })) as { freshApproved: boolean };
+      expect(pubCh.freshApproved).toBe(false);
+      await expect(actions.taskAccept(principal, {
+        task: "t-win-accept",
+        runId: accRunId,
+        receiptDigest: accDigest,
+        publish: true,
+        idempotencyKey: randomUUID(),
+        useFreshSession: true,
+      })).rejects.toMatchObject({ code: "passkey_step_up_required" });
+
+      const cleanCh = (await actions.approvalChallenge(principal, {
+        verb: "accept",
+        task: "t-win-accept",
+        runId: accRunId,
+        receiptDigest: accDigest,
+        publish: false,
+      })) as { freshApproved: boolean };
+      expect(cleanCh.freshApproved).toBe(true);
+      const accRes = (await actions.taskAccept(principal, {
+        task: "t-win-accept",
+        runId: accRunId,
+        receiptDigest: accDigest,
+        publish: false,
+        idempotencyKey: randomUUID(),
+        useFreshSession: true,
+      })) as { ok: boolean; accepted: boolean };
+      expect(accRes.accepted).toBe(true);
+      const accProof = store.handle
+        .prepare("SELECT outcome FROM action_ledger WHERE task_id = ? AND action = ? ORDER BY id DESC LIMIT 1")
+        .get("t-win-accept", ACCEPT_PROVED_ACTION) as { outcome: string };
+      expect(accProof.outcome).toBe("passkey-fresh");
+
+      // 4. Land NEVER uses the fresh session window even while unlocked.
+      const landCh = (await actions.approvalChallenge(principal, { verb: "land", task: "t-win-accept" })) as { freshApproved: boolean };
+      expect(landCh.freshApproved).toBe(false);
+
+      // 5. Window is FIXED (never extended by use): advancing past T0 + 15 min expires it.
+      now = new Date(T0.getTime() + 16 * 60_000);
+      const { digest: d3 } = createTaskWithScope("t-win-3");
+      const ch3 = (await actions.approvalChallenge(principal, { verb: "approve", task: "t-win-3", digest: d3 })) as { freshApproved: boolean };
+      expect(ch3.freshApproved).toBe(false);
+      await expect(actions.taskApprove(principal, {
+        task: "t-win-3",
+        digest: d3,
+        idempotencyKey: randomUUID(),
+        useFreshSession: true,
+      })).rejects.toMatchObject({ code: "passkey_step_up_required" });
+
+      // 6. 1-hour window works, and `passkey.lock` or switching to `0` (Every time) immediately locks it.
+      setPasskeyApprovalWindowMinutes(store, 60);
+      const ch3Live = (await actions.approvalChallenge(principal, { verb: "approve", task: "t-win-3", digest: d3 })) as { challenge: string };
+      await actions.taskApprove(principal, {
+        task: "t-win-3",
+        digest: d3,
+        challenge: ch3Live.challenge,
+        idempotencyKey: randomUUID(),
+        assertion: buildAssertionPayload(key, ch3Live.challenge, userHandle),
+      });
+      now = new Date(now.getTime() + 45 * 60_000); // 45 min into 60-min window -> still unlocked!
+      const status60 = (await actions.passkeyStatus(principal)) as { windowMinutes: number; freshUntil: string | null };
+      expect(status60.windowMinutes).toBe(60);
+      expect(status60.freshUntil).not.toBeNull();
+
+      // Explicit lock from iPhone immediately invalidates the active window.
+      await actions.passkeyLock(principal);
+      const { digest: d4 } = createTaskWithScope("t-win-4");
+      await expect(actions.taskApprove(principal, {
+        task: "t-win-4",
+        digest: d4,
+        idempotencyKey: randomUUID(),
+        useFreshSession: true,
+      })).rejects.toMatchObject({ code: "passkey_step_up_required" });
+
+      // Switching Mac setting to 0 ("Every time") prevents any fresh session from being created.
+      setPasskeyApprovalWindowMinutes(store, 0);
+      const ch4 = (await actions.approvalChallenge(principal, { verb: "approve", task: "t-win-4", digest: d4 })) as { challenge: string };
+      const r4 = (await actions.taskApprove(principal, {
+        task: "t-win-4",
+        digest: d4,
+        challenge: ch4.challenge,
+        idempotencyKey: randomUUID(),
+        assertion: buildAssertionPayload(key, ch4.challenge, userHandle),
+      })) as { freshUntil: string | null };
+      expect(r4.freshUntil).toBeNull();
     });
   });
 });

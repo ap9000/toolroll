@@ -168,6 +168,37 @@ export function passkeyProofDetail(input: {
   });
 }
 
+/**
+ * Structured ADR 0005 honest proof detail JSON for an act authorized under a bounded in-memory Passkey session
+ * window (`outcome: "passkey-fresh"`). Records the original Passkey assertion timestamp (`provedAt`) honestly.
+ */
+export function passkeyFreshProofDetail(input: {
+  at: Date;
+  provedAtMs: number;
+  generation: number;
+  digest: string;
+  verb: "approve" | "accept";
+  credentialId: string;
+  pairedDeviceId: string;
+  be: boolean;
+  bs: boolean;
+}): string {
+  return JSON.stringify({
+    v: 1,
+    at: input.at.toISOString(),
+    provedAt: new Date(input.provedAtMs).toISOString(),
+    generation: input.generation,
+    digest: input.digest,
+    verb: input.verb,
+    cred: sha256(input.credentialId).toString("hex").slice(0, 12),
+    dev: input.pairedDeviceId.slice(0, 24),
+    uv: true,
+    be: input.be,
+    bs: input.bs,
+    summary: "Passkey session window",
+  });
+}
+
 function constantTimeStringEqual(a: string, b: string): boolean {
   const ba = Buffer.from(a, "utf8");
   const bb = Buffer.from(b, "utf8");

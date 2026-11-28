@@ -55,6 +55,9 @@ vi.mock("./phone-engine-api.js", () => ({
   isPasskeyEnrollmentOpen: () => false,
   openPasskeyEnrollment: () => ({ expiresAtMs: Date.now() + 300_000 }),
   revokePasskey: () => false,
+  passkeyWindowMinutes: () => 15,
+  updatePasskeyWindowMinutes: () => {},
+  parsePasskeyWindowMinutes: (raw: unknown) => (raw === "0" || raw === 0 ? 0 : raw === "15" || raw === 15 ? 15 : raw === "60" || raw === 60 ? 60 : null),
 }));
 
 let dir: string, store: Store, password = "", nopassPassword = "";

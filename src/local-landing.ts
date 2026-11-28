@@ -54,7 +54,7 @@ import { localActNow, LOCAL_OWNER_LAPSED } from "./local-owner.js";
 import { publishingOf } from "./pull-request-flow.js";
 import { readGit, wholeChangeBaseOf } from "./task-base.js";
 import { catchUpConflictOf } from "./revision-catch-up.js";
-import { verifyPasskeyAction, type PasskeyActionProof } from "./companion/passkey-gate.js";
+import { verifyPasskeyAction, type PasskeyAssertionProof } from "./companion/passkey-gate.js";
 import { passkeyProofDetail } from "./companion/webauthn.js";
 import { deviceAccountStands, getPairedDevice } from "./companion/store.js";
 
@@ -71,7 +71,7 @@ export const LAND_HANDOFF_SETTLED = "land handoff settled";
  * (ADR 0005), or this computer's local owner acting as exactly `land-task` (the same authority as Accept on a solo install). */
 export type LandAuthority =
   | { kind: "person"; who: VerifiedApprover }
-  | { kind: "passkey"; who: VerifiedApprover; proof: PasskeyActionProof }
+  | { kind: "passkey"; who: VerifiedApprover; proof: PasskeyAssertionProof }
   | { kind: "local" };
 
 export type LandingPlan = {

@@ -22,8 +22,8 @@ import { parseLeadToken } from "./api-tokens.js";
 import { isAcpProfile, isAcpProvider, type AcpProviderId } from "./acp-agents.js";
 import { levelOfProfile } from "./policy.js";
 import { canonicalJson } from "./canonical-json.js";
-import { passkeyRequiredForApprovals, verifyPasskeyAction, type PasskeyActionProof, type PasskeyGateResult } from "./companion/passkey-gate.js";
-import { passkeyProofDetail } from "./companion/webauthn.js";
+import { isPasskeyFreshProof, passkeyRequiredForApprovals, verifyPasskeyAction, verifyPasskeyFreshLease, type PasskeyActionProof, type PasskeyGateResult } from "./companion/passkey-gate.js";
+import { passkeyFreshProofDetail, passkeyProofDetail } from "./companion/webauthn.js";
 export { isAcpProfile };
 /**
  * What a task is allowed to become, agreed before anything builds it.
@@ -1585,24 +1585,41 @@ export function approve(
     if ((chat !== undefined || passkey !== undefined) && machineActing()) return { ok: false as const, reason: "machine-proof" as const };
     if (chat !== undefined && (account === null || account.revokedAt !== null || account.role !== "approver" || repoNow === null || !store.accountCanAccess(by, repoNow))) return { ok: false as const, reason: "not-an-approver" as const };
     let passkeyVerified: Extract<PasskeyGateResult, { ok: true }> | null = null;
-    let authenticated: { ok: true; method: AuthMethod | "chat" | "passkey"; at: number } | { ok: false; reason: "no-approvers" | "not-an-approver" };
+    let authenticated: { ok: true; method: AuthMethod | "chat" | "passkey" | "passkey-fresh"; at: number } | { ok: false; reason: "no-approvers" | "not-an-approver" };
     if (passkey !== undefined) {
-      const checked = verifyPasskeyAction(store, {
-        accountName: by,
-        repo: repoNow,
-        verb: "approve",
-        expectedBinding: { verb: "approve", taskId, sawDigest },
-        proof: passkey,
-        now,
-        consume: false,
-      });
-      if (!checked.ok) {
-        return checked.code === "not_an_approver"
-          ? { ok: false as const, reason: "not-an-approver" as const }
-          : { ok: false as const, reason: "policy" as const, message: checked.message };
+      if (isPasskeyFreshProof(passkey)) {
+        const checked = verifyPasskeyFreshLease(store, {
+          accountName: by,
+          repo: repoNow,
+          proof: passkey,
+          now,
+        });
+        if (!checked.ok) {
+          if (checked.code === "step_up_required") return { ok: false as const, reason: "password-now" as const };
+          return checked.code === "not_an_approver"
+            ? { ok: false as const, reason: "not-an-approver" as const }
+            : { ok: false as const, reason: "policy" as const, message: checked.message };
+        }
+        passkeyVerified = checked;
+        authenticated = { ok: true, method: "passkey-fresh", at: passkey.verifiedAtMs };
+      } else {
+        const checked = verifyPasskeyAction(store, {
+          accountName: by,
+          repo: repoNow,
+          verb: "approve",
+          expectedBinding: { verb: "approve", taskId, sawDigest },
+          proof: passkey,
+          now,
+          consume: false,
+        });
+        if (!checked.ok) {
+          return checked.code === "not_an_approver"
+            ? { ok: false as const, reason: "not-an-approver" as const }
+            : { ok: false as const, reason: "policy" as const, message: checked.message };
+        }
+        passkeyVerified = checked;
+        authenticated = { ok: true, method: "passkey", at: now.getTime() };
       }
-      passkeyVerified = checked;
-      authenticated = { ok: true, method: "passkey", at: now.getTime() };
     } else if (chat !== undefined) {
       authenticated = { ok: true, method: "chat", at: now.getTime() };
     } else {
@@ -1683,20 +1700,24 @@ export function approve(
     if (ciHold !== null) return { ok: false as const, reason: "policy" as const, message: releaseCiHoldWords(ciHold) };
     const gate = store.approvalGate(taskId, by, "person");
     if (gate.verdict === "refuse") return { ok: false as const, reason: gate.reason };
-    // A remembered password (cockpit B2) approves only everyday work: one approver, standard permissions, terms a
-    // person filed. Protected work, escalated terms and quarantined filings take a password typed now.
-    if ((authenticated.method === "fresh-password" || authenticated.method === "fresh-sso") && !freshlyApprovable(store, taskId, scope, gate.verdict === "seal" && !gate.protectedWork)) {
+    // A remembered password (cockpit B2) or bounded Passkey session window (ADR 0005) approves only everyday work:
+    // one approver, standard permissions, terms a person filed. Protected work, escalated terms, release scopes, and
+    // quarantined filings always require a fresh ceremony now.
+    if ((authenticated.method === "fresh-password" || authenticated.method === "fresh-sso" || authenticated.method === "passkey-fresh")
+      && (!freshlyApprovable(store, taskId, scope, gate.verdict === "seal" && !gate.protectedWork) || scope.releaseTerms != null)) {
       return { ok: false as const, reason: "password-now" as const };
     }
     // How the person was proved, beside every yes they give (a vote kept for protected work, or the seal): a password
     // typed now, a re-check now, or a remembered one — with when, the credential generation and the exact digest.
     const proved = () => store.recordAction({ at: now.toISOString(), actor: by, repo: store.lookupRef(taskId)?.repo ?? null, taskId, runId: null, action: APPROVAL_PROOF,
       outcome: authenticated.method, source: "work", detail: passkeyVerified !== null
-        ? passkeyProofDetail({ at: now, generation: passkeyVerified.accountGeneration, digest: scope.digest, verb: "approve", credentialId: passkeyVerified.credentialId, pairedDeviceId: passkeyVerified.deviceId, be: passkeyVerified.be, bs: passkeyVerified.bs })
+        ? (passkey !== undefined && isPasskeyFreshProof(passkey)
+          ? passkeyFreshProofDetail({ at: now, provedAtMs: passkey.verifiedAtMs, generation: passkeyVerified.accountGeneration, digest: scope.digest, verb: "approve", credentialId: passkeyVerified.credentialId, pairedDeviceId: passkeyVerified.deviceId, be: passkeyVerified.be, bs: passkeyVerified.bs })
+          : passkeyProofDetail({ at: now, generation: passkeyVerified.accountGeneration, digest: scope.digest, verb: "approve", credentialId: passkeyVerified.credentialId, pairedDeviceId: passkeyVerified.deviceId, be: passkeyVerified.be, bs: passkeyVerified.bs }))
         : (fastStart === undefined ? approvalProofDetail : fastProofDetail(fastStart))(authenticated.at, store.accountOf(by)?.generation ?? 0, scope.digest,
           local === null ? undefined : { generation: local.localGeneration, transport: local.transport }) });
     const consumePasskeyOrFail = (): ApproveResult | null => {
-      if (passkey === undefined) return null;
+      if (passkey === undefined || isPasskeyFreshProof(passkey)) return null;
       const consumed = verifyPasskeyAction(store, {
         accountName: by,
         repo: repoNow,

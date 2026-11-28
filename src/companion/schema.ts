@@ -239,7 +239,8 @@ CREATE TABLE IF NOT EXISTS device_idempotency (
 CREATE INDEX IF NOT EXISTS idx_device_idempotency_updated ON device_idempotency (device_id, state, updated_at);
 CREATE TABLE IF NOT EXISTS passkey_approval_policy (
   scope TEXT PRIMARY KEY,
-  required INTEGER NOT NULL CHECK (required IN (0, 1))
+  required INTEGER NOT NULL CHECK (required IN (0, 1)),
+  window_minutes INTEGER NOT NULL DEFAULT 15 CHECK (window_minutes IN (0, 15, 60))
 );
 `;
 
@@ -263,7 +264,7 @@ const IDEMPOTENCY_V188: Column[] = [
   ["updated_at", "TEXT", 1, 0],
 ];
 const POLICY_V188: Column[] = [
-  ["scope", "TEXT", 0, 1], ["required", "INTEGER", 1, 0],
+  ["scope", "TEXT", 0, 1], ["required", "INTEGER", 1, 0], ["window_minutes", "INTEGER", 1, 0],
 ];
 
 const TARGET_V188: Record<(typeof V188_TABLES)[number], string> = {

@@ -133,6 +133,7 @@ export const PAIRED_DEVICE_GATE1_ROUTES = new Set<string>([
 /** Explicit static Gate 2 Passkey Approval RPC allowlist (ADR 0005). */
 export const PAIRED_DEVICE_GATE2_ROUTES = new Set<string>([
   "passkey.status",
+  "passkey.lock",
   "passkey.register.begin",
   "passkey.register.finish",
   "approval.challenge",
@@ -1316,6 +1317,9 @@ export class CompanionDaemonEngine {
           break;
         case "passkey.status":
           result = await this.actions!.passkeyStatus(principal);
+          break;
+        case "passkey.lock":
+          result = await this.actions!.passkeyLock(principal);
           break;
         case "passkey.register.begin":
           result = await this.actions!.passkeyRegisterBegin(principal, params);

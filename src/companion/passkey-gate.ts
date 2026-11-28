@@ -26,12 +26,43 @@ import {
   type WebAuthnAssertionPayload,
 } from "./webauthn.js";
 
-export interface PasskeyActionProof {
+export interface PasskeyAssertionProof {
+  readonly kind?: "assertion";
   readonly deviceId: string;
   readonly challenge: string;
   readonly assertion: WebAuthnAssertionPayload;
   readonly rpId?: string;
   readonly expectedOrigin?: string;
+}
+
+/**
+ * Bounded in-memory Passkey session window proof (ADR 0005 tiered freshness): eligible ONLY for routine
+ * `approve` (standard, single-approver, non-protected) and clean `accept` (non-exception, non-publish).
+ * Never accepted for `land`, `ship`, protected scopes, release scopes, or exception accepts.
+ */
+export interface PasskeyFreshProof {
+  readonly kind: "fresh";
+  readonly deviceId: string;
+  readonly credentialId: string;
+  readonly verifiedAtMs: number;
+  readonly expiresAtMs: number;
+  readonly be: boolean;
+  readonly bs: boolean;
+}
+
+export type PasskeyActionProof = PasskeyAssertionProof | PasskeyFreshProof;
+
+export const PASSKEY_WINDOW_OPTIONS = [0, 15, 60] as const;
+export type PasskeyWindowMinutes = (typeof PASSKEY_WINDOW_OPTIONS)[number];
+export const DEFAULT_PASSKEY_WINDOW_MINUTES: PasskeyWindowMinutes = 15;
+
+export function parsePasskeyWindowMinutes(raw: unknown): PasskeyWindowMinutes | null {
+  const n = typeof raw === "number" ? raw : typeof raw === "string" && /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : NaN;
+  return n === 0 || n === 15 || n === 60 ? n : null;
+}
+
+export function isPasskeyFreshProof(proof: PasskeyActionProof): proof is PasskeyFreshProof {
+  return proof.kind === "fresh";
 }
 
 export type PasskeyGateResult =
@@ -60,7 +91,7 @@ export function verifyPasskeyAction(
     repo: string | null;
     verb: PasskeyVerb;
     expectedBinding: VerbChallengeBinding;
-    proof: PasskeyActionProof;
+    proof: PasskeyAssertionProof;
     now: Date;
     consume: boolean;
   },
@@ -158,6 +189,77 @@ export function verifyPasskeyAction(
 }
 
 /**
+ * Re-verifies an in-memory Passkey freshness lease inside a verb's transaction: account standing, paired-device
+ * standing, active non-revoked credential standing, configured approval window > 0, and fixed window bounds.
+ */
+export function verifyPasskeyFreshLease(
+  store: Store,
+  input: {
+    accountName: string;
+    repo: string | null;
+    proof: PasskeyFreshProof;
+    now: Date;
+  },
+): PasskeyGateResult {
+  const windowMinutes = passkeyApprovalWindowMinutes(store);
+  if (windowMinutes <= 0) {
+    return { ok: false, code: "step_up_required", message: "Fresh passkey confirmation is required for every approval." };
+  }
+  const nowMs = input.now.getTime();
+  const maxSpanMs = windowMinutes * 60_000;
+  if (
+    input.proof.verifiedAtMs <= 0 ||
+    input.proof.verifiedAtMs > nowMs + 60_000 ||
+    nowMs >= input.proof.expiresAtMs ||
+    nowMs - input.proof.verifiedAtMs >= maxSpanMs
+  ) {
+    return { ok: false, code: "step_up_required", message: "Your passkey approval window expired. Confirm with your passkey again." };
+  }
+
+  const identity = store.workspaceIdentity();
+  const account = store.accountOf(input.accountName);
+  if (account === null || account.revokedAt !== null || account.role !== "approver") {
+    return { ok: false, code: "not_an_approver", message: "Only an active approver account can authorize this act." };
+  }
+  if (input.repo === null || !store.accountCanAccess(input.accountName, input.repo)) {
+    return { ok: false, code: "not_an_approver", message: "You don't have access to this project." };
+  }
+
+  const device = getPairedDevice(store.handle, input.proof.deviceId);
+  if (
+    device === null ||
+    device.revokedAt !== null ||
+    device.activatedAt === null ||
+    device.accountName !== input.accountName ||
+    device.recoveryGeneration !== identity.recoveryGeneration ||
+    !deviceAccountStands(device, account)
+  ) {
+    return { ok: false, code: "device_revoked", message: "This iPhone is no longer paired or your account changed." };
+  }
+
+  const cred = getAccountPasskey(store.handle, input.proof.credentialId);
+  if (
+    cred === null ||
+    cred.revokedAt !== null ||
+    cred.workspaceId !== identity.id ||
+    cred.accountName !== input.accountName ||
+    cred.recoveryGeneration !== identity.recoveryGeneration
+  ) {
+    return { ok: false, code: "step_up_required", message: "That passkey is no longer active. Confirm with an active passkey." };
+  }
+
+  return {
+    ok: true,
+    accountName: input.accountName,
+    accountGeneration: account.generation,
+    deviceId: input.proof.deviceId,
+    credentialId: cred.credentialId,
+    be: input.proof.be,
+    bs: input.proof.bs,
+  };
+}
+
+/**
  * Policy invariant (ADR 0005 & docs/plans/chat-management.md §7):
  * Checks whether a workspace or project requires Passkeys for approvals (`passkey_approval_policy` table).
  * When enabled, `chat` (`chat-code`) approvals are refused.
@@ -180,9 +282,41 @@ export function passkeyRequiredForApprovals(store: Store, repo: string | null): 
 
 export function setPasskeyRequiredForApprovals(store: Store, enabled: boolean, repo?: string): void {
   const scope = repo ?? PASSKEY_REQUIRED_WORKSPACE_SCOPE;
+  const existing = store.handle
+    .prepare("SELECT window_minutes FROM passkey_approval_policy WHERE scope = ?")
+    .get(scope);
+  const windowMinutes = existing !== undefined
+    ? (parsePasskeyWindowMinutes(Number(existing["window_minutes"])) ?? DEFAULT_PASSKEY_WINDOW_MINUTES)
+    : DEFAULT_PASSKEY_WINDOW_MINUTES;
   if (enabled) {
-    store.handle.prepare("INSERT OR REPLACE INTO passkey_approval_policy (scope, required) VALUES (?, 1)").run(scope);
+    store.handle
+      .prepare("INSERT INTO passkey_approval_policy (scope, required, window_minutes) VALUES (?, 1, ?) ON CONFLICT(scope) DO UPDATE SET required = 1")
+      .run(scope, windowMinutes);
+  } else if (scope === PASSKEY_REQUIRED_WORKSPACE_SCOPE && existing !== undefined) {
+    store.handle.prepare("UPDATE passkey_approval_policy SET required = 0 WHERE scope = ?").run(scope);
   } else {
     store.handle.prepare("DELETE FROM passkey_approval_policy WHERE scope = ?").run(scope);
   }
+}
+
+/**
+ * Workspace-level Passkey freshness window for routine phone approvals (`0` = every time, `15` = 15 min default,
+ * `60` = 1 hour). High-impact acts (`Ship`, `Land`, protected scopes, exception accepts) always prompt every time.
+ */
+export function passkeyApprovalWindowMinutes(store: Store): PasskeyWindowMinutes {
+  const row = store.handle
+    .prepare("SELECT window_minutes FROM passkey_approval_policy WHERE scope = ?")
+    .get(PASSKEY_REQUIRED_WORKSPACE_SCOPE);
+  if (row === undefined) return DEFAULT_PASSKEY_WINDOW_MINUTES;
+  return parsePasskeyWindowMinutes(Number(row["window_minutes"])) ?? DEFAULT_PASSKEY_WINDOW_MINUTES;
+}
+
+export function setPasskeyApprovalWindowMinutes(store: Store, minutes: PasskeyWindowMinutes): void {
+  store.handle
+    .prepare(`
+      INSERT INTO passkey_approval_policy (scope, required, window_minutes)
+      VALUES (?, 0, ?)
+      ON CONFLICT(scope) DO UPDATE SET window_minutes = excluded.window_minutes
+    `)
+    .run(PASSKEY_REQUIRED_WORKSPACE_SCOPE, minutes);
 }

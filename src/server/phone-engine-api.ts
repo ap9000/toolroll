@@ -9,9 +9,17 @@ import { listPhones as listPhoneRows, renamePhone as renamePhoneRow, revokePaire
   listAllAccountPasskeys, revokeAccountPasskey,
   type AccountPasskeyRow, type PhoneRow, type PhoneState, type RetiredReason } from "../companion/store.js";
 import type { PairingQrPayload, PairingStatus, PairingView } from "../companion/daemon.js";
+import {
+  passkeyApprovalWindowMinutes,
+  setPasskeyApprovalWindowMinutes,
+  parsePasskeyWindowMinutes,
+  PASSKEY_WINDOW_OPTIONS,
+  type PasskeyWindowMinutes,
+} from "../companion/passkey-gate.js";
 import type { Store } from "../store.js";
 
-export type { AccountPasskeyRow, DirectAddress, DirectPathState, HostedPathState, PairingStatus, PairingView, PhoneRow, PhoneState, RetiredReason };
+export type { AccountPasskeyRow, DirectAddress, DirectPathState, HostedPathState, PairingStatus, PairingView, PasskeyWindowMinutes, PhoneRow, PhoneState, RetiredReason };
+export { parsePasskeyWindowMinutes, PASSKEY_WINDOW_OPTIONS };
 
 /** The running companion service, as the page sees it. */
 export type PhoneService = CompanionService;
@@ -81,7 +89,23 @@ export function isPasskeyEnrollmentOpen(service: PhoneService | null, accountNam
   return service?.engine.actions?.isEnrollmentOpen(accountName) ?? false;
 }
 
-/** Independently revokes one passkey credential without removing paired devices (ADR 0005). */
-export function revokePasskey(store: Store, credentialId: string, accountName: string, now: Date): boolean {
-  return revokeAccountPasskey(store.handle, credentialId, accountName, now);
+/** Independently revokes one passkey credential without removing paired devices (ADR 0005), and clears active fresh leases. */
+export function revokePasskey(store: Store, credentialId: string, accountName: string, now: Date, service: PhoneService | null = null): boolean {
+  const revoked = revokeAccountPasskey(store.handle, credentialId, accountName, now);
+  if (revoked) service?.engine.actions?.clearFreshLeases(accountName);
+  return revoked;
+}
+
+/** Configured Passkey approval window in minutes (`0` = every time, `15` = 15 min, `60` = 1 hour). */
+export function passkeyWindowMinutes(store: Store): PasskeyWindowMinutes {
+  return passkeyApprovalWindowMinutes(store);
+}
+
+/** Updates the Passkey approval window and clears active fresh leases when tightened or turned off. */
+export function updatePasskeyWindowMinutes(store: Store, minutes: PasskeyWindowMinutes, service: PhoneService | null = null): void {
+  const prev = passkeyApprovalWindowMinutes(store);
+  setPasskeyApprovalWindowMinutes(store, minutes);
+  if (minutes === 0 || minutes < prev) {
+    service?.engine.actions?.clearFreshLeases();
+  }
 }

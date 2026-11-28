@@ -869,6 +869,7 @@ post("settings", "settings.phone-rename", "/settings/phone/rename", { limited: "
 post("settings", "settings.phone-remove", "/settings/phone/remove", { limited: "self", scope: "step-up", ...approver("An approver can remove their own phone.", "/settings") });
 post("settings", "settings.phone-passkey-enable", "/settings/phone/passkey/enable", { limited: "self", scope: "step-up", ...approver("An approver can enable passkey approvals for their own iPhone.", "/settings") });
 post("settings", "settings.phone-passkey-revoke", "/settings/phone/passkey/revoke", { limited: "self", scope: "step-up", ...approver("An approver can revoke their own passkey.", "/settings") });
+post("settings", "settings.phone-passkey-window", "/settings/phone/passkey/window", { limited: "self", scope: "step-up", ...approver("An approver can configure the phone passkey approval window.", "/settings") });
 for (const one of ["messaging", "permission-default", "quality-default", "notifications", "notifications/mute", "telegram-digest", "provider-key-clear", "email-test", "email-read-test", "google/disconnect"]) {
   post("settings", `settings.${one.replaceAll("/", "-")}-send`, `/settings/${one}`);
 }

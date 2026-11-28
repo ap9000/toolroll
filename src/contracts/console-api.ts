@@ -216,6 +216,7 @@ export const CONSOLE_FORMS = {
   phoneRemove: formContract("POST /settings/phone/remove", ["password", "device"]),
   phonePasskeyEnable: formContract("POST /settings/phone/passkey/enable", ["password"]),
   phonePasskeyRevoke: formContract("POST /settings/phone/passkey/revoke", ["password", "credential"]),
+  phonePasskeyWindow: formContract("POST /settings/phone/passkey/window", ["password", "window"]),
   phoneRename: formContract("POST /settings/phone/rename", ["device", "name"]),
   teams: formContract("POST /settings/teams/connect|pair|unpair|disconnect|alerts", ["password", "app-id", "tenant", "secret"]),
   discord: formContract("POST /settings/discord/connect|pair|unpair|disconnect|alerts", ["password", "bot-token"]),

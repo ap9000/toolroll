@@ -33,7 +33,7 @@ import { NIGHTLY_CHECK_ONLY, RELEASE_MERGES_ONLY, nightlyTaskRef, refArchived, r
 import { belongsToRelease } from "./release-authority.js";
 import { autoReleaseSealed } from "./release-auto.js";
 import { fullCheckGate, requestFollowUpChecks, type FullCheckGate } from "./result-follow-ups.js";
-import { verifyPasskeyAction, type PasskeyActionProof } from "./companion/passkey-gate.js";
+import { verifyPasskeyAction, type PasskeyAssertionProof } from "./companion/passkey-gate.js";
 import { passkeyProofDetail } from "./companion/webauthn.js";
 
 export type MergeMethod = "squash" | "merge" | "rebase";
@@ -412,7 +412,7 @@ export const MERGE_PROVED_ACTION = "merge proved";
 /** A person's merge: their password or a verified Passkey assertion (ADR 0005), then the same checked merge. */
 export async function mergeAsPerson(
   store: Store,
-  input: { runId: number; name: string; password?: string; passkey?: PasskeyActionProof; exec?: PublishExec; clock?: () => Date;
+  input: { runId: number; name: string; password?: string; passkey?: PasskeyAssertionProof; exec?: PublishExec; clock?: () => Date;
     /** A person's choice to merge without waiting for the full check (Quick or Off results). */
     anyway?: boolean },
 ): Promise<Result<{ commit: string | null }>> {

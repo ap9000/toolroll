@@ -142,6 +142,35 @@ struct SettingsView: View {
                                 VStack(spacing: 0) {
                                     keyValueRow("Passkey", value: passkeyStatusText, valueColor: passkeyStatusColor)
 
+                                    if let windowText = passkeyWindowText {
+                                        Divider().overlay(ToolrollTheme.hairline).padding(.leading, 14)
+                                        keyValueRow("Prompt window", value: windowText)
+                                    }
+
+                                    if let unlockedText = passkeyUnlockedText {
+                                        Divider().overlay(ToolrollTheme.hairline).padding(.leading, 14)
+                                        keyValueRow("Session", value: unlockedText, valueColor: ToolrollTheme.success)
+                                        Divider().overlay(ToolrollTheme.hairline).padding(.leading, 14)
+                                        Button {
+                                            Task { _ = await appState.lockPasskeyApprovals() }
+                                        } label: {
+                                            HStack {
+                                                Label("Lock approvals now", systemImage: "lock.fill")
+                                                    .font(.subheadline.weight(.semibold))
+                                                    .foregroundStyle(ToolrollTheme.ink)
+                                                Spacer()
+                                                if appState.actionInFlight {
+                                                    ProgressView()
+                                                }
+                                            }
+                                            .padding(14)
+                                            .frame(minHeight: 44)
+                                            .contentShape(Rectangle())
+                                        }
+                                        .buttonStyle(.plain)
+                                        .disabled(!appState.canRunActions || appState.actionInFlight)
+                                    }
+
                                     if !appState.isDemoMode {
                                         Divider().overlay(ToolrollTheme.hairline).padding(.leading, 14)
                                         Button {
@@ -185,7 +214,7 @@ struct SettingsView: View {
                                 }
                             }
 
-                            Text("Approvals are verified locally on your Mac using Passkey user verification. Passkeys never give the relay authority to act.")
+                            Text("Verified locally on your Mac using Passkey user verification. Shipping PRs, landing locally, protected scopes, and exceptions always prompt your passkey.")
                                 .font(.caption)
                                 .foregroundStyle(ToolrollTheme.muted)
                                 .padding(.horizontal, 4)
@@ -408,6 +437,22 @@ struct SettingsView: View {
             return appearance.signalText
         }
         return ToolrollTheme.muted
+    }
+
+    private var passkeyWindowText: String? {
+        guard appState.isDemoMode || appState.passkeyStatus?.registered == true,
+              let mins = appState.passkeyStatus?.windowMinutes else { return nil }
+        switch mins {
+        case 0: return "Every time"
+        case 15: return "Once per 15 min"
+        case 60: return "Once per hour"
+        default: return "Once per \(mins) min"
+        }
+    }
+
+    private var passkeyUnlockedText: String? {
+        guard let until = RelativeTime.date(appState.passkeyStatus?.freshUntil), until > Date() else { return nil }
+        return "Unlocked until \(until.formatted(date: .omitted, time: .shortened))"
     }
 
     private var connectionText: String? {

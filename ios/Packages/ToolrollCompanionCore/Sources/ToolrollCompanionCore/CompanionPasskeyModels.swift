@@ -7,12 +7,26 @@ public struct PasskeyStatus: Codable, Equatable, Sendable {
     public let count: Int
     public let enrollmentOpen: Bool
     public let rpId: String
+    public let windowMinutes: Int?
+    public let freshUntil: String?
 
-    public init(registered: Bool, count: Int, enrollmentOpen: Bool, rpId: String) {
+    public init(registered: Bool, count: Int, enrollmentOpen: Bool, rpId: String, windowMinutes: Int? = nil, freshUntil: String? = nil) {
         self.registered = registered
         self.count = count
         self.enrollmentOpen = enrollmentOpen
         self.rpId = rpId
+        self.windowMinutes = windowMinutes
+        self.freshUntil = freshUntil
+    }
+}
+
+public struct PasskeyLockResponse: Codable, Equatable, Sendable {
+    public let ok: Bool
+    public let locked: Bool
+
+    public init(ok: Bool, locked: Bool) {
+        self.ok = ok
+        self.locked = locked
     }
 }
 
@@ -60,6 +74,8 @@ public struct ApprovalChallengeResponse: Codable, Equatable, Sendable {
     public let verb: PasskeyApprovalVerb
     public let wording: String
     public let expiresAt: String
+    public let freshApproved: Bool?
+    public let freshUntil: String?
 
     public init(
         challenge: String,
@@ -68,7 +84,9 @@ public struct ApprovalChallengeResponse: Codable, Equatable, Sendable {
         userVerification: String,
         verb: PasskeyApprovalVerb,
         wording: String,
-        expiresAt: String
+        expiresAt: String,
+        freshApproved: Bool? = nil,
+        freshUntil: String? = nil
     ) {
         self.challenge = challenge
         self.rpId = rpId
@@ -77,6 +95,8 @@ public struct ApprovalChallengeResponse: Codable, Equatable, Sendable {
         self.verb = verb
         self.wording = wording
         self.expiresAt = expiresAt
+        self.freshApproved = freshApproved
+        self.freshUntil = freshUntil
     }
 }
 
@@ -110,6 +130,7 @@ public struct TaskApproveResponse: Codable, Equatable, Sendable {
     public let need: Int?
     public let task: String?
     public let digest: String?
+    public let freshUntil: String?
 }
 
 public struct TaskAcceptResponse: Codable, Equatable, Sendable {
@@ -118,6 +139,7 @@ public struct TaskAcceptResponse: Codable, Equatable, Sendable {
     public let published: Bool
     public let prUrl: String?
     public let prNumber: Int?
+    public let freshUntil: String?
 }
 
 public struct TaskLandResponse: Codable, Equatable, Sendable {
@@ -128,10 +150,12 @@ public struct TaskLandResponse: Codable, Equatable, Sendable {
     public let commit: String?
     public let mode: String?
     public let handoffCommand: String?
+    public let freshUntil: String?
 }
 
 public struct TaskShipResponse: Codable, Equatable, Sendable {
     public let ok: Bool
     public let shipped: Bool
     public let commit: String?
+    public let freshUntil: String?
 }
