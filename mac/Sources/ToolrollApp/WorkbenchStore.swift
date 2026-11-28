@@ -193,7 +193,6 @@ public final class WorkbenchStore {
     public internal(set) var canvasAppArtboards: [CanvasArtboard] = []
     public internal(set) var canvasAppCaptureRuns: [String: AppCaptureRunState] = [:]
     public internal(set) var canvasHeadCommit: String = ""
-    /// A pending Recapture trust question: the surface and the exact project root it was asked about.
     public internal(set) var canvasCaptureConfirmation: (surfaceId: String, root: String)? = nil
     public private(set) var activeAgentSetupTitle: String? = nil
     public private(set) var missingRuntimeInstallCommand: String? = nil

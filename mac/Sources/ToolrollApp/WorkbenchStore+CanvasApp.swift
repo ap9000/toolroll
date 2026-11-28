@@ -78,7 +78,6 @@ extension WorkbenchStore {
     func confirmAppRecapture() {
         guard let pending = canvasCaptureConfirmation else { return }
         canvasCaptureConfirmation = nil
-        // Trust only the project the question named, and only if the Canvas still shows it.
         guard canvasProjectRoot == pending.root else { return }
         CanvasCaptureTrust.trust(projectRoot: pending.root)
         Task { await recaptureAppSurface(pending.surfaceId) }

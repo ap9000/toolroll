@@ -238,6 +238,12 @@ public struct CanvasPin: Codable, Sendable, Equatable, Identifiable {
         self.captureStateKey = captureStateKey
     }
 
+    public static func isPlainRequestId(_ id: String) -> Bool {
+        guard (1...64).contains(id.count), let first = id.unicodeScalars.first, CharacterSet.alphanumerics.contains(first) else { return false }
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+        return id.unicodeScalars.allSatisfy { allowed.contains($0) }
+    }
+
     public static func newRequestId() -> String {
         let hex = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(10)
         return "r-\(hex)"
@@ -769,15 +775,34 @@ public enum YouiCanvasStorage {
         }
     }
 
+    static func requestsDirectory(projectRoot: String, forId id: String) -> URL? {
+        guard CanvasPin.isPlainRequestId(id) else { return nil }
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: projectRoot) {
+            do { try fm.createDirectory(atPath: projectRoot, withIntermediateDirectories: true) } catch { return nil }
+        }
+        let root = URL(fileURLWithPath: projectRoot).resolvingSymlinksInPath()
+        var dir = root
+        for part in [".youi", "requests"] {
+            dir = dir.appendingPathComponent(part, isDirectory: true)
+            if let type = try? fm.attributesOfItem(atPath: dir.path)[.type] as? FileAttributeType {
+                guard type == .typeDirectory else { return nil }
+            } else {
+                do { try fm.createDirectory(at: dir, withIntermediateDirectories: false) } catch { return nil }
+            }
+        }
+        guard dir.resolvingSymlinksInPath().path == root.appendingPathComponent(".youi/requests").path else { return nil }
+        return dir
+    }
+
     @discardableResult
     public static func savePinScreenshot(
         _ pngData: Data,
         projectRoot: String,
         pinId: String
     ) -> String? {
-        let dir = URL(fileURLWithPath: projectRoot).appendingPathComponent(".youi/requests", isDirectory: true)
+        guard let dir = requestsDirectory(projectRoot: projectRoot, forId: pinId) else { return nil }
         do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let fileURL = dir.appendingPathComponent("\(pinId).png")
             try pngData.write(to: fileURL, options: .atomic)
             return ".youi/requests/\(pinId).png"
@@ -862,9 +887,8 @@ public enum YouiCanvasStorage {
 
     @discardableResult
     public static func writeYouiRequest(projectRoot: String, projectName: String, pin: CanvasPin) -> URL? {
-        let dir = URL(fileURLWithPath: projectRoot).appendingPathComponent(".youi/requests", isDirectory: true)
+        guard let dir = requestsDirectory(projectRoot: projectRoot, forId: pin.id) else { return nil }
         do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let payload = youiRequestPayload(projectName: projectName, pin: pin)
             let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
             let fileURL = dir.appendingPathComponent("\(pin.id).json")
@@ -885,7 +909,9 @@ public enum YouiCanvasStorage {
             guard let data = try? Data(contentsOf: url),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let id = obj["id"] as? String,
-                  let body = obj["body"] as? String
+                  let body = obj["body"] as? String,
+                  CanvasPin.isPlainRequestId(id),
+                  url.deletingPathExtension().lastPathComponent == id
             else { continue }
             let target = obj["target"] as? [String: Any]
             let canvas = obj["canvas"] as? [String: Any]
