@@ -12,6 +12,90 @@ public protocol CompanionDataSource: Sendable {
     func runWindow(run: Int, cursor: String?) async throws -> LiveSessionWindow
     /// Live records as they happen. Ending the stream stops watching only; the run keeps going.
     func watchRun(run: Int, cursor: String?) async throws -> AsyncThrowingStream<LiveRecord, Error>
+
+    // MARK: Gate 2 Passkey Registration & Approvals (ADR 0005)
+    func passkeyStatus() async throws -> PasskeyStatus
+    func passkeyRegisterBegin() async throws -> PasskeyRegisterBeginResponse
+    func passkeyRegisterFinish(
+        challenge: String,
+        credentialId: String,
+        clientDataJSON: String,
+        attestationObject: String,
+        label: String?
+    ) async throws -> PasskeyRegisterFinishResponse
+    func approvalChallenge(
+        verb: PasskeyApprovalVerb,
+        task: String?,
+        digest: String?,
+        runId: Int?,
+        receiptDigest: String?,
+        note: String?,
+        publish: Bool?,
+        planKey: String?,
+        into: String?,
+        undo: Bool?,
+        anyway: Bool?
+    ) async throws -> ApprovalChallengeResponse
+    func approveTask(
+        task: String,
+        digest: String,
+        challenge: String,
+        idempotencyKey: String,
+        assertion: WebAuthnAssertion
+    ) async throws -> TaskApproveResponse
+    func acceptTask(
+        task: String,
+        runId: Int?,
+        receiptDigest: String,
+        note: String?,
+        publish: Bool,
+        challenge: String,
+        idempotencyKey: String,
+        assertion: WebAuthnAssertion
+    ) async throws -> TaskAcceptResponse
+    func landTask(
+        task: String,
+        key: String,
+        into: String?,
+        undo: Bool,
+        challenge: String,
+        idempotencyKey: String,
+        assertion: WebAuthnAssertion
+    ) async throws -> TaskLandResponse
+    func shipTask(
+        runId: Int,
+        anyway: Bool,
+        challenge: String,
+        idempotencyKey: String,
+        assertion: WebAuthnAssertion
+    ) async throws -> TaskShipResponse
+}
+
+public extension CompanionDataSource {
+    func passkeyStatus() async throws -> PasskeyStatus {
+        PasskeyStatus(registered: false, count: 0, enrollmentOpen: false, rpId: "toolroll.dev")
+    }
+    func passkeyRegisterBegin() async throws -> PasskeyRegisterBeginResponse {
+        throw CompanionRPCError(code: "unsupported", message: "Passkeys aren't available in this mode.")
+    }
+    func passkeyRegisterFinish(challenge: String, credentialId: String, clientDataJSON: String, attestationObject: String, label: String?) async throws -> PasskeyRegisterFinishResponse {
+        throw CompanionRPCError(code: "unsupported", message: "Passkeys aren't available in this mode.")
+    }
+    func approvalChallenge(verb: PasskeyApprovalVerb, task: String?, digest: String?, runId: Int?, receiptDigest: String?, note: String?, publish: Bool?, planKey: String?, into: String?, undo: Bool?, anyway: Bool?) async throws -> ApprovalChallengeResponse {
+        throw CompanionRPCError(code: "unsupported", message: "Approvals aren't available in this mode.")
+    }
+    func approveTask(task: String, digest: String, challenge: String, idempotencyKey: String, assertion: WebAuthnAssertion) async throws -> TaskApproveResponse {
+        throw CompanionRPCError(code: "unsupported", message: "Approvals aren't available in this mode.")
+    }
+    func acceptTask(task: String, runId: Int?, receiptDigest: String, note: String?, publish: Bool, challenge: String, idempotencyKey: String, assertion: WebAuthnAssertion) async throws -> TaskAcceptResponse {
+        throw CompanionRPCError(code: "unsupported", message: "Approvals aren't available in this mode.")
+    }
+    func landTask(task: String, key: String, into: String?, undo: Bool, challenge: String, idempotencyKey: String, assertion: WebAuthnAssertion) async throws -> TaskLandResponse {
+        throw CompanionRPCError(code: "unsupported", message: "Approvals aren't available in this mode.")
+    }
+    func shipTask(runId: Int, anyway: Bool, challenge: String, idempotencyKey: String, assertion: WebAuthnAssertion) async throws -> TaskShipResponse {
+        throw CompanionRPCError(code: "unsupported", message: "Approvals aren't available in this mode.")
+    }
 }
 
 // MARK: - Live (RPCs over the relay)
@@ -71,6 +155,182 @@ public struct LiveCompanionSource: CompanionDataSource {
     public func watchRun(run: Int, cursor: String?) async throws -> AsyncThrowingStream<LiveRecord, Error> {
         let raw = try await client.watch(method: "run.watch.subscribe", params: RunParams(run: String(run), cursor: cursor))
         return Self.decodeRecords(raw)
+    }
+
+    private struct EmptyParams: Encodable, Sendable {}
+
+    private struct PasskeyFinishParams: Encodable, Sendable {
+        let challenge: String
+        let credentialId: String
+        let clientDataJSON: String
+        let attestationObject: String
+        let label: String?
+    }
+
+    private struct ApprovalChallengeParams: Encodable, Sendable {
+        let verb: String
+        let task: String?
+        let digest: String?
+        let runId: Int?
+        let receiptDigest: String?
+        let note: String?
+        let publish: Bool?
+        let key: String?
+        let into: String?
+        let undo: Bool?
+        let anyway: Bool?
+    }
+
+    private struct ApproveParams: Encodable, Sendable {
+        let task: String
+        let digest: String
+        let challenge: String
+        let idempotencyKey: String
+        let assertion: WebAuthnAssertion
+    }
+
+    private struct AcceptParams: Encodable, Sendable {
+        let task: String
+        let runId: Int?
+        let receiptDigest: String
+        let note: String?
+        let publish: Bool
+        let challenge: String
+        let idempotencyKey: String
+        let assertion: WebAuthnAssertion
+    }
+
+    private struct LandParams: Encodable, Sendable {
+        let task: String
+        let key: String
+        let into: String?
+        let undo: Bool
+        let challenge: String
+        let idempotencyKey: String
+        let assertion: WebAuthnAssertion
+    }
+
+    private struct ShipParams: Encodable, Sendable {
+        let runId: Int
+        let anyway: Bool
+        let challenge: String
+        let idempotencyKey: String
+        let assertion: WebAuthnAssertion
+    }
+
+    public func passkeyStatus() async throws -> PasskeyStatus {
+        try await client.call("passkey.status", params: EmptyParams())
+    }
+
+    public func passkeyRegisterBegin() async throws -> PasskeyRegisterBeginResponse {
+        try await client.call("passkey.register.begin", params: EmptyParams())
+    }
+
+    public func passkeyRegisterFinish(
+        challenge: String,
+        credentialId: String,
+        clientDataJSON: String,
+        attestationObject: String,
+        label: String?
+    ) async throws -> PasskeyRegisterFinishResponse {
+        try await client.call(
+            "passkey.register.finish",
+            params: PasskeyFinishParams(
+                challenge: challenge,
+                credentialId: credentialId,
+                clientDataJSON: clientDataJSON,
+                attestationObject: attestationObject,
+                label: label
+            )
+        )
+    }
+
+    public func approvalChallenge(
+        verb: PasskeyApprovalVerb,
+        task: String?,
+        digest: String?,
+        runId: Int?,
+        receiptDigest: String?,
+        note: String?,
+        publish: Bool?,
+        planKey: String?,
+        into: String?,
+        undo: Bool?,
+        anyway: Bool?
+    ) async throws -> ApprovalChallengeResponse {
+        try await client.call(
+            "approval.challenge",
+            params: ApprovalChallengeParams(
+                verb: verb.rawValue,
+                task: task,
+                digest: digest,
+                runId: runId,
+                receiptDigest: receiptDigest,
+                note: note,
+                publish: publish,
+                key: planKey,
+                into: into,
+                undo: undo,
+                anyway: anyway
+            )
+        )
+    }
+
+    public func approveTask(
+        task: String,
+        digest: String,
+        challenge: String,
+        idempotencyKey: String,
+        assertion: WebAuthnAssertion
+    ) async throws -> TaskApproveResponse {
+        try await client.call(
+            "task.approve",
+            params: ApproveParams(task: task, digest: digest, challenge: challenge, idempotencyKey: idempotencyKey, assertion: assertion)
+        )
+    }
+
+    public func acceptTask(
+        task: String,
+        runId: Int?,
+        receiptDigest: String,
+        note: String?,
+        publish: Bool,
+        challenge: String,
+        idempotencyKey: String,
+        assertion: WebAuthnAssertion
+    ) async throws -> TaskAcceptResponse {
+        try await client.call(
+            "task.accept",
+            params: AcceptParams(task: task, runId: runId, receiptDigest: receiptDigest, note: note, publish: publish, challenge: challenge, idempotencyKey: idempotencyKey, assertion: assertion)
+        )
+    }
+
+    public func landTask(
+        task: String,
+        key: String,
+        into: String?,
+        undo: Bool,
+        challenge: String,
+        idempotencyKey: String,
+        assertion: WebAuthnAssertion
+    ) async throws -> TaskLandResponse {
+        try await client.call(
+            "task.land",
+            params: LandParams(task: task, key: key, into: into, undo: undo, challenge: challenge, idempotencyKey: idempotencyKey, assertion: assertion)
+        )
+    }
+
+    public func shipTask(
+        runId: Int,
+        anyway: Bool,
+        challenge: String,
+        idempotencyKey: String,
+        assertion: WebAuthnAssertion
+    ) async throws -> TaskShipResponse {
+        try await client.call(
+            "task.ship",
+            params: ShipParams(runId: runId, anyway: anyway, challenge: challenge, idempotencyKey: idempotencyKey, assertion: assertion)
+        )
     }
 
     /// Maps a stream of CHUNK payloads to live records. A record this build can't read, or of a kind it doesn't know,
@@ -190,5 +450,54 @@ public struct DemoCompanionSource: CompanionDataSource {
         }
         continuation.onTermination = { _ in task.cancel() }
         return stream
+    }
+
+    public func passkeyStatus() async throws -> PasskeyStatus {
+        PasskeyStatus(registered: true, count: 1, enrollmentOpen: false, rpId: "toolroll.dev")
+    }
+
+    public func approvalChallenge(
+        verb: PasskeyApprovalVerb,
+        task: String?,
+        digest: String?,
+        runId: Int?,
+        receiptDigest: String?,
+        note: String?,
+        publish: Bool?,
+        planKey: String?,
+        into: String?,
+        undo: Bool?,
+        anyway: Bool?
+    ) async throws -> ApprovalChallengeResponse {
+        try await Task.sleep(for: latency)
+        return ApprovalChallengeResponse(
+            challenge: "demo-challenge-\(verb.rawValue)",
+            rpId: "toolroll.dev",
+            allowCredentials: [PasskeyCredentialDescriptor(id: "demo-cred-1", type: "public-key")],
+            userVerification: "required",
+            verb: verb,
+            wording: "Demo \(verb.rawValue) for \(task ?? "task")",
+            expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(120))
+        )
+    }
+
+    public func approveTask(task: String, digest: String, challenge: String, idempotencyKey: String, assertion: WebAuthnAssertion) async throws -> TaskApproveResponse {
+        try await Task.sleep(for: latency)
+        return TaskApproveResponse(ok: true, approved: true, secondApprover: false, have: 1, need: 1, task: task, digest: digest)
+    }
+
+    public func acceptTask(task: String, runId: Int?, receiptDigest: String, note: String?, publish: Bool, challenge: String, idempotencyKey: String, assertion: WebAuthnAssertion) async throws -> TaskAcceptResponse {
+        try await Task.sleep(for: latency)
+        return TaskAcceptResponse(ok: true, accepted: true, published: publish, prUrl: nil, prNumber: nil)
+    }
+
+    public func landTask(task: String, key: String, into: String?, undo: Bool, challenge: String, idempotencyKey: String, assertion: WebAuthnAssertion) async throws -> TaskLandResponse {
+        try await Task.sleep(for: latency)
+        return TaskLandResponse(ok: true, landed: true, replayed: false, branch: into ?? "main", commit: "4a8d91e", mode: "ref", handoffCommand: nil)
+    }
+
+    public func shipTask(runId: Int, anyway: Bool, challenge: String, idempotencyKey: String, assertion: WebAuthnAssertion) async throws -> TaskShipResponse {
+        try await Task.sleep(for: latency)
+        return TaskShipResponse(ok: true, shipped: true, commit: "4a8d91e")
     }
 }

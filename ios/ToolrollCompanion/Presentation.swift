@@ -95,7 +95,7 @@ extension WorkRow {
 
 /// The one next step a task screen offers.
 enum NextStep: Equatable {
-    case approveOnMac
+    case approvePlan
     case answerOnMac
     case reviewChanges
     case watchLive(run: Int)
@@ -107,11 +107,11 @@ enum NextStep: Equatable {
         let kind = row?.kind
         let hasFiles = !(diff?.files.isEmpty ?? true)
         if steps?.waitingTerms != nil || steps?.cards?.contains(where: { $0.key == .approve && $0.needsYou }) == true {
-            self = .approveOnMac
+            self = .approvePlan
         } else if kind == .decide && row?.need?.ask == .answer {
             self = .answerOnMac
         } else if kind == .decide {
-            self = .approveOnMac
+            self = .approvePlan
         } else if steps?.review != nil || kind == .review
                     || steps?.cards?.contains(where: { $0.key == .ready && $0.needsYou }) == true {
             self = .reviewChanges
@@ -126,10 +126,10 @@ enum NextStep: Equatable {
         }
     }
 
-    /// Answered on the Mac (approve, answer, unblock).
+    /// Answered on the Mac (answer, unblock).
     var isOnMac: Bool {
         switch self {
-        case .approveOnMac, .answerOnMac, .unblockOnMac: return true
+        case .answerOnMac, .unblockOnMac: return true
         default: return false
         }
     }
@@ -137,7 +137,7 @@ enum NextStep: Equatable {
     /// The state word when the task's Work row isn't loaded (opened from a link).
     var chip: (word: String, tone: StateTone)? {
         switch self {
-        case .approveOnMac, .answerOnMac: return ("Decide", .needs)
+        case .approvePlan, .answerOnMac: return ("Decide", .needs)
         case .reviewChanges: return ("Review", .needs)
         case .watchLive: return ("Running", .live)
         case .viewChanges: return ("Done", .done)
@@ -149,7 +149,7 @@ enum NextStep: Equatable {
     /// The ask in plain words: what the header leads with.
     var headline: String {
         switch self {
-        case .approveOnMac: return "Waiting for your approval"
+        case .approvePlan: return "Waiting for your approval"
         case .answerOnMac: return "Waiting for your answer"
         case .reviewChanges: return "Waiting for your review"
         case .watchLive: return "An agent is working on it"

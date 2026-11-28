@@ -39,7 +39,7 @@ const COOKIE_ONLY_POSTS = [
   // The Agents screen: the workbench's own session only (the handler re-proves it), never a token.
   'term.agent-sign-in', 'term.agent-install', 'engine.agents-check',
   // Passwordless: an operator's switch, from a browser (on proves a typed password in the handler; off is one click).
-  'settings.passwordless-send', 'settings.phone-access', 'settings.phone-pair', 'settings.phone-remove',
+  'settings.passwordless-send', 'settings.phone-access', 'settings.phone-pair', 'settings.phone-remove', 'settings.phone-passkey-enable', 'settings.phone-passkey-revoke',
   // Easy-start C5: turning local mode off, an operator's step-up from a full browser session.
   'settings.local-mode-off',
   // Solo or team: "It's just me", an operator's credential act from a full browser session.

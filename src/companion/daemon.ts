@@ -50,6 +50,7 @@ import {
   type CompanionFrame,
 } from "./framing.js";
 import { decodeRelayEnvelope, encodeRelayEnvelope, RelayOp, signRelayToken } from "./relay-auth.js";
+import type { CompanionActionHandlers } from "./actions.js";
 import {
   activatePendingDevice,
   deletePendingDevice,
@@ -127,6 +128,18 @@ export const PAIRED_DEVICE_GATE1_ROUTES = new Set<string>([
   "run.window.read",
   "run.watch.subscribe",
   "device.self.revoke",
+]);
+
+/** Explicit static Gate 2 Passkey Approval RPC allowlist (ADR 0005). */
+export const PAIRED_DEVICE_GATE2_ROUTES = new Set<string>([
+  "passkey.status",
+  "passkey.register.begin",
+  "passkey.register.finish",
+  "approval.challenge",
+  "task.approve",
+  "task.accept",
+  "task.land",
+  "task.ship",
 ]);
 
 export interface CompanionReadHandlers {
@@ -351,6 +364,8 @@ class Msg1ReplayCache {
 export interface CompanionDaemonOptions {
   store: Store;
   handlers: CompanionReadHandlers;
+  /** Gate 2 passkey registration & high-trust approval handlers (ADR 0005). */
+  actions?: CompanionActionHandlers;
   /** The single relay link of a one-relay setup (tests, the reference relay). Links are otherwise passed per call. */
   sendToRelay?: (envelope: Buffer) => void;
   /** A pairing was confirmed and its PENDING row saved: every connected hosted relay must admit the phone before it is
@@ -375,6 +390,7 @@ export class CompanionDaemonEngine {
   readonly hostKeys: CompanionHostKeys;
   private readonly store: Store;
   private readonly handlers: CompanionReadHandlers;
+  readonly actions: CompanionActionHandlers | null;
   private readonly defaultLink: PeerLink | null;
   private readonly onDeviceRegistered: ((deviceId: string, deviceRelayPubB64: string) => Promise<void> | void) | undefined;
   private readonly onDeviceRevoked: ((deviceId: string) => Promise<void> | void) | undefined;
@@ -395,6 +411,7 @@ export class CompanionDaemonEngine {
   constructor(opts: CompanionDaemonOptions) {
     this.store = opts.store;
     this.handlers = opts.handlers;
+    this.actions = opts.actions ?? null;
     this.defaultLink = opts.sendToRelay === undefined ? null : relayEnvelopeLink("relay", opts.sendToRelay);
     this.onDeviceRegistered = opts.onDeviceRegistered;
     this.onDeviceRevoked = opts.onDeviceRevoked;
@@ -655,6 +672,7 @@ export class CompanionDaemonEngine {
   sweepRecords(): { tombstones: number; pending: string[] } {
     const swept = sweepCompanionRecords(this.store.handle, new Date(this.nowMs()));
     for (const deviceId of swept.pending) this.forgetOnRelays(deviceId);
+    this.actions?.sweep();
     return swept;
   }
 
@@ -1212,15 +1230,17 @@ export class CompanionDaemonEngine {
       touchPairedDeviceLastSeen(this.store.handle, principal.deviceId, new Date(this.nowMs()));
     }
 
-    if (!PAIRED_DEVICE_GATE1_ROUTES.has(method)) {
+    const isGate1 = PAIRED_DEVICE_GATE1_ROUTES.has(method);
+    const isGate2 = this.actions !== null && PAIRED_DEVICE_GATE2_ROUTES.has(method);
+    if (!isGate1 && !isGate2) {
       this.sendRpcError(peer, frame.streamId, "route_not_allowed", `Method '${method}' is not on the paired-device allowlist`);
       return;
     }
 
-    await this.dispatchGate1Method(peer, frame.streamId, method, params);
+    await this.dispatchMethod(peer, frame.streamId, method, params);
   }
 
-  private async dispatchGate1Method(peer: ActivePeerConn, streamId: number, method: string, params: Record<string, unknown>): Promise<void> {
+  private async dispatchMethod(peer: ActivePeerConn, streamId: number, method: string, params: Record<string, unknown>): Promise<void> {
     const principal = peer.principal!;
     // The account's access as the read begins: what it yields is delivered only while this still holds.
     if (this.handlers.accessSignature !== undefined) peer.streamAccess.set(streamId, this.handlers.accessSignature(principal));
@@ -1293,6 +1313,30 @@ export class CompanionDaemonEngine {
           break;
         case "run.window.read":
           result = await this.handlers.runWindowRead(principal, params);
+          break;
+        case "passkey.status":
+          result = await this.actions!.passkeyStatus(principal);
+          break;
+        case "passkey.register.begin":
+          result = await this.actions!.passkeyRegisterBegin(principal, params);
+          break;
+        case "passkey.register.finish":
+          result = await this.actions!.passkeyRegisterFinish(principal, params);
+          break;
+        case "approval.challenge":
+          result = await this.actions!.approvalChallenge(principal, params);
+          break;
+        case "task.approve":
+          result = await this.actions!.taskApprove(principal, params);
+          break;
+        case "task.accept":
+          result = await this.actions!.taskAccept(principal, params);
+          break;
+        case "task.land":
+          result = await this.actions!.taskLand(principal, params);
+          break;
+        case "task.ship":
+          result = await this.actions!.taskShip(principal, params);
           break;
         default:
           this.sendRpcError(peer, streamId, "route_not_allowed", "Not allowed");

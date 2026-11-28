@@ -6,11 +6,12 @@
 
 import type { CompanionService, DirectAddress, DirectPathState, HostedPathState } from "../companion/service.js";
 import { listPhones as listPhoneRows, renamePhone as renamePhoneRow, revokePairedDeviceRecord, getPairedDevice,
-  type PhoneRow, type PhoneState, type RetiredReason } from "../companion/store.js";
+  listAllAccountPasskeys, revokeAccountPasskey,
+  type AccountPasskeyRow, type PhoneRow, type PhoneState, type RetiredReason } from "../companion/store.js";
 import type { PairingQrPayload, PairingStatus, PairingView } from "../companion/daemon.js";
 import type { Store } from "../store.js";
 
-export type { DirectAddress, DirectPathState, HostedPathState, PairingStatus, PairingView, PhoneRow, PhoneState, RetiredReason };
+export type { AccountPasskeyRow, DirectAddress, DirectPathState, HostedPathState, PairingStatus, PairingView, PhoneRow, PhoneState, RetiredReason };
 
 /** The running companion service, as the page sees it. */
 export type PhoneService = CompanionService;
@@ -62,4 +63,25 @@ export function removePhone(service: PhoneService | null, store: Store, deviceId
   const device = getPairedDevice(store.handle, deviceId);
   if (device === null || device.accountName !== accountName || device.revokedAt !== null) return false;
   return revokePairedDeviceRecord(store.handle, deviceId, now, "removed");
+}
+
+/** Active & revoked passkeys registered for this account in the current recovery generation (ADR 0005). */
+export function listPasskeys(store: Store, accountName: string): AccountPasskeyRow[] {
+  const identity = store.workspaceIdentity();
+  return listAllAccountPasskeys(store.handle, identity.id, accountName, identity.recoveryGeneration);
+}
+
+/** Opens a 5-minute Mac consent window allowing this approver's iPhone to register a WebAuthn Passkey. */
+export function openPasskeyEnrollment(service: PhoneService, accountName: string): { expiresAtMs: number } | null {
+  return service.engine.actions?.openEnrollmentWindow(accountName) ?? null;
+}
+
+/** Whether a Mac passkey enrollment window is currently open for this account. */
+export function isPasskeyEnrollmentOpen(service: PhoneService | null, accountName: string): boolean {
+  return service?.engine.actions?.isEnrollmentOpen(accountName) ?? false;
+}
+
+/** Independently revokes one passkey credential without removing paired devices (ADR 0005). */
+export function revokePasskey(store: Store, credentialId: string, accountName: string, now: Date): boolean {
+  return revokeAccountPasskey(store.handle, credentialId, accountName, now);
 }

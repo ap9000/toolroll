@@ -22,6 +22,8 @@ import { parseLeadToken } from "./api-tokens.js";
 import { isAcpProfile, isAcpProvider, type AcpProviderId } from "./acp-agents.js";
 import { levelOfProfile } from "./policy.js";
 import { canonicalJson } from "./canonical-json.js";
+import { passkeyRequiredForApprovals, verifyPasskeyAction, type PasskeyActionProof, type PasskeyGateResult } from "./companion/passkey-gate.js";
+import { passkeyProofDetail } from "./companion/webauthn.js";
 export { isAcpProfile };
 /**
  * What a task is allowed to become, agreed before anything builds it.
@@ -1561,6 +1563,9 @@ export function approve(
    * tapping. `shown` is what a card that showed its terms whole showed: those words, and the digest kept when it was
    * made. Null when the card showed less: the seal then opens none of the walls a person's reading opens. */
   chat?: { modeDigest: string; shown: { expect: string; terms: string } | null },
+  /** A person's own WebAuthn Passkey assertion from a paired device (ADR 0005): verified and consumed atomically inside
+   * this transaction, sealed under basis "password", with structured outcome "passkey" in APPROVAL_PROOF. */
+  passkey?: PasskeyActionProof,
 ): ApproveResult {
   // Read and write in one transaction, re-reading inside it — the credential
   // check included, so a token rotated between authentication and the write
@@ -1570,11 +1575,39 @@ export function approve(
   // agreed, the precise opposite of what the digest is for.
   return store.transact(() => {
     const repoNow = store.lookupRef(taskId)?.repo ?? null;
+    if (chat !== undefined && passkey !== undefined) return { ok: false as const, reason: "policy" as const, message: "Approval cannot combine chat and passkey proofs." };
+    // ADR 0005 / chat-management.md §7 policy invariant: when passkeys are required for approvals, chat-code approvals are refused.
+    if (chat !== undefined && passkeyRequiredForApprovals(store, repoNow)) {
+      return { ok: false as const, reason: "policy" as const, message: "Passkey required for approvals on this project; chat approvals are disabled." };
+    }
     const account = chat === undefined ? null : store.accountOf(by);
     // A machine never reaches this road, and the person's role and reach are read here, in the seal's transaction.
-    if (chat !== undefined && machineActing()) return { ok: false as const, reason: "machine-proof" as const };
+    if ((chat !== undefined || passkey !== undefined) && machineActing()) return { ok: false as const, reason: "machine-proof" as const };
     if (chat !== undefined && (account === null || account.revokedAt !== null || account.role !== "approver" || repoNow === null || !store.accountCanAccess(by, repoNow))) return { ok: false as const, reason: "not-an-approver" as const };
-    const authenticated: { ok: true; method: AuthMethod | "chat"; at: number } | { ok: false; reason: "no-approvers" | "not-an-approver" } = chat !== undefined ? { ok: true, method: "chat", at: now.getTime() } : authenticateApprover(store, by, token, repoNow);
+    let passkeyVerified: Extract<PasskeyGateResult, { ok: true }> | null = null;
+    let authenticated: { ok: true; method: AuthMethod | "chat" | "passkey"; at: number } | { ok: false; reason: "no-approvers" | "not-an-approver" };
+    if (passkey !== undefined) {
+      const checked = verifyPasskeyAction(store, {
+        accountName: by,
+        repo: repoNow,
+        verb: "approve",
+        expectedBinding: { verb: "approve", taskId, sawDigest },
+        proof: passkey,
+        now,
+        consume: false,
+      });
+      if (!checked.ok) {
+        return checked.code === "not_an_approver"
+          ? { ok: false as const, reason: "not-an-approver" as const }
+          : { ok: false as const, reason: "policy" as const, message: checked.message };
+      }
+      passkeyVerified = checked;
+      authenticated = { ok: true, method: "passkey", at: now.getTime() };
+    } else if (chat !== undefined) {
+      authenticated = { ok: true, method: "chat", at: now.getTime() };
+    } else {
+      authenticated = authenticateApprover(store, by, token, repoNow);
+    }
     if (!authenticated.ok) return authenticated;
     // ONLY A PERSON APPROVES (docs/plans/approval-policy.md, phase 1): a lead token or a remote API token proves the
     // credential, not a person at a ceremony. Refused before any vote or proof row is written.
@@ -1658,11 +1691,30 @@ export function approve(
     // How the person was proved, beside every yes they give (a vote kept for protected work, or the seal): a password
     // typed now, a re-check now, or a remembered one — with when, the credential generation and the exact digest.
     const proved = () => store.recordAction({ at: now.toISOString(), actor: by, repo: store.lookupRef(taskId)?.repo ?? null, taskId, runId: null, action: APPROVAL_PROOF,
-      outcome: authenticated.method, source: "work", detail: (fastStart === undefined ? approvalProofDetail : fastProofDetail(fastStart))(authenticated.at, store.accountOf(by)?.generation ?? 0, scope.digest,
-        local === null ? undefined : { generation: local.localGeneration, transport: local.transport }) });
+      outcome: authenticated.method, source: "work", detail: passkeyVerified !== null
+        ? passkeyProofDetail({ at: now, generation: passkeyVerified.accountGeneration, digest: scope.digest, verb: "approve", credentialId: passkeyVerified.credentialId, pairedDeviceId: passkeyVerified.deviceId, be: passkeyVerified.be, bs: passkeyVerified.bs })
+        : (fastStart === undefined ? approvalProofDetail : fastProofDetail(fastStart))(authenticated.at, store.accountOf(by)?.generation ?? 0, scope.digest,
+          local === null ? undefined : { generation: local.localGeneration, transport: local.transport }) });
+    const consumePasskeyOrFail = (): ApproveResult | null => {
+      if (passkey === undefined) return null;
+      const consumed = verifyPasskeyAction(store, {
+        accountName: by,
+        repo: repoNow,
+        verb: "approve",
+        expectedBinding: { verb: "approve", taskId, sawDigest },
+        proof: passkey,
+        now,
+        consume: true,
+      });
+      if (!consumed.ok) return { ok: false as const, reason: "policy" as const, message: consumed.message };
+      passkeyVerified = consumed;
+      return null;
+    };
     if (gate.verdict === "vote") {
       // The same person again adds nothing: no new vote, no proof row (and the approval roads refund a re-check).
       if (gate.already) return { ok: false as const, reason: "second-approver" as const, have: gate.have, need: gate.need, already: true };
+      const passkeyErr = consumePasskeyOrFail();
+      if (passkeyErr !== null) return passkeyErr;
       store.recordApprovalVote(taskId, scope.digest, by, now, authenticated.method);
       proved();
       return { ok: false as const, reason: "second-approver" as const, have: gate.have, need: gate.need, already: gate.already };
@@ -1672,6 +1724,8 @@ export function approve(
     const refused: { result?: ApproveResult } = {};
     try {
       return store.savepoint(() => {
+        const passkeyErr = consumePasskeyOrFail();
+        if (passkeyErr !== null) { refused.result = passkeyErr; throw refused; }
         if (gate.protectedWork) store.recordApprovalVote(taskId, scope.digest, by, now, authenticated.method);
         // SEAL, never re-resolve: the approval snapshots the stored working
         // profile — the exact bytes the digest the approver signed was bound

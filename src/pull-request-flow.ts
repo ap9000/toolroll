@@ -33,6 +33,8 @@ import { NIGHTLY_CHECK_ONLY, RELEASE_MERGES_ONLY, nightlyTaskRef, refArchived, r
 import { belongsToRelease } from "./release-authority.js";
 import { autoReleaseSealed } from "./release-auto.js";
 import { fullCheckGate, requestFollowUpChecks, type FullCheckGate } from "./result-follow-ups.js";
+import { verifyPasskeyAction, type PasskeyActionProof } from "./companion/passkey-gate.js";
+import { passkeyProofDetail } from "./companion/webauthn.js";
 
 export type MergeMethod = "squash" | "merge" | "rebase";
 export const MERGE_METHODS: readonly MergeMethod[] = ["squash", "merge", "rebase"];
@@ -405,16 +407,91 @@ function askPerson(store: Store, publication: Publication, head: string, body: s
 
 // ---- merging ----------------------------------------------------------------
 
-/** A person's merge: their password first, then the same checked merge. */
+export const MERGE_PROVED_ACTION = "merge proved";
+
+/** A person's merge: their password or a verified Passkey assertion (ADR 0005), then the same checked merge. */
 export async function mergeAsPerson(
   store: Store,
-  input: { runId: number; name: string; password: string; exec?: PublishExec; clock?: () => Date;
+  input: { runId: number; name: string; password?: string; passkey?: PasskeyActionProof; exec?: PublishExec; clock?: () => Date;
     /** A person's choice to merge without waiting for the full check (Quick or Off results). */
     anyway?: boolean },
 ): Promise<Result<{ commit: string | null }>> {
   const run = store.getRun(input.runId);
-  const repo = run === null ? null : store.refById(run.taskRef)?.repo ?? null;
-  if (input.password === "") return refuse("password", "Enter your password to merge.");
+  const taskRef = run === null ? null : store.refById(run.taskRef);
+  const repo = taskRef?.repo ?? null;
+  const clock = input.clock ?? (() => new Date());
+
+  if (input.passkey !== undefined) {
+    const publication = store.publicationForRun(input.runId);
+    const grant = repo === null ? null : store.publicationGrantFor(repo);
+    if (publication === null || publication.prNumber === null || taskRef === null) {
+      return refuse("no-pr", "This result has no open pull request to merge.");
+    }
+    const method: MergeMethod = grant?.mergeMethod ?? "squash";
+    const expectedBinding = {
+      verb: "ship" as const,
+      runId: input.runId,
+      taskId: taskRef.externalId,
+      prNumber: publication.prNumber,
+      headSha: publication.headSha,
+      method,
+      anyway: input.anyway === true,
+    };
+    const precheck = verifyPasskeyAction(store, {
+      accountName: input.name,
+      repo,
+      verb: "ship",
+      expectedBinding,
+      proof: input.passkey,
+      now: clock(),
+      consume: false,
+    });
+    if (!precheck.ok) return refuse("password", precheck.message);
+    return mergePullRequest(store, {
+      runId: input.runId,
+      by: input.name,
+      ...(input.anyway === true ? { anyway: true } : {}),
+      ...(input.exec === undefined ? {} : { exec: input.exec }),
+      ...(input.clock === undefined ? {} : { clock: input.clock }),
+      beforeReserve: seen => {
+        if (seen.head !== publication.headSha) return { ok: false, message: "The pull request head moved before merging." };
+        const now = clock();
+        const consumed = verifyPasskeyAction(store, {
+          accountName: input.name,
+          repo,
+          verb: "ship",
+          expectedBinding,
+          proof: input.passkey!,
+          now,
+          consume: true,
+        });
+        if (!consumed.ok) return { ok: false, message: consumed.message };
+        store.recordAction({
+          at: now.toISOString(),
+          actor: input.name,
+          repo,
+          taskId: taskRef.externalId,
+          runId: input.runId,
+          action: MERGE_PROVED_ACTION,
+          outcome: "passkey",
+          source: "request",
+          detail: passkeyProofDetail({
+            at: now,
+            generation: consumed.accountGeneration,
+            digest: publication.headSha,
+            verb: "ship",
+            credentialId: consumed.credentialId,
+            pairedDeviceId: consumed.deviceId,
+            be: consumed.be,
+            bs: consumed.bs,
+          }),
+        });
+        return { ok: true };
+      },
+    });
+  }
+
+  if (input.password === undefined || input.password === "") return refuse("password", "Enter your password to merge.");
   const proved = authenticateApprover(store, input.name, input.password, repo);
   if (!proved.ok) return refuse("password", "That password didn't work, or you can't merge in this project.");
   // A merge by hand is a person's (approval policy §1.7): the lead's token or a remote API token proves a credential,
@@ -446,7 +523,10 @@ export async function mergePullRequest(
     /** Where this merge may land, judged on GitHub's own view of the pull request (its base branch, address and head):
      * words when it isn't the signed destination, else null. Required with `flexibleShip`: a MERGED answer counts as
      * this merge only when it passes, whichever way GitHub reports it (already merged, or merged by this call). */
-    destination?: (seen: PullRequestSeen) => string | null },
+    destination?: (seen: PullRequestSeen) => string | null;
+    /** ADR 0005: runs inside the reservation transaction right before `merge_in_flight` is inserted (atomically consumes
+     * the single-use `ship` passkey challenge and writes the `merge proved` row). */
+    beforeReserve?: (seen: PullRequestSeen) => { ok: true } | { ok: false; message: string } },
 ): Promise<Result<{ commit: string | null; seen?: PullRequestSeen }>> {
   const exec = input.exec ?? execRun;
   const clock = input.clock ?? (() => new Date());
@@ -534,7 +614,8 @@ export async function mergePullRequest(
   // one that comes after waits for GitHub's answer (the reservation counts as work going on).
   // One merge at a time, each owning its reservation by its token: a second caller is refused, and each releases only its own.
   const token = randomUUID();
-  let reserved: "ok" | "archived" | "merging" | "deleting" | "halted" | "recovery-held";
+  let reserved: "ok" | "archived" | "merging" | "deleting" | "halted" | "recovery-held" | "passkey-refused";
+  let passkeyRefusedMsg = "Passkey verification failed.";
   try { reserved = store.transact((): typeof reserved => {
     if (fullCheckGate(store, publication.run, clock()).state === "recovery-held") return "recovery-held";
     if (input.proceed?.({ base: before.base, url: before.url, head: before.head }) === false) return "halted";
@@ -546,12 +627,17 @@ export async function mergePullRequest(
     if (store.handle.prepare("SELECT 1 FROM merge_in_flight WHERE publication = ? AND at > ?").get(publication.id, new Date(clock().getTime() - 15 * 60_000).toISOString()) !== undefined) return "merging";
     const reservedAt = clock();
     if (fullCheckGate(store, publication.run, reservedAt).state === "recovery-held") throw new RecoveryHeldReservation();
+    if (input.beforeReserve !== undefined) {
+      const check = input.beforeReserve({ base: before.base, url: before.url, head: before.head });
+      if (!check.ok) { passkeyRefusedMsg = check.message; return "passkey-refused"; }
+    }
     store.handle.prepare("INSERT OR REPLACE INTO merge_in_flight (publication, task_ref, token, by, at) VALUES (?, ?, ?, ?, ?)").run(publication.id, publication.taskRef, token, input.by, reservedAt.toISOString());
     return "ok";
   }); } catch (error) {
     if (error instanceof RecoveryHeldReservation) return refuse("recovery-held", "Checks are on hold after recovery. Earlier execution is unverified.");
     throw error;
   }
+  if (reserved === "passkey-refused") return refuse("password", passkeyRefusedMsg);
   if (reserved === "recovery-held") return refuse("recovery-held", "Checks are on hold after recovery. Earlier execution is unverified.");
   if (reserved === "halted") return refuse("halted", "The worker is stopping or paused, so this merge waits for its next pass.");
   if (reserved === "archived") return refuse("archived", "This task is put away. Restore it before merging.");

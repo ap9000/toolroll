@@ -289,11 +289,17 @@ export function renamePhone(store: StoreView, deviceId: string, name: string, ac
 }
 
 /**
- * ADR 0001: a restore unconditionally deletes this Mac's companion keys and every paired phone (including
- * `device_psk`). A restored copy (another Mac, or this one later) gets its own machine id and Noise key, so two copies
- * never fight over one relay identity and a leaked backup carries no live key.
+ * ADR 0001: a restore unconditionally deletes this Mac's companion keys, every paired phone (including `device_psk`),
+ * every registered passkey, pending passkey challenges, and mutation idempotency records. A restored copy gets its own
+ * machine id and Noise key, and old passkeys/challenges never survive a restore.
  */
-const COMPANION_RESTORE_TABLES = ["companion_host_keys", "companion_paired_device"] as const;
+const COMPANION_RESTORE_TABLES = [
+  "companion_host_keys",
+  "companion_paired_device",
+  "account_passkeys",
+  "passkey_challenges",
+  "device_idempotency",
+] as const;
 
 export function retireCompanionOnRestore(db: CompanionDb): number {
   let deleted = 0;
@@ -301,6 +307,265 @@ export function retireCompanionOnRestore(db: CompanionDb): number {
     deleted += Number(db.prepare(`DELETE FROM ${table}`).run().changes);
     const remaining = Number(db.prepare(`SELECT count(*) AS n FROM ${table}`).get()?.["n"] ?? 0);
     if (remaining !== 0) throw new Error(`ADR 0001 postcondition failed: ${table} still has ${remaining} rows after restore`);
+  }
+  return deleted;
+}
+
+// ---- Gate 2: Passkeys, Single-Use Challenges, and Mutation Idempotency (ADR 0005) ----------------------------------
+
+export type PasskeyChallengeKind = "register" | "approve" | "accept" | "land" | "ship";
+
+export interface AccountPasskeyRow {
+  credentialId: string;
+  workspaceId: string;
+  accountName: string;
+  userHandle: string;
+  publicKeySpki: string;
+  signCount: number;
+  label: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  recoveryGeneration: string;
+  revokedAt: string | null;
+}
+
+export interface PasskeyChallengeRow {
+  challenge: string;
+  kind: PasskeyChallengeKind;
+  workspaceId: string;
+  accountName: string;
+  deviceId: string;
+  recoveryGeneration: string;
+  bindingJson: string;
+  expiresAt: string;
+  consumedAt: string | null;
+}
+
+export type DeviceIdempotencyState = "in_flight" | "completed" | "unknown";
+
+export interface DeviceIdempotencyRow {
+  deviceId: string;
+  idempotencyKey: string;
+  method: string;
+  requestHash: string;
+  state: DeviceIdempotencyState;
+  outcomeJson: string | null;
+  updatedAt: string;
+}
+
+export const IDEMPOTENCY_RETENTION_MS = 24 * 60 * 60 * 1000;
+export const IDEMPOTENCY_MAX_PER_DEVICE = 1_000;
+
+function passkeyRowOf(row: Record<string, unknown>): AccountPasskeyRow {
+  return {
+    credentialId: String(row["credential_id"]),
+    workspaceId: String(row["workspace_id"]),
+    accountName: String(row["account_name"]),
+    userHandle: String(row["user_handle"]),
+    publicKeySpki: String(row["public_key_spki"]),
+    signCount: Number(row["sign_count"]),
+    label: String(row["label"]),
+    createdAt: String(row["created_at"]),
+    lastUsedAt: row["last_used_at"] == null ? null : String(row["last_used_at"]),
+    recoveryGeneration: String(row["recovery_generation"]),
+    revokedAt: row["revoked_at"] == null ? null : String(row["revoked_at"]),
+  };
+}
+
+export function getAccountPasskey(db: CompanionDb, credentialId: string): AccountPasskeyRow | null {
+  const row = db.prepare("SELECT * FROM account_passkeys WHERE credential_id = ?").get(credentialId);
+  return row === undefined ? null : passkeyRowOf(row);
+}
+
+export function insertAccountPasskey(
+  db: CompanionDb,
+  row: Omit<AccountPasskeyRow, "lastUsedAt" | "revokedAt">,
+): boolean {
+  const res = db.prepare(`
+    INSERT OR IGNORE INTO account_passkeys
+      (credential_id, workspace_id, account_name, user_handle, public_key_spki, sign_count, label, created_at, recovery_generation)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    row.credentialId,
+    row.workspaceId,
+    row.accountName,
+    row.userHandle,
+    row.publicKeySpki,
+    row.signCount,
+    sanitizeDeviceName(row.label),
+    row.createdAt,
+    row.recoveryGeneration,
+  );
+  return Number(res.changes) === 1;
+}
+
+export function listActiveAccountPasskeys(
+  db: CompanionDb,
+  workspaceId: string,
+  accountName: string,
+  recoveryGeneration: string,
+): AccountPasskeyRow[] {
+  return db.prepare(`
+    SELECT * FROM account_passkeys
+    WHERE workspace_id = ? AND account_name = ? AND recovery_generation = ? AND revoked_at IS NULL
+    ORDER BY created_at DESC, credential_id
+  `).all(workspaceId, accountName, recoveryGeneration).map(passkeyRowOf);
+}
+
+export function listAllAccountPasskeys(
+  db: CompanionDb,
+  workspaceId: string,
+  accountName: string,
+  recoveryGeneration: string,
+): AccountPasskeyRow[] {
+  return db.prepare(`
+    SELECT * FROM account_passkeys
+    WHERE workspace_id = ? AND account_name = ? AND recovery_generation = ?
+    ORDER BY created_at DESC, credential_id
+  `).all(workspaceId, accountName, recoveryGeneration).map(passkeyRowOf);
+}
+
+export function updateAccountPasskeyUsage(db: CompanionDb, credentialId: string, signCount: number, now: Date): void {
+  db.prepare("UPDATE account_passkeys SET sign_count = ?, last_used_at = ? WHERE credential_id = ? AND revoked_at IS NULL")
+    .run(signCount, now.toISOString(), credentialId);
+}
+
+export function revokeAccountPasskey(db: CompanionDb, credentialId: string, accountName: string, now: Date): boolean {
+  const res = db.prepare("UPDATE account_passkeys SET revoked_at = ? WHERE credential_id = ? AND account_name = ? AND revoked_at IS NULL")
+    .run(now.toISOString(), credentialId, accountName);
+  return Number(res.changes) > 0;
+}
+
+export function savePasskeyChallenge(db: CompanionDb, row: Omit<PasskeyChallengeRow, "consumedAt">): void {
+  db.prepare(`
+    INSERT INTO passkey_challenges
+      (challenge, kind, workspace_id, account_name, device_id, recovery_generation, binding_json, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    row.challenge,
+    row.kind,
+    row.workspaceId,
+    row.accountName,
+    row.deviceId,
+    row.recoveryGeneration,
+    row.bindingJson,
+    row.expiresAt,
+  );
+}
+
+export function getPasskeyChallenge(db: CompanionDb, challenge: string): PasskeyChallengeRow | null {
+  const row = db.prepare("SELECT * FROM passkey_challenges WHERE challenge = ?").get(challenge);
+  if (row === undefined) return null;
+  return {
+    challenge: String(row["challenge"]),
+    kind: String(row["kind"]) as PasskeyChallengeKind,
+    workspaceId: String(row["workspace_id"]),
+    accountName: String(row["account_name"]),
+    deviceId: String(row["device_id"]),
+    recoveryGeneration: String(row["recovery_generation"]),
+    bindingJson: String(row["binding_json"]),
+    expiresAt: String(row["expires_at"]),
+    consumedAt: row["consumed_at"] == null ? null : String(row["consumed_at"]),
+  };
+}
+
+export function consumePasskeyChallenge(db: CompanionDb, challenge: string, now: Date): boolean {
+  const res = db.prepare("UPDATE passkey_challenges SET consumed_at = ? WHERE challenge = ? AND consumed_at IS NULL AND expires_at > ?")
+    .run(now.toISOString(), challenge, now.toISOString());
+  return Number(res.changes) === 1;
+}
+
+export function prunePasskeyChallenges(db: CompanionDb, now: Date): number {
+  return Number(db.prepare("DELETE FROM passkey_challenges WHERE expires_at <= ? OR consumed_at IS NOT NULL").run(now.toISOString()).changes);
+}
+
+function idempotencyRowOf(row: Record<string, unknown>): DeviceIdempotencyRow {
+  return {
+    deviceId: String(row["device_id"]),
+    idempotencyKey: String(row["idempotency_key"]),
+    method: String(row["method"]),
+    requestHash: String(row["request_hash"]),
+    state: String(row["state"]) as DeviceIdempotencyState,
+    outcomeJson: row["outcome_json"] == null ? null : String(row["outcome_json"]),
+    updatedAt: String(row["updated_at"]),
+  };
+}
+
+export function getDeviceIdempotency(db: CompanionDb, deviceId: string, idempotencyKey: string): DeviceIdempotencyRow | null {
+  const row = db.prepare("SELECT * FROM device_idempotency WHERE device_id = ? AND idempotency_key = ?").get(deviceId, idempotencyKey);
+  return row === undefined ? null : idempotencyRowOf(row);
+}
+
+export type IdempotencyClaim =
+  | { status: "claimed" }
+  | { status: "conflict" }
+  | { status: "in_flight" }
+  | { status: "unknown" }
+  | { status: "completed"; outcomeJson: string };
+
+/**
+ * Atomically claims `(deviceId, idempotencyKey)` as `in_flight` (or classifies an existing row).
+ * Reusing a key with a different `method` or `requestHash` is unconditionally rejected (`conflict`).
+ */
+export function claimDeviceIdempotency(
+  db: CompanionDb,
+  input: { deviceId: string; idempotencyKey: string; method: string; requestHash: string; now: Date },
+): IdempotencyClaim {
+  const inserted = db.prepare(`
+    INSERT OR IGNORE INTO device_idempotency (device_id, idempotency_key, method, request_hash, state, outcome_json, updated_at)
+    VALUES (?, ?, ?, ?, 'in_flight', NULL, ?)
+  `).run(input.deviceId, input.idempotencyKey, input.method, input.requestHash, input.now.toISOString());
+  if (Number(inserted.changes) === 1) return { status: "claimed" };
+  const existing = getDeviceIdempotency(db, input.deviceId, input.idempotencyKey);
+  if (existing === null) return { status: "conflict" };
+  if (existing.method !== input.method || existing.requestHash !== input.requestHash) return { status: "conflict" };
+  if (existing.state === "in_flight") return { status: "in_flight" };
+  if (existing.state === "unknown") return { status: "unknown" };
+  return { status: "completed", outcomeJson: existing.outcomeJson ?? "{}" };
+}
+
+export function settleDeviceIdempotency(
+  db: CompanionDb,
+  deviceId: string,
+  idempotencyKey: string,
+  state: "completed" | "unknown",
+  outcomeJson: string | null,
+  now: Date,
+): void {
+  db.prepare("UPDATE device_idempotency SET state = ?, outcome_json = ?, updated_at = ? WHERE device_id = ? AND idempotency_key = ?")
+    .run(state, outcomeJson, now.toISOString(), deviceId, idempotencyKey);
+}
+
+/**
+ * Startup reconciliation (threat-model-and-routes.md §3): unconditionally moves every lingering `in_flight` row to
+ * `unknown` because a restarted daemon can no longer settle an interrupted external side effect.
+ */
+export function reconcileIdempotencyOnStartup(db: CompanionDb, now: Date): number {
+  return Number(db.prepare("UPDATE device_idempotency SET state = 'unknown', updated_at = ? WHERE state = 'in_flight'").run(now.toISOString()).changes);
+}
+
+/**
+ * Bounded retention: drops settled (`completed`, `unknown`) rows older than 24h and enforces a hard cap of 1,000 rows
+ * per paired device, evicting oldest settled rows first.
+ */
+export function pruneDeviceIdempotency(db: CompanionDb, now: Date): number {
+  const cutoff = new Date(now.getTime() - IDEMPOTENCY_RETENTION_MS).toISOString();
+  let deleted = Number(db.prepare("DELETE FROM device_idempotency WHERE state IN ('completed', 'unknown') AND updated_at < ?").run(cutoff).changes);
+  const devices = db.prepare("SELECT device_id FROM device_idempotency GROUP BY device_id HAVING count(*) > ?").all(IDEMPOTENCY_MAX_PER_DEVICE);
+  for (const row of devices) {
+    const deviceId = String(row["device_id"]);
+    const total = Number(db.prepare("SELECT count(*) AS n FROM device_idempotency WHERE device_id = ?").get(deviceId)?.["n"] ?? 0);
+    const excess = total - IDEMPOTENCY_MAX_PER_DEVICE;
+    if (excess <= 0) continue;
+    deleted += Number(db.prepare(`
+      DELETE FROM device_idempotency
+      WHERE rowid IN (
+        SELECT rowid FROM device_idempotency
+        WHERE device_id = ? AND state IN ('completed', 'unknown')
+        ORDER BY updated_at ASC, rowid ASC
+        LIMIT ?
+      )
+    `).run(deviceId, excess).changes);
   }
   return deleted;
 }

@@ -903,6 +903,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/send-back-build.ts#sessionYesPossible@1>withFreshness(approve-standard,_)@1": 1,
   },
   "mergeAsPerson": {
+    "src/companion/actions.ts#<module>": 2,
+    "src/companion/actions.ts#createCompanionActions@5>taskShip@15>withIdempotency(principal,task.ship,idempotencyKey,_,_,_)@1": 1,
     "src/pull-request-flow.ts#mergeAsPerson@22": 1,
     "src/server/tasks.ts#<module>": 2,
     "src/server/tasks.ts#createTasksHandlers@2>taskMerge@28": 1,

@@ -9,7 +9,11 @@ struct TaskDetailView: View {
     @State private var showDetails = false
     @State private var showHistory = false
     @State private var refreshed = 0
+    @State private var actionSuccessCount = 0
     @State private var showOpenOnMac = false
+    @State private var showPasskeySetup = false
+    @State private var showExceptionAccept = false
+    @State private var exceptionNote = ""
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.toolrollAppearance) private var appearance
 
@@ -65,6 +69,7 @@ struct TaskDetailView: View {
                 if steps.phase == .loaded { refreshed += 1 }
             }
             .sensoryFeedback(.success, trigger: refreshed)
+            .sensoryFeedback(.success, trigger: actionSuccessCount)
             .safeAreaInset(edge: .bottom) {
                 bottomBar(proxy: proxy)
             }
@@ -74,6 +79,9 @@ struct TaskDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task(id: appState.refreshTick) {
             await appState.loadTask(taskId)
+            if appState.passkeyStatus == nil {
+                await appState.refreshPasskeyStatus()
+            }
             #if DEBUG
             if appState.debugScreen == "openLive" {
                 appState.debugScreen = nil
@@ -90,6 +98,20 @@ struct TaskDetailView: View {
         }
         .sheet(item: $liveSheet) { sheet in
             LiveWatchView(appState: appState, run: sheet.run, title: title)
+        }
+        .sheet(isPresented: $showPasskeySetup) {
+            SettingsView(appState: appState)
+        }
+        .sheet(isPresented: $showExceptionAccept) {
+            exceptionAcceptSheet
+        }
+        .alert("Couldn't complete action", isPresented: Binding(
+            get: { appState.actionError != nil },
+            set: { if !$0 { appState.actionError = nil } }
+        )) {
+            Button("OK", role: .cancel) { appState.actionError = nil }
+        } message: {
+            Text(appState.actionError ?? "")
         }
         .userActivity(Self.handoffActivity, isActive: handoffURL != nil) { activity in
             activity.title = title
@@ -689,37 +711,31 @@ struct TaskDetailView: View {
         default:
             VStack(spacing: 0) {
                 Divider().overlay(ToolrollTheme.hairline)
+                if let feedback = appState.actionFeedback {
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.footnote)
+                            .foregroundStyle(ToolrollTheme.success)
+                        Text(feedback)
+                            .font(.footnote.weight(.medium))
+                            .foregroundStyle(ToolrollTheme.ink)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 9)
+                    .background(ToolrollTheme.successSoft)
+                    Divider().overlay(ToolrollTheme.hairline)
+                }
                 Group {
                     switch next {
-                    case .approveOnMac:
-                        compactHandoffBar("Approve on your Mac")
+                    case .approvePlan:
+                        approveBottomBar
                     case .answerOnMac:
                         compactHandoffBar("Answer on your Mac")
                     case .unblockOnMac:
                         compactHandoffBar("Unblock on your Mac")
                     case .reviewChanges:
-                        HStack(spacing: 8) {
-                            if let first = firstFileRoute {
-                                NavigationLink(value: Route.diff(first)) {
-                                    Text("Review diff")
-                                }
-                                .buttonStyle(SignalButtonStyle(compact: true))
-                            } else {
-                                Button("Review diff") { jumpToChanges(proxy) }
-                                    .buttonStyle(SignalButtonStyle(compact: true))
-                                    .disabled(diff.value?.files.isEmpty ?? true)
-                            }
-                            if handoffURL != nil {
-                                Button {
-                                    showOpenOnMac = true
-                                } label: {
-                                    Label("Mac", systemImage: "laptopcomputer.and.arrow.down")
-                                }
-                                .buttonStyle(OutlineButtonStyle(compact: true))
-                                .frame(maxWidth: 108)
-                                .accessibilityLabel("Open on Mac")
-                            }
-                        }
+                        reviewBottomBar(proxy: proxy)
                     case .viewChanges:
                         Button("View changes") { jumpToChanges(proxy) }
                             .buttonStyle(OutlineButtonStyle(compact: true))
@@ -746,6 +762,197 @@ struct TaskDetailView: View {
             }
             .background(ToolrollTheme.surface)
         }
+    }
+
+    @ViewBuilder
+    private var approveBottomBar: some View {
+        if appState.demoApprovedTasks.contains(taskId) {
+            confirmedActionBar("Plan approved · Building started")
+        } else if let terms = steps.value?.waitingTerms {
+            if appState.isOffline {
+                offlineDisabledBar("Unavailable offline")
+            } else if !appState.isDemoMode && appState.passkeyStatus?.registered == false {
+                HStack(spacing: 8) {
+                    Button {
+                        if appState.passkeyStatus?.enrollmentOpen == true {
+                            Task {
+                                if await appState.enrollPasskey() { actionSuccessCount += 1 }
+                            }
+                        } else {
+                            showPasskeySetup = true
+                        }
+                    } label: {
+                        Label("Set up passkey to approve", systemImage: "person.badge.key.fill")
+                    }
+                    .buttonStyle(SignalButtonStyle(compact: true))
+                    .disabled(appState.actionInFlight)
+                    macIconButton
+                }
+            } else {
+                HStack(spacing: 8) {
+                    Button {
+                        Task {
+                            if await appState.approveTask(taskId: taskId, digest: terms.key) {
+                                actionSuccessCount += 1
+                            }
+                        }
+                    } label: {
+                        if appState.actionInFlight {
+                            ProgressView()
+                                .tint(appearance.onSignal)
+                        } else {
+                            Label("Approve plan", systemImage: "person.badge.key.fill")
+                        }
+                    }
+                    .buttonStyle(SignalButtonStyle(compact: true))
+                    .disabled(appState.actionInFlight || !appState.canRunActions)
+                    macIconButton
+                }
+            }
+        } else {
+            compactHandoffBar("Approve on your Mac")
+        }
+    }
+
+    @ViewBuilder
+    private func reviewBottomBar(proxy: ScrollViewProxy) -> some View {
+        if appState.demoAcceptedTasks.contains(taskId) {
+            confirmedActionBar("Work accepted")
+        } else {
+            HStack(spacing: 8) {
+                if let first = firstFileRoute {
+                    NavigationLink(value: Route.diff(first)) {
+                        Text("Review diff")
+                    }
+                    .buttonStyle(OutlineButtonStyle(compact: true))
+                } else {
+                    Button("Review diff") { jumpToChanges(proxy) }
+                        .buttonStyle(OutlineButtonStyle(compact: true))
+                        .disabled(diff.value?.files.isEmpty ?? true)
+                }
+
+                if let review = steps.value?.review {
+                    if appState.isOffline {
+                        offlineDisabledBar("Offline")
+                            .frame(maxWidth: 132)
+                    } else if !appState.isDemoMode && appState.passkeyStatus?.registered == false {
+                        Button {
+                            showPasskeySetup = true
+                        } label: {
+                            Label("Set up passkey", systemImage: "person.badge.key.fill")
+                        }
+                        .buttonStyle(SignalButtonStyle(compact: true))
+                    } else {
+                        Button {
+                            if review.accept?.owed == "exception" {
+                                exceptionNote = ""
+                                showExceptionAccept = true
+                            } else {
+                                Task {
+                                    if await appState.acceptTask(taskId: taskId, runId: review.run, receiptDigest: review.receipt) {
+                                        actionSuccessCount += 1
+                                    }
+                                }
+                            }
+                        } label: {
+                            if appState.actionInFlight {
+                                ProgressView()
+                                    .tint(appearance.onSignal)
+                            } else {
+                                Label("Accept", systemImage: "person.badge.key.fill")
+                            }
+                        }
+                        .buttonStyle(SignalButtonStyle(compact: true))
+                        .disabled(appState.actionInFlight || !appState.canRunActions)
+                    }
+                } else {
+                    macIconButton
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var macIconButton: some View {
+        if handoffURL != nil {
+            Button {
+                showOpenOnMac = true
+            } label: {
+                Image(systemName: "laptopcomputer.and.arrow.down")
+            }
+            .buttonStyle(OutlineButtonStyle(compact: true))
+            .frame(width: 52)
+            .accessibilityLabel("Open on Mac")
+        }
+    }
+
+    private func confirmedActionBar(_ label: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.footnote)
+                .foregroundStyle(ToolrollTheme.success)
+                .accessibilityHidden(true)
+            Text(label)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(ToolrollTheme.ink)
+        }
+        .frame(maxWidth: .infinity, minHeight: 44)
+        .background(ToolrollTheme.successSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .accessibilityElement(children: .combine)
+    }
+
+    private func offlineDisabledBar(_ label: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "wifi.slash")
+                .font(.footnote)
+                .foregroundStyle(ToolrollTheme.muted)
+                .accessibilityHidden(true)
+            Text(label)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(ToolrollTheme.muted)
+        }
+        .frame(maxWidth: .infinity, minHeight: 44)
+        .card(radius: 10)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var exceptionAcceptSheet: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("This result has checks or review findings that require an exception note before accepting.")
+                    .font(.subheadline)
+                    .foregroundStyle(ToolrollTheme.muted)
+                TextField("Why are you accepting anyway?", text: $exceptionNote, axis: .vertical)
+                    .lineLimit(3...6)
+                    .padding(12)
+                    .card(radius: 10)
+                Spacer()
+                Button {
+                    guard let review = steps.value?.review else { return }
+                    let trimmed = exceptionNote.trimmingCharacters(in: .whitespacesAndNewlines)
+                    showExceptionAccept = false
+                    Task {
+                        if await appState.acceptTask(taskId: taskId, runId: review.run, receiptDigest: review.receipt, note: trimmed) {
+                            actionSuccessCount += 1
+                        }
+                    }
+                } label: {
+                    Label("Accept with note", systemImage: "person.badge.key.fill")
+                }
+                .buttonStyle(SignalButtonStyle())
+                .disabled(exceptionNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || appState.actionInFlight)
+            }
+            .padding(16)
+            .background(ToolrollTheme.paper.ignoresSafeArea())
+            .navigationTitle("Accept with exception")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { showExceptionAccept = false }
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 
     private func compactHandoffBar(_ label: String) -> some View {

@@ -51,6 +51,10 @@ vi.mock("./phone-engine-api.js", () => ({
     engine.calls.push(["remove", service === null ? "off" : "running", deviceId, account]);
     return engine.phones.some(one => one.deviceId === deviceId && one.accountName === account && one.state !== "retired");
   },
+  listPasskeys: () => [],
+  isPasskeyEnrollmentOpen: () => false,
+  openPasskeyEnrollment: () => ({ expiresAtMs: Date.now() + 300_000 }),
+  revokePasskey: () => false,
 }));
 
 let dir: string, store: Store, password = "", nopassPassword = "";

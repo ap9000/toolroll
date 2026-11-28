@@ -100,8 +100,23 @@ final class CompanionAppState {
     /// while inactive, so it doesn't hide them.
     var presentingSystemUI = false
 
+    /// Gate 2 passkey status for this Mac workspace (ADR 0005).
+    private(set) var passkeyStatus: PasskeyStatus?
+    /// True while a passkey registration or approval RPC is executing.
+    private(set) var actionInFlight = false
+    /// Transient confirmation banner text after an in-app approval or passkey enrollment.
+    var actionFeedback: String?
+    /// Human-readable error message from a failed passkey enrollment or approval.
+    var actionError: String?
+    /// Demo-only session state so Approve & Accept respond interactively without mutating fixtures on disk.
+    private(set) var demoApprovedTasks: Set<String> = []
+    private(set) var demoAcceptedTasks: Set<String> = []
+
     /// The privacy cover stays off while inactive during a pairing or while a sheet/prompt is up.
     var suppressesPrivacyCover: Bool { presentingSystemUI || pairing != .idle }
+
+    /// Approvals and mutations never queue offline (ADR 0004).
+    var canRunActions: Bool { !isOffline && (isDemoMode || connection == .connected) }
 
     private var demoCache = CompanionCache()
     private var liveCache = CompanionCache()
@@ -109,6 +124,7 @@ final class CompanionAppState {
     @ObservationIgnored private let client: CompanionRelayClient
     @ObservationIgnored private let demoSource = DemoCompanionSource()
     @ObservationIgnored private let liveSource: LiveCompanionSource
+    @ObservationIgnored private let passkeyManager = PasskeyManager()
     @ObservationIgnored private let snapshots = CompanionSnapshotStore.standard()
     @ObservationIgnored private var snapshotTask: Task<Void, Never>?
     @ObservationIgnored private var connectTask: Task<Bool, Never>?
@@ -244,6 +260,11 @@ final class CompanionAppState {
         Task { await client.disconnect() }
         pairingError = nil
         notice = nil
+        actionFeedback = nil
+        actionError = nil
+        demoApprovedTasks = []
+        demoAcceptedTasks = []
+        passkeyStatus = PasskeyStatus(registered: true, count: 1, enrollmentOpen: false, rpId: "toolroll.dev")
         demoCache = CompanionCache()
         connection = .demo
     }
@@ -252,6 +273,11 @@ final class CompanionAppState {
         epoch += 1
         demoCache = CompanionCache()
         liveCache = CompanionCache()
+        demoApprovedTasks = []
+        demoAcceptedTasks = []
+        passkeyStatus = nil
+        actionFeedback = nil
+        actionError = nil
         connection = pairedRecord == nil ? .unpaired : .connecting
         if let record = pairedRecord {
             restoreSnapshot(for: record)
@@ -546,6 +572,7 @@ final class CompanionAppState {
             }
             consoleUrl = hello.consoleUrl
             connection = .connected
+            Task { await self.refreshPasskeyStatus() }
             return true
         } catch {
             guard started == epoch, startedConnect == connectEpoch, !isDemoMode, pairedRecord == record else { return false }
@@ -834,6 +861,321 @@ final class CompanionAppState {
         return ((window.window.records ?? []).filter { $0.kind != .other }, stream)
     }
 
+    // MARK: Gate 2 Passkey Registration & In-App Approvals (ADR 0005)
+
+    func refreshPasskeyStatus() async {
+        let started = epoch, demo = isDemoMode
+        if demo || isDebugFrozen {
+            passkeyStatus = try? await demoSource.passkeyStatus()
+            return
+        }
+        guard connection == .connected else { return }
+        if let status = try? await liveSource.passkeyStatus(), started == epoch, demo == isDemoMode {
+            passkeyStatus = status
+        }
+    }
+
+    @discardableResult
+    func enrollPasskey() async -> Bool {
+        guard !actionInFlight else { return false }
+        actionError = nil
+        actionFeedback = nil
+        if isDemoMode || isDebugFrozen {
+            passkeyStatus = PasskeyStatus(registered: true, count: 1, enrollmentOpen: false, rpId: "toolroll.dev")
+            actionFeedback = "Passkey ready for approvals."
+            return true
+        }
+        guard canRunActions else {
+            actionError = "Can't reach your Mac. Connect to set up a passkey."
+            return false
+        }
+        actionInFlight = true
+        defer { actionInFlight = false }
+        do {
+            let begin = try await liveSource.passkeyRegisterBegin()
+            presentingSystemUI = true
+            let reg: PasskeyManager.RegistrationOutput
+            do {
+                defer { presentingSystemUI = false }
+                reg = try await passkeyManager.register(
+                    challengeB64Url: begin.challenge,
+                    rpId: begin.rp.id,
+                    userIdB64Url: begin.user.id,
+                    userName: begin.user.displayName
+                )
+            }
+            let label = CompanionDeviceName.sanitized(deviceName) ?? "iPhone"
+            _ = try await liveSource.passkeyRegisterFinish(
+                challenge: begin.challenge,
+                credentialId: reg.credentialId,
+                clientDataJSON: reg.clientDataJSON,
+                attestationObject: reg.attestationObject,
+                label: label
+            )
+            await refreshPasskeyStatus()
+            actionFeedback = "Passkey enabled for in-app approvals."
+            return true
+        } catch {
+            if let message = actionFailureMessage(error) {
+                actionError = message
+            }
+            return false
+        }
+    }
+
+    @discardableResult
+    func approveTask(taskId: String, digest: String) async -> Bool {
+        guard !actionInFlight else { return false }
+        actionError = nil
+        actionFeedback = nil
+        guard canRunActions else {
+            actionError = "Approvals require a live connection to your Mac."
+            return false
+        }
+        actionInFlight = true
+        defer { actionInFlight = false }
+        let idempotencyKey = UUID().uuidString.lowercased()
+        do {
+            if isDemoMode || isDebugFrozen {
+                let challenge = try await demoSource.approvalChallenge(
+                    verb: .approve, task: taskId, digest: digest, runId: nil, receiptDigest: nil,
+                    note: nil, publish: nil, planKey: nil, into: nil, undo: nil, anyway: nil
+                )
+                let dummy = WebAuthnAssertion(credentialId: "demo-cred-1", clientDataJSON: "demo", authenticatorData: "demo", signature: "demo", userHandle: "demo")
+                let result = try await demoSource.approveTask(
+                    task: taskId, digest: digest, challenge: challenge.challenge, idempotencyKey: idempotencyKey, assertion: dummy
+                )
+                if result.approved {
+                    demoApprovedTasks.insert(taskId)
+                    actionFeedback = "Plan approved."
+                    return true
+                }
+                return false
+            }
+
+            let challenge = try await liveSource.approvalChallenge(
+                verb: .approve, task: taskId, digest: digest, runId: nil, receiptDigest: nil,
+                note: nil, publish: nil, planKey: nil, into: nil, undo: nil, anyway: nil
+            )
+            let assertion = try await runPasskeyAssertion(challenge: challenge)
+            let result = try await liveSource.approveTask(
+                task: taskId, digest: digest, challenge: challenge.challenge, idempotencyKey: idempotencyKey, assertion: assertion
+            )
+            if result.secondApprover == true {
+                actionFeedback = "Your approval is recorded (\(result.have ?? 1) of \(result.need ?? 2))."
+            } else {
+                actionFeedback = "Plan approved."
+            }
+            await loadTask(taskId, quiet: true)
+            await loadInbox(.needsYou, quiet: true)
+            refreshTick += 1
+            return result.ok
+        } catch {
+            if let message = actionFailureMessage(error) {
+                actionError = message
+            }
+            return false
+        }
+    }
+
+    @discardableResult
+    func acceptTask(taskId: String, runId: Int?, receiptDigest: String, note: String? = nil, publish: Bool = false) async -> Bool {
+        guard !actionInFlight else { return false }
+        actionError = nil
+        actionFeedback = nil
+        guard canRunActions else {
+            actionError = "Accepting work requires a live connection to your Mac."
+            return false
+        }
+        actionInFlight = true
+        defer { actionInFlight = false }
+        let idempotencyKey = UUID().uuidString.lowercased()
+        do {
+            if isDemoMode || isDebugFrozen {
+                let challenge = try await demoSource.approvalChallenge(
+                    verb: .accept, task: taskId, digest: nil, runId: runId, receiptDigest: receiptDigest,
+                    note: note, publish: publish, planKey: nil, into: nil, undo: nil, anyway: nil
+                )
+                let dummy = WebAuthnAssertion(credentialId: "demo-cred-1", clientDataJSON: "demo", authenticatorData: "demo", signature: "demo", userHandle: "demo")
+                let result = try await demoSource.acceptTask(
+                    task: taskId, runId: runId, receiptDigest: receiptDigest, note: note, publish: publish,
+                    challenge: challenge.challenge, idempotencyKey: idempotencyKey, assertion: dummy
+                )
+                if result.accepted {
+                    demoAcceptedTasks.insert(taskId)
+                    actionFeedback = publish ? "Accepted and PR opened." : "Work accepted."
+                    return true
+                }
+                return false
+            }
+
+            let challenge = try await liveSource.approvalChallenge(
+                verb: .accept, task: taskId, digest: nil, runId: runId, receiptDigest: receiptDigest,
+                note: note, publish: publish, planKey: nil, into: nil, undo: nil, anyway: nil
+            )
+            let assertion = try await runPasskeyAssertion(challenge: challenge)
+            let result = try await liveSource.acceptTask(
+                task: taskId, runId: runId, receiptDigest: receiptDigest, note: note, publish: publish,
+                challenge: challenge.challenge, idempotencyKey: idempotencyKey, assertion: assertion
+            )
+            if let prNumber = result.prNumber {
+                actionFeedback = "Accepted · opened PR #\(prNumber)."
+            } else {
+                actionFeedback = result.published ? "Accepted and published." : "Work accepted."
+            }
+            await loadTask(taskId, quiet: true)
+            await loadInbox(.needsYou, quiet: true)
+            refreshTick += 1
+            return result.ok
+        } catch {
+            if let message = actionFailureMessage(error) {
+                actionError = message
+            }
+            return false
+        }
+    }
+
+    @discardableResult
+    func landTask(taskId: String, key: String, into: String? = nil, undo: Bool = false) async -> Bool {
+        guard !actionInFlight else { return false }
+        actionError = nil
+        actionFeedback = nil
+        guard canRunActions else {
+            actionError = "Landing work requires a live connection to your Mac."
+            return false
+        }
+        actionInFlight = true
+        defer { actionInFlight = false }
+        let idempotencyKey = UUID().uuidString.lowercased()
+        do {
+            if isDemoMode || isDebugFrozen {
+                let challenge = try await demoSource.approvalChallenge(
+                    verb: .land, task: taskId, digest: nil, runId: nil, receiptDigest: nil,
+                    note: nil, publish: nil, planKey: key, into: into, undo: undo, anyway: nil
+                )
+                let dummy = WebAuthnAssertion(credentialId: "demo-cred-1", clientDataJSON: "demo", authenticatorData: "demo", signature: "demo", userHandle: "demo")
+                let result = try await demoSource.landTask(
+                    task: taskId, key: key, into: into, undo: undo,
+                    challenge: challenge.challenge, idempotencyKey: idempotencyKey, assertion: dummy
+                )
+                if result.landed {
+                    actionFeedback = "Landed on \(result.branch ?? into ?? "main")."
+                    return true
+                }
+                return false
+            }
+
+            let challenge = try await liveSource.approvalChallenge(
+                verb: .land, task: taskId, digest: nil, runId: nil, receiptDigest: nil,
+                note: nil, publish: nil, planKey: key, into: into, undo: undo, anyway: nil
+            )
+            let assertion = try await runPasskeyAssertion(challenge: challenge)
+            let result = try await liveSource.landTask(
+                task: taskId, key: key, into: into, undo: undo,
+                challenge: challenge.challenge, idempotencyKey: idempotencyKey, assertion: assertion
+            )
+            actionFeedback = result.branch.map { "Landed on \($0)." } ?? "Landed."
+            await loadTask(taskId, quiet: true)
+            await loadInbox(.needsYou, quiet: true)
+            refreshTick += 1
+            return result.ok
+        } catch {
+            if let message = actionFailureMessage(error) {
+                actionError = message
+            }
+            return false
+        }
+    }
+
+    @discardableResult
+    func shipTask(runId: Int, taskId: String? = nil, anyway: Bool = false) async -> Bool {
+        guard !actionInFlight else { return false }
+        actionError = nil
+        actionFeedback = nil
+        guard canRunActions else {
+            actionError = "Shipping a PR requires a live connection to your Mac."
+            return false
+        }
+        actionInFlight = true
+        defer { actionInFlight = false }
+        let idempotencyKey = UUID().uuidString.lowercased()
+        do {
+            if isDemoMode || isDebugFrozen {
+                let challenge = try await demoSource.approvalChallenge(
+                    verb: .ship, task: nil, digest: nil, runId: runId, receiptDigest: nil,
+                    note: nil, publish: nil, planKey: nil, into: nil, undo: nil, anyway: anyway
+                )
+                let dummy = WebAuthnAssertion(credentialId: "demo-cred-1", clientDataJSON: "demo", authenticatorData: "demo", signature: "demo", userHandle: "demo")
+                let result = try await demoSource.shipTask(
+                    runId: runId, anyway: anyway, challenge: challenge.challenge, idempotencyKey: idempotencyKey, assertion: dummy
+                )
+                if result.shipped {
+                    actionFeedback = "PR merged."
+                    return true
+                }
+                return false
+            }
+
+            let challenge = try await liveSource.approvalChallenge(
+                verb: .ship, task: nil, digest: nil, runId: runId, receiptDigest: nil,
+                note: nil, publish: nil, planKey: nil, into: nil, undo: nil, anyway: anyway
+            )
+            let assertion = try await runPasskeyAssertion(challenge: challenge)
+            let result = try await liveSource.shipTask(
+                runId: runId, anyway: anyway, challenge: challenge.challenge, idempotencyKey: idempotencyKey, assertion: assertion
+            )
+            actionFeedback = "PR merged."
+            if let taskId { await loadTask(taskId, quiet: true) }
+            await loadInbox(.needsYou, quiet: true)
+            refreshTick += 1
+            return result.ok
+        } catch {
+            if let message = actionFailureMessage(error) {
+                actionError = message
+            }
+            return false
+        }
+    }
+
+    private func runPasskeyAssertion(challenge: ApprovalChallengeResponse) async throws -> WebAuthnAssertion {
+        presentingSystemUI = true
+        defer { presentingSystemUI = false }
+        return try await passkeyManager.assert(
+            challengeB64Url: challenge.challenge,
+            rpId: challenge.rpId,
+            allowCredentialIds: challenge.allowCredentials.map(\.id)
+        )
+    }
+
+    private func actionFailureMessage(_ error: Error) -> String? {
+        if let pkError = error as? PasskeyManager.PasskeyError {
+            if case .cancelled = pkError { return nil }
+            return pkError.errorDescription
+        }
+        if let rpc = error as? CompanionRPCError {
+            switch rpc.code {
+            case "enrollment_closed", "enrollment_not_open":
+                return "Open Settings → Phone on your Mac and click Enable passkey on iPhone first."
+            case "no_passkey", "passkey_required":
+                return "Set up a passkey in Settings before approving from this iPhone."
+            case "stale_digest", "stale_receipt", "stale_plan", "stale_head":
+                return "This task changed on your Mac. Pull to refresh and review the latest version."
+            case "outcome_unknown":
+                return "Your Mac restarted while finishing that action. Refresh to check the result before retrying."
+            case "in_progress":
+                return "That action is already running on your Mac."
+            case "route_not_allowed":
+                return "Update Toolroll on your Mac to approve tasks from this iPhone."
+            default:
+                return rpc.message.isEmpty ? "Your Mac couldn't complete that action." : rpc.message
+            }
+        }
+        if error is OfflineError {
+            return "Can't reach your Mac right now."
+        }
+        return error.localizedDescription
+    }
+
     // MARK: Unpair
 
     private struct EmptyParams: Encodable, Sendable {}
@@ -888,6 +1230,11 @@ final class CompanionAppState {
         pairedRecord = nil
         connectedPath = nil
         consoleUrl = nil
+        passkeyStatus = nil
+        actionFeedback = nil
+        actionError = nil
+        demoApprovedTasks = []
+        demoAcceptedTasks = []
         localNetworkDenied = false
         liveCache = CompanionCache()
         demoCache = CompanionCache()
@@ -949,6 +1296,7 @@ final class CompanionAppState {
         case "connected":
             useRecord()
             lastUpdated = Date()
+            passkeyStatus = PasskeyStatus(registered: true, count: 1, enrollmentOpen: false, rpId: "toolroll.dev")
             connection = .connected
         case "pairing-code":
             _ = pairingGate.begin()

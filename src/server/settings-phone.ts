@@ -28,8 +28,8 @@ import { handlersOf } from "./handler-registry.js";
 import { redirect, respond } from "./http.js";
 import { acts, btn, codeLine, infoLine, note, notice, settingsRecord, settingsSection } from "./kit.js";
 import {
-  cancelPairing, confirmPairing, listPhones, pairingView, pathStates, removePhone, renamePhone, startPairing,
-  type DirectPathState, type HostedPathState, type PairingView, type PhoneRow, type PhoneService, type RetiredReason,
+  cancelPairing, confirmPairing, isPasskeyEnrollmentOpen, listPasskeys, listPhones, openPasskeyEnrollment, pairingView, pathStates, removePhone, renamePhone, revokePasskey, startPairing,
+  type AccountPasskeyRow, type DirectPathState, type HostedPathState, type PairingView, type PhoneRow, type PhoneService, type RetiredReason,
 } from "./phone-engine-api.js";
 import type { ServerRuntime } from "./runtime.js";
 import { browserCaller, type Who } from "./session.js";
@@ -297,7 +297,7 @@ ${note("Keep the Toolroll app open until it says it's paired.")}</div>\
       ]);
     const accessSection = settingsSection({
       id: "phone-access", title: "iPhone app", state: on ? " · On" : " · Off",
-      lead: on ? `Your paired iPhone can see what needs you, read plans, steps and changes, and watch agents work. Approving still happens on ${thisMac}.`
+      lead: on ? `Your paired iPhone can see what needs you, read plans, steps and changes, watch agents work, and approve with a passkey.`
         : "Let the Toolroll iPhone app see your work. Nothing is shared until you pair a phone.",
       body: accessBody,
     });
@@ -354,7 +354,36 @@ ${note("Keep the Toolroll app open until it says it's paired.")}</div>\
       ]),
     });
 
-    return { body: settingsSubPage("access", "Phone", joinHtml([problem, accessSection, pairSection, devices]), { lead: "The Toolroll iPhone app: what needs you, in your pocket." }), script };
+    // 4. Passkey approvals (ADR 0005): explicit signed-in Mac consent window + per-credential revocation.
+    const passkeys = passworded ? listPasskeys(store, who.name) : [];
+    const activePasskeys = passkeys.filter(k => k.revokedAt === null);
+    const enrollmentOpen = isPasskeyEnrollmentOpen(service, who.name);
+    const passkeyRecord = (k: AccountPasskeyRow): Html => settingsRecord({
+      title: k.label,
+      sub: k.lastUsedAt === null ? `Registered ${pairedOn(k.createdAt)} · not used yet` : `Registered ${pairedOn(k.createdAt)} · last used ${relativeAge(k.lastUsedAt, now)}`,
+      attrs: { "data-passkey": k.credentialId },
+      more: kitSectionForm({ proof: "phone-passkey-revoke", action: "/settings/phone/passkey/revoke", id: `passkey-revoke-${k.credentialId.slice(0, 12)}`,
+        hidden: { credential: k.credentialId }, save: { label: "Revoke passkey", variant: "danger" }, confirm: `Revoke passkey ${k.label}`, body: "" }),
+    });
+    const passkeySection = !passworded || (current.length === 0 && activePasskeys.length === 0) ? "" : settingsSection({
+      id: "phone-passkeys",
+      title: "Phone approvals (Passkey)",
+      state: activePasskeys.length === 0 ? " · Not set up" : ` · ${activePasskeys.length} active`,
+      lead: "Approve plans, accept results, land locally, and ship PRs from your paired iPhone using a WebAuthn passkey verified on this Mac.",
+      body: joinHtml([
+        enrollmentOpen
+          ? infoLine("Enrollment window is open for 5 minutes. Open Settings → Passkey approvals on your paired iPhone and tap Set up passkey.")
+          : on && current.length > 0
+            ? kitSectionForm({ proof: "phone-passkey-enable", action: "/settings/phone/passkey/enable", id: "phone-passkey-enable-form", native: true,
+              save: { label: activePasskeys.length === 0 ? "Enable passkey on iPhone" : "Add another passkey", variant: "outline" },
+              confirm: "Enable passkey approvals on iPhone",
+              body: note("Opens a 5-minute window so your paired iPhone can register a passkey bound to this workspace.") })
+            : "",
+        activePasskeys.length === 0 ? note("No passkeys registered yet.") : joinHtml(activePasskeys.map(passkeyRecord)),
+      ]),
+    });
+
+    return { body: settingsSubPage("access", "Phone", joinHtml([problem, accessSection, pairSection, devices, passkeySection]), { lead: "The Toolroll iPhone app: what needs you, in your pocket." }), script };
   }
 
   const render = (response: ServerResponse, status: number, who: CookieWho, options: PageOptions = {}) => {
@@ -453,6 +482,26 @@ ${note("Keep the Toolroll app open until it says it's paired.")}</div>\
     return redirect(ctx.response, "/settings/phone#phone-devices");
   }
 
+  async function passkeyEnableAct(ctx: HandlerContext): Promise<void> {
+    const who = browserCaller(ctx.who);
+    const body = readForm(ctx.posted, CONSOLE_FORMS.phonePasskeyEnable);
+    if (body.getAll("password").length > 1) return render(ctx.response, 400, who, { problem: "Submit one value for each field." });
+    if (!passwordHolds(who, body.get("password") ?? "")) return render(ctx.response, 403, who, { problem: passwordProblem(who) });
+    const service = deps.access.service();
+    if (service === null) return render(ctx.response, 409, who, { problem: "Turn on phone access first." });
+    if (openPasskeyEnrollment(service, who.name) === null) return render(ctx.response, 409, who, { problem: "Passkey enrollment isn't available right now." });
+    return redirect(ctx.response, "/settings/phone#phone-passkeys");
+  }
+
+  async function passkeyRevokeAct(ctx: HandlerContext): Promise<void> {
+    const who = browserCaller(ctx.who);
+    const body = readForm(ctx.posted, CONSOLE_FORMS.phonePasskeyRevoke);
+    if (body.getAll("password").length > 1 || body.getAll("credential").length !== 1) return render(ctx.response, 400, who, { problem: "Submit one value for each field." });
+    if (!passwordHolds(who, body.get("password") ?? "")) return render(ctx.response, 403, who, { problem: passwordProblem(who) });
+    if (!revokePasskey(store, body.get("credential") ?? "", who.name, runtime.clock())) return render(ctx.response, 404, who, { problem: "That passkey isn't active." });
+    return redirect(ctx.response, "/settings/phone#phone-passkeys");
+  }
+
   return {
     registrations: handlersOf("settings", {
       "settings.phone": phonePage,
@@ -463,6 +512,8 @@ ${note("Keep the Toolroll app open until it says it's paired.")}</div>\
       "settings.phone-cancel": pairingAct("cancel"),
       "settings.phone-rename": renameAct,
       "settings.phone-remove": removeAct,
+      "settings.phone-passkey-enable": passkeyEnableAct,
+      "settings.phone-passkey-revoke": passkeyRevokeAct,
     }),
   };
 }

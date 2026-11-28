@@ -136,6 +136,62 @@ struct SettingsView: View {
                         }
                     }
 
+                    if appState.isDemoMode || appState.pairedRecord != nil {
+                        VStack(alignment: .leading, spacing: 6) {
+                            section("Passkey approvals") {
+                                VStack(spacing: 0) {
+                                    keyValueRow("Passkey", value: passkeyStatusText, valueColor: passkeyStatusColor)
+
+                                    if !appState.isDemoMode {
+                                        Divider().overlay(ToolrollTheme.hairline).padding(.leading, 14)
+                                        Button {
+                                            Task { _ = await appState.enrollPasskey() }
+                                        } label: {
+                                            HStack {
+                                                Label(
+                                                    appState.passkeyStatus?.registered == true ? "Add another passkey" : "Set up passkey",
+                                                    systemImage: "person.badge.key.fill"
+                                                )
+                                                .font(.subheadline.weight(.semibold))
+                                                .foregroundStyle(appState.canRunActions ? appearance.signalText : ToolrollTheme.subtle)
+                                                Spacer()
+                                                if appState.actionInFlight {
+                                                    ProgressView()
+                                                }
+                                            }
+                                            .padding(14)
+                                            .frame(minHeight: 44)
+                                            .contentShape(Rectangle())
+                                        }
+                                        .buttonStyle(.plain)
+                                        .disabled(!appState.canRunActions || appState.actionInFlight)
+                                    }
+
+                                    if let feedback = appState.actionFeedback {
+                                        Divider().overlay(ToolrollTheme.hairline).padding(.leading, 14)
+                                        Text(feedback)
+                                            .font(.footnote)
+                                            .foregroundStyle(ToolrollTheme.success)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .padding(14)
+                                    } else if let error = appState.actionError {
+                                        Divider().overlay(ToolrollTheme.hairline).padding(.leading, 14)
+                                        Text(error)
+                                            .font(.footnote)
+                                            .foregroundStyle(ToolrollTheme.danger)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .padding(14)
+                                    }
+                                }
+                            }
+
+                            Text("Approvals are verified locally on your Mac using Passkey user verification. Passkeys never give the relay authority to act.")
+                                .font(.caption)
+                                .foregroundStyle(ToolrollTheme.muted)
+                                .padding(.horizontal, 4)
+                        }
+                    }
+
                     section("Security and details") {
                         VStack(spacing: 0) {
                             DisclosureGroup(isExpanded: $showSecured) {
@@ -222,6 +278,9 @@ struct SettingsView: View {
             }
             .sensoryFeedback(.selection, trigger: appearance.accentHex)
             .sensoryFeedback(.selection, trigger: appearance.scheme)
+            .task {
+                await appState.refreshPasskeyStatus()
+            }
             .confirmationDialog("Remove this iPhone?", isPresented: $confirmUnpair, titleVisibility: .visible) {
                 Button("Remove", role: .destructive) {
                     removing = true
@@ -327,6 +386,28 @@ struct SettingsView: View {
         case .unreachable, .refused, .damaged: return ToolrollTheme.danger
         default: return ToolrollTheme.muted
         }
+    }
+
+    private var passkeyStatusText: String {
+        if appState.isDemoMode { return "Active · Demo passkey" }
+        guard let status = appState.passkeyStatus else {
+            return appState.isOffline ? "Unavailable offline" : "Checking…"
+        }
+        if status.registered {
+            let n = status.count
+            return n == 1 ? "Active · 1 passkey" : "Active · \(n) passkeys"
+        }
+        return status.enrollmentOpen ? "Ready to set up" : "Not set up"
+    }
+
+    private var passkeyStatusColor: Color {
+        if appState.isDemoMode || appState.passkeyStatus?.registered == true {
+            return ToolrollTheme.success
+        }
+        if appState.passkeyStatus?.enrollmentOpen == true {
+            return appearance.signalText
+        }
+        return ToolrollTheme.muted
     }
 
     private var connectionText: String? {
