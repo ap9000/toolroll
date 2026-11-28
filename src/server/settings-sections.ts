@@ -21,7 +21,7 @@ import { kitSectionForm, secretInput } from "../settings-kit.js";
 import { signInCheckWords, statusCheck, type SignInStatus } from "../flexible-sign-in.js";
 import { evaluateRoutePolicy, holdsRole, type RoutePrincipal } from "./route-policy.js";
 import type { LimitedAccess, ProjectResolver } from "./route-table.js";
-import { btn, codeLine, disclose, doc, docHeader, formRow, infoLine, input, notice, phoneHeader, select, settingsLink, settingsSection } from "./kit.js";
+import { btn, codeLine, codeWords, disclose, doc, docHeader, formRow, infoLine, input, notice, phoneHeader, select, settingsLink, settingsSection } from "./kit.js";
 import { changeDocumentOf, changeHref, sectionHref, SETTINGS_SECTIONS, type SectionDeclaration, type SectionGate, type SettingsArea } from "./settings-section-table.js";
 
 // ---- who is asking -------------------------------------------------------------------------------------------------
@@ -237,6 +237,8 @@ export function changeDocument(id: string, impls: SectionImpls, base: Base, prob
 export type GeneralDeps = {
   /** The version Settings → Updates reports to this person (null where updates aren't set up here). */
   readonly updatesVersion: (name: string) => string | null;
+  /** The service and the `toolroll` command run different builds: what to say, with the fix (null when they agree). */
+  readonly runtimeDrift?: () => string | null;
   readonly packageVersion: string;
   /** When the first Ready result arrived, in words. */
   readonly firstResult: (now: Date) => string | null;
@@ -323,17 +325,20 @@ function yourPasswordSection(deps: GeneralDeps): SectionImpl<{ passwordless: boo
   };
 }
 
-function versionSection(deps: GeneralDeps): SectionImpl<{ version: string; firstResult: string | null; updates: boolean }> {
+function versionSection(deps: GeneralDeps): SectionImpl<{ version: string; firstResult: string | null; updates: boolean; drift: string | null }> {
   return {
     loadSummary: ctx => {
       // Settings → Updates' version is installation data; an operator's browser session always has the package's own.
       const version = (ctx.scopes.has("updates-version") ? deps.updatesVersion(ctx.person.name) : null) ?? (ctx.scopes.has("package-version") ? deps.packageVersion : null);
-      return version === null ? null : { version, firstResult: deps.firstResult(ctx.now), updates: ctx.can["updates"] === true };
+      // Which build the service and the command run is installation data too.
+      const drift = ctx.scopes.has("updates-version") ? deps.runtimeDrift?.() ?? null : null;
+      return version === null ? null : { version, firstResult: deps.firstResult(ctx.now), updates: ctx.can["updates"] === true, drift };
     },
     render: ({ summary, attrs }) => settingsSection({
       id: "version", title: "Version", attrs,
       body: joinHtml([
         formRow("Toolroll", summary.firstResult ?? "Installed on this computer.", html`<span class="k-mono">${summary.version}</span>`, "inline"),
+        summary.drift === null ? "" : html`<div data-runtime-drift>${infoLine(codeWords(summary.drift))}</div>`,
         summary.updates ? formRow("Updates", null, btn("Open updates", { sm: true, variant: "ghost", href: "/settings/updates" }), "inline") : "",
       ]),
     }),

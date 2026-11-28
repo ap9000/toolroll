@@ -13,7 +13,7 @@ import { databasePath } from "./store.js";
 import { neverAnswered, unreachableWhy } from "./unreachable.js";
 import { PACKAGE_VERSION } from "./version.js";
 import {
-  currentRuntime, lastCompletedUpdate, machineSystem, readRuntimeUpdate, requestRuntimeUpdateCancel, resumeRuntimeUpdate, retireUpdateJob,
+  currentRuntime, driftFact, lastCompletedUpdate, machineSystem, serviceDrift, readRuntimeUpdate, requestRuntimeUpdateCancel, resumeRuntimeUpdate, retireUpdateJob,
   startRuntimeRollback, startRuntimeUpdate, type RuntimeRef, type UpdateSystem, type When,
 } from "./toolroll-update.js";
 
@@ -71,7 +71,7 @@ export async function runUpdateCommand(args: readonly string[], write: (line: st
   const stateDir = dirname(databaseFile);
   const actor = value("by") ?? userInfo().username;
   const current = deps.current ?? currentRuntime(PACKAGE_VERSION);
-  const system = () => deps.system ?? machineSystem();
+  const system = () => deps.system ?? machineSystem(deps.home);
 
   if (has("status")) {
     const j = readRuntimeUpdate(stateDir);
@@ -118,13 +118,29 @@ export async function runUpdateCommand(args: readonly string[], write: (line: st
       return 1;
     }
   }
-  if (version === current.version) { write(`Toolroll ${version} is current.`); return 0; }
+  // The service may run another build than this command (it drifted): the update brings it along, and a command that
+  // is already current reinstalls its own release, verified, so both run one build.
+  const drift = serviceDrift(system().serviceUnit(current, databaseFile), current);
+  const driftLine = drift === null ? null : driftFact(drift.service, current);
+  if (version === current.version && drift === null) { write(`Toolroll ${version} is current.`); return 0; }
+  if (version === current.version) {
+    if (!has("yes")) {
+      write(driftLine!);
+      write(`Add --yes to bring them together: Toolroll ${version} is downloaded again and verified as an update is, ${when === "now" ? "refusing if any work is running" : "running work finishes first"}, the database is backed up and rehearsed, and the service and the toolroll command are pointed at it.`);
+      return 0;
+    }
+    if (when === "at") write(`Waiting until ${at}. Keep this running.`);
+    const outcome = await startRuntimeUpdate({ stateDir, databaseFile, current, actor, version, when, at: at ?? null, realign: true }, system());
+    write(outcome.message);
+    return outcome.ok ? 0 : 1;
+  }
   const downgrade = !isNewer(version, current.version);
   if (downgrade && !has("allow-downgrade")) { write(`Toolroll ${version} is older than ${current.version}. Add --allow-downgrade to go back to it.`); return 1; }
   const old = downgrade ? oldReleaseProblem(version, deps.sqlite ?? process.versions.sqlite) : null;
   if (old !== null) { write(old); return 1; }
   if (!has("yes")) {
     write(`Update Toolroll ${current.version} → ${version}.`);
+    if (driftLine !== null) write(`${driftLine} This update moves both to ${version}.`);
     write(`${when === "now" ? "Refuses if any work is running" : when === "at" ? `Waits until ${at}, then pauses new work and lets running work finish` : "Pauses new work and lets running work finish"}; verifies the package came from ap9000/toolroll's publish workflow; backs up and rehearses the database; keeps ${current.version} for toolroll update --rollback.`);
     write("Add --yes to update.");
     return 0;

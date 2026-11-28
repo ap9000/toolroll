@@ -109,7 +109,9 @@ export type ServeOptions = {
   /** Settings → Updates seams: the latest release, how this Toolroll was
    * installed, its version, and how the updater job starts. Tests and
    * screenshots inject these; production reads the registry and launchd. */
-  updates?: { latest?: () => Promise<{ version: string }>; method?: InstallMethod; current?: string; dist?: string; launch?: typeof launchRuntimeUpdate };
+  updates?: { latest?: () => Promise<{ version: string }>; method?: InstallMethod; current?: string; dist?: string; launch?: typeof launchRuntimeUpdate;
+    /** The `toolroll` command on PATH (tests); the console runs as the service, so a different one is drift. */
+    command?: () => { dist: string; version: string | null } | null };
   discordFetcher?: typeof fetch;
   /** Injected by tests: Microsoft sign-in, key metadata and Teams conversation calls. */
   teamsFetcher?: typeof fetch;

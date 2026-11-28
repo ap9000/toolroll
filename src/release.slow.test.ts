@@ -986,6 +986,13 @@ describe("toolroll release", () => {
       expect(readJournal(journalFile(dir, "toolroll/simplify-release"))).toBeNull();
     };
     test("the console, worker and both CLI names run one build", () => refusedWith(s => { s.installed.clis[1]!.runtime = NEW; }, "mixed-runtime"));
+    test("a mixed-runtime stop names the command that fixes it, and says the command is newer than the service", async () => {
+      const { s, adapters } = world();
+      s.installed = { services: [OLD], clis: [{ name: "toolroll", runtime: NEW }, { name: "standing-orders", runtime: NEW }], versions: { [OLD]: "0.9.116", [NEW]: "0.9.127" } } as typeof s.installed;
+      const stopped = await runRelease(options(stateDir()), adapters);
+      expect(stopped).toMatchObject({ ok: false, step: "preflight", reason: "mixed-runtime" });
+      expect(stopped.ok ? "" : stopped.message).toContain("`toolroll` is 0.9.127, newer than the 0.9.116 your service runs. Run `toolroll update --yes` to bring them to one verified build, then release again.");
+    });
     test("the lead wrote the version's CHANGELOG entry", () => refusedWith(s => { s.files.set("CHANGELOG.md", "## 0.9.51\n"); }, "changelog"));
     test("the version is new", () => refusedWith(s => { s.tags.set("v0.9.52", OTHER); }, "version"));
     test("the branch has an open pull request at its head", () => refusedWith(s => { s.pr.head = OTHER; }, "drift"));

@@ -36,6 +36,7 @@ import { CHECK_REPORT_CAPTURE, readSealedJson } from "./check-report.js";
 import { readCheckReport } from "./contracts/release-check.js";
 import { macosCases, skipCoverage, skippedCases, uncoveredWords } from "./fenced-check-coverage.js";
 import { runCheckStamp } from "./store.js";
+import { runtimeVersionAt } from "./toolroll-update.js";
 import { noteCiRunning, releaseCiHoldOf, releaseCiRunningOf } from "./release-ci-hold.js";
 import { autoPublishHeld, holdAutoPublish, liftCiHold, authorizeAutoCheck, giveUpAutoApproval, noteAutoCheckFailed, noteAutoRelease, releaseAutoApproves, sealAutoGreen, type CiObservation } from "./release-auto.js";
 import { proveCarry, type BuildRunner } from "./release-carry.js";
@@ -457,7 +458,11 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
       },
     },
     toolroll: {
-      async installed() { return { services: serviceRuntimes(), clis: cliRuntimes() }; },
+      async installed() {
+        const services = serviceRuntimes(), clis = cliRuntimes();
+        const versions = Object.fromEntries([...services, ...clis.flatMap(one => one.runtime === null ? [] : [one.runtime])].map(dist => [dist, runtimeVersionAt(dist)]));
+        return { services, clis, versions };
+      },
       async runtimeCommit(runtime) {
         // deploy-browser writes this beside node_modules, not in the package's own manifest (whose version can repeat).
         try {

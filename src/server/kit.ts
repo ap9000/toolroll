@@ -146,6 +146,8 @@ export const note = (text: HtmlValue): Html => html`<p class="k-note">${text}</p
 export const notice = (text: HtmlValue): Html => html`<p class="k-notice" role="alert">${icon("alert", true)}<span>${text}</span></p>`;
 /** One neutral system line (a builder offline, an update): not a failure, never the needs-you mark. */
 export const infoLine = (text: HtmlValue): Html => html`<p class="k-notice info">${text}</p>`;
+/** Plain words with each `command` in them set as code. */
+export const codeWords = (text: string): Html => joinHtml(text.split("`").map((part, i) => i % 2 === 1 ? html`<code class="k-mono">${part}</code>` : html`${part}`));
 export function empty(options: { title: string; text?: string; action?: Html }): Html {
   return html`<div class="k-empty"><p class="k-empty-t">${options.title}</p>${options.text ? html`<p class="k-empty-x">${options.text}</p>` : ""}${options.action ?? ""}</div>`;
 }

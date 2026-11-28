@@ -138,7 +138,7 @@ import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
 import { homedir, hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { CHECK_RECOVERY_HELD, readCheckRecoveryHoldsForTaskRef } from "./check-recovery-hold.js";
-import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
+import { currentRuntime, driftWords, releaseStalledUpdate, serviceDriftHere, waitingUpdate } from "./toolroll-update.js";
 import { dur } from "./design/kit.js";
 import {
   requeueEligibility, type ClosedState, checkoutIdle, setCheckoutIdle, leadQuickAnswersOn, setLeadQuickAnswers, openStore, openStoreNoMigrate, initLocalMode, localModeCandidate, consoleServingNow, consoleComponent, consoleRowForPort, openConsoleRows, enrollOwnerPassword, installationCreatedBy, laptopPortOf, recordLaptopPort, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState, type Publication,
@@ -9510,6 +9510,10 @@ async function statusCommand(
   const waiting = waitingUpdate(context.databaseFile, run => context.store.stopQuiescenceProblem(run) !== null, context.clock());
   const updateWaiting = waiting === null ? {} : { updateWaiting: { app: waiting.app, version: waiting.version, stopped: waiting.stopped, run: waiting.run, on: waiting.on, action: waiting.action } };
   const legacyWebhookWarning = loadWebhookTargets(process.env, dirname(context.databaseFile)).length > 0 ? LEGACY_WEBHOOK_WARNING : null;
+  // Toolroll's service for this database running another build than this command: said, with the one command.
+  const drift = ["source", "npx", "desktop"].includes(method.kind) ? null : (() => { try { return serviceDriftHere(context.databaseFile, { version: current, dist: context.laptopSeams?.dist ?? currentRuntime(current).dist }, context.laptopSeams ?? {}); } catch { return null; } })();
+  const driftLine = drift === null ? null : driftWords(drift.service, drift.cli);
+  const runtimeDrift = drift === null ? {} : { runtimeDrift: { service: drift.service.version, serviceRuntime: drift.service.dist, cli: current, words: driftLine, fix: "toolroll update --yes" } };
   const projects = projectBuildsStatus(context);
   const projectsLine = projects.length === 0 ? null
     : `Builds by project: ${projects.slice(0, 8).map(one => `${one.name} ${one.running} of ${one.limit}`).join(", ")}${projects.length > 8 ? ", …" : ""}`;
@@ -9522,7 +9526,7 @@ async function statusCommand(
   const laptop = { laptop: await laptopStatus(context.store, context.databaseFile, context.laptopSeams) };
   // Nothing else on this computer is left to notice a builder that died: a look at status brings it back when it may.
   if (!laptop.laptop.running && laptop.laptop.background === "on" && !machineActing()) await restartOwnBuilder(context.store, context.databaseFile, context.laptopSeams, context.clock()).catch(() => null);
-  return succeed(context.write, context.json, command, { ...status, projects, ...laptop, ...update, ...integrations, ...signedOut, ...updateWaiting, ...unsentReplies, ...(legacyWebhookWarning === null ? {} : { legacyWebhookWarning }) }, () => [...(waiting === null ? [] : [waiting.words]), ...(unsentLine === null ? [] : [unsentLine]), ...renderInstallationStatus(status), ...(projectsLine === null ? [] : [projectsLine]), ...(line === null ? [] : [line]), ...signedOutLines, ...(brokenLine === null ? [] : [brokenLine]), ...(legacyWebhookWarning === null ? [] : [legacyWebhookWarning])]);
+  return succeed(context.write, context.json, command, { ...status, projects, ...laptop, ...update, ...integrations, ...signedOut, ...updateWaiting, ...runtimeDrift, ...unsentReplies, ...(legacyWebhookWarning === null ? {} : { legacyWebhookWarning }) }, () => [...(waiting === null ? [] : [waiting.words]), ...(unsentLine === null ? [] : [unsentLine]), ...renderInstallationStatus(status), ...(projectsLine === null ? [] : [projectsLine]), ...(line === null ? [] : [line]), ...(driftLine === null ? [] : [driftLine]), ...signedOutLines, ...(brokenLine === null ? [] : [brokenLine]), ...(legacyWebhookWarning === null ? [] : [legacyWebhookWarning])]);
 }
 
 function unsentRepliesLine(unsent: readonly { since: string; error: string | null }[]): string | null {

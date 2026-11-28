@@ -23,6 +23,7 @@
  * failure is a ledger entry.
  */
 import { inReadOnlyRequest } from "./read-only-request.js";
+import { installMethod } from "./install-method.js";
 import { createHash, randomUUID, verify as signatureValid, X509Certificate } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { accessSync, chmodSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statfsSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -103,8 +104,9 @@ export type UpdateSystem = {
   rehearse: (dist: string, copy: string) => Promise<void>;
   /** Every `toolroll` and `standing-orders` command on PATH: each must be a link into `from` to be switched. */
   commands: (from: RuntimeRef) => string[];
-  /** The background service's definition, when one runs `from`. */
-  serviceUnit: (from: RuntimeRef) => string | null;
+  /** The background service's definition: one that runs `from`, or Toolroll's own service (by its label) for
+   * `databaseFile`, whichever build it runs now, so an update brings a service that drifted along. */
+  serviceUnit: (from: RuntimeRef, databaseFile?: string) => string | null;
   /** Every repo's watch daemon definition that runs `from`. */
   watchUnits: (from: RuntimeRef) => string[];
   /** npm's own Sigstore verifier: the bundle's certificate chains to Sigstore, its signature is in the transparency
@@ -804,14 +806,36 @@ async function stopServices(j: RuntimeUpdateJournal, system: UpdateSystem, main:
 
 // ---- runtime switch: service definition and commands ----------------------
 
+/** The runtime folders (each a `…/dist`) a service definition runs: every `<dist>/<entry>.js` its command names
+ * (a plist's ProgramArguments; the whole text when it has none). */
+export function unitRuntimes(text: string): string[] {
+  const command = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(text)?.[1] ?? text;
+  return [...new Set([...command.matchAll(/<string>(\/[^<]*\/dist)\/[^/<]+\.js<\/string>/g)].map(match => match[1]!))];
+}
+
+/** A definition pointed at `to`: `from` and every runtime its command names, in one pass (nothing replaced twice). */
+export function pointUnitAt(text: string, from: string, to: string): string {
+  const runtimes = [...new Set([from, ...unitRuntimes(text)])].filter(Boolean).sort((a, b) => b.length - a.length);
+  return text.replace(new RegExp(runtimes.map(one => one.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g"), () => to);
+}
+
+/** The Toolroll version a runtime folder holds (its package.json beside it), or null when it says none. */
+export function runtimeVersionAt(dist: string): string | null {
+  try {
+    const pkg = JSON.parse(readFileSync(join(dist, "..", "package.json"), "utf8")) as { name?: unknown; version?: unknown };
+    return (pkg.name === NAME || pkg.name === "standing-orders") && typeof pkg.version === "string" && /^\d+\.\d+\.\d+$/.test(pkg.version) ? pkg.version : null;
+  } catch { return null; }
+}
+
 function pointLink(path: string, target: string): void {
   const temp = join(dirname(path), `.${basename(path)}.${randomUUID().slice(0, 8)}`);
   symlinkSync(target, temp); durableRename(temp, path);
 }
 
-/** What runs the current version: its service definition and every command on PATH. */
+/** What runs the current version: its service definition (or this database's own service, whatever build it runs)
+ * and every command on PATH. */
 function switchable(j: RuntimeUpdateJournal, system: UpdateSystem): { unit: string | null; watches: string[]; links: string[] } {
-  const unit = system.serviceUnit(j.from), watches = system.watchUnits(j.from), links = system.commands(j.from);
+  const unit = system.serviceUnit(j.from, j.databaseFile), watches = system.watchUnits(j.from), links = system.commands(j.from);
   if (!unit && watches.length === 0 && links.length === 0) throw new Refusal(`No background service or toolroll command runs ${j.from.version} from ${j.from.dist}, so there is nothing to switch. Nothing was changed.`);
   const real = (path: string) => { try { return realpathSync(path); } catch { return null; } };
   const root = real(dirname(j.from.dist)) ?? dirname(j.from.dist);
@@ -823,7 +847,9 @@ function switchable(j: RuntimeUpdateJournal, system: UpdateSystem): { unit: stri
     try { accessSync(dirname(link), constants.W_OK); }
     catch { throw new Refusal(`${dirname(link)} cannot be written, so ${link} would keep running ${j.from.version}. Make that folder writable, then update again. Nothing was changed.`); }
   }
-  for (const one of [unit, ...watches]) if (one && !readFileSync(one, "utf8").includes(j.from.dist)) throw new Refusal("The service definition does not name the current runtime. Nothing was changed.");
+  // The service may run an older build than `from` (it drifted); it must still name a Toolroll runtime to point anew.
+  if (unit) { const text = readFileSync(unit, "utf8"); if (!text.includes(j.from.dist) && unitRuntimes(text).length === 0) throw new Refusal("The service definition does not name a Toolroll runtime. Nothing was changed."); }
+  for (const one of watches) if (!readFileSync(one, "utf8").includes(j.from.dist)) throw new Refusal("The service definition does not name the current runtime. Nothing was changed.");
   return { unit, watches, links };
 }
 
@@ -846,7 +872,7 @@ async function switchRuntime(j: RuntimeUpdateJournal, system: UpdateSystem): Pro
     restoreDatabase(j, j.restoreFrom); gate(j);
     j.switched.databaseRestored = true; save(j, "switching", j.detail, system.now());
   }
-  for (const one of [j.switched.unit, ...j.switched.watches ?? []]) if (one) writeFileDurably(one.path, readFileSync(one.saved, "utf8").replaceAll(j.from.dist, j.to.dist), 0o644);
+  for (const one of [j.switched.unit, ...j.switched.watches ?? []]) if (one) writeFileDurably(one.path, pointUnitAt(readFileSync(one.saved, "utf8"), j.from.dist, j.to.dist), 0o644);
   for (const link of j.switched.links) pointLink(link.path, join(j.to.dist, "bin.js"));
 }
 
@@ -899,6 +925,9 @@ export type StartOptions = {
   version: string; when: When; at?: string | null;
   /** An older version replaces the current one only when asked for by name. */
   allowDowngrade?: boolean;
+  /** The service runs another build than the current one: reinstall the current release, verified, and point the
+   * service and the commands at it (`toolroll update --yes` when the command is already current). */
+  realign?: boolean;
 };
 
 function nextAt(hhmm: string, now: Date): Date {
@@ -923,7 +952,7 @@ function assertNoneActive(stateDir: string): void {
 /** Record an update without running it: the console's job resumes exactly this journal id. */
 export function prepareRuntimeUpdate(o: StartOptions, now: Date): RuntimeUpdateJournal | { refused: string } {
   if (!/^\d+\.\d+\.\d+$/.test(o.version)) return { refused: `${o.version} is not a release version (x.y.z).` };
-  if (!o.allowDowngrade && !isNewer(o.version, o.current.version)) return { refused: `Toolroll ${o.version} is not newer than ${o.current.version}. To go back to an older release, run toolroll update --version ${o.version} --allow-downgrade.` };
+  if (!o.allowDowngrade && !isNewer(o.version, o.current.version) && !(o.realign === true && o.version === o.current.version)) return { refused: `Toolroll ${o.version} is not newer than ${o.current.version}. To go back to an older release, run toolroll update --version ${o.version} --allow-downgrade.` };
   // Nothing set up here: refused before anything is staged or drained, and no database is made to update.
   if (!existsSync(o.databaseFile)) return { refused: `Toolroll isn't set up on this computer yet (there's no database at ${o.databaseFile}), so there's nothing to update. Nothing was changed. To get the newest command, run npm install -g toolroll@latest.` };
   try { assertNoneActive(o.stateDir); keepCompletedUpdate(o.stateDir); } catch (error) { return { refused: (error as Error).message }; }
@@ -936,7 +965,7 @@ export function prepareRuntimeUpdate(o: StartOptions, now: Date): RuntimeUpdateJ
 
 /** Start an update: stage, verify, then run the journaled steps. */
 export async function startRuntimeUpdate(o: StartOptions, system: UpdateSystem): Promise<UpdateOutcome> {
-  if (o.version === o.current.version) return { ok: true, phase: "complete", message: `Toolroll ${o.version} is current.`, journal: null };
+  if (o.version === o.current.version && o.realign !== true) return { ok: true, phase: "complete", message: `Toolroll ${o.version} is current.`, journal: null };
   const j = prepareRuntimeUpdate(o, system.now());
   if ("refused" in j) return { ok: false, phase: "refused", message: j.refused, journal: null };
   return driveRuntimeUpdate(j, system);
@@ -1323,6 +1352,65 @@ export function currentRuntime(version: string): RuntimeRef {
   return { version, dist: dirname(fileURLToPath(import.meta.url)) };
 }
 
+const realOr = (path: string) => { try { return realpathSync(path); } catch { return resolve(path); } };
+
+/** Toolroll's own launchd service on this Mac (by label): the one that runs `from`, or else the one serving
+ * `databaseFile` (its `--db`), whichever installed Toolroll release it runs now. Another label, another database's
+ * service, the Toolroll app's own runtime (it updates as a whole app) or a source checkout is never ours to switch. */
+export function ownServiceUnit(home: string, from: RuntimeRef, databaseFile?: string): string | null {
+  const units = LABELS.map(label => join(home, "Library", "LaunchAgents", `${label}.plist`)).filter(unit => existsSync(unit));
+  const read = (unit: string) => { try { return readFileSync(unit, "utf8"); } catch { return ""; } };
+  const running = units.find(unit => read(unit).includes(from.dist));
+  if (running !== undefined || databaseFile === undefined) return running ?? null;
+  return units.find(unit => {
+    const text = read(unit), db = unitFlag(text, "darwin", "--db");
+    const runtimes = unitRuntimes(text);
+    return db !== null && isAbsolute(db) && realOr(db) === realOr(databaseFile) && runtimes.length > 0
+      && runtimes.every(dist => !["desktop", "source"].includes(installMethod(join(dist, "bin.js")).kind));
+  }) ?? null;
+}
+
+/** The service running another Toolroll build than the `toolroll` command (`cli`): which, and what version. */
+export type ServiceDrift = { unit: string; service: { dist: string; version: string | null }; cli: RuntimeRef };
+export function serviceDrift(unit: string | null, cli: RuntimeRef): ServiceDrift | null {
+  if (unit === null) return null;
+  let text: string;
+  try { text = readFileSync(unit, "utf8"); } catch { return null; }
+  const other = unitRuntimes(text).find(dist => realOr(dist) !== realOr(cli.dist));
+  return other === undefined ? null : { unit, service: { dist: other, version: runtimeVersionAt(other) }, cli };
+}
+/** This Mac's drift for `databaseFile`, for `toolroll status` (macOS only: elsewhere null). */
+export function serviceDriftHere(databaseFile: string, cli: RuntimeRef, seams: { home?: string; platform?: NodeJS.Platform } = {}): ServiceDrift | null {
+  if ((seams.platform ?? process.platform) !== "darwin") return null;
+  return serviceDrift(ownServiceUnit(seams.home ?? homedir(), cli, databaseFile), cli);
+}
+/** The plain fact: the service runs one build and the command another. */
+export function driftFact(service: { version: string | null; dist: string }, cli: { version: string }): string {
+  return service.version !== null && service.version !== cli.version
+    ? `Your Toolroll service runs ${service.version}, but \`toolroll\` is ${cli.version}.`
+    : `Your Toolroll service runs a different copy of Toolroll (${service.dist}) than \`toolroll\` (${cli.version}).`;
+}
+/** The `toolroll` command on PATH: the runtime its bin.js sits in and that runtime's version, or null when it is not a
+ * linked Toolroll runtime. For the console, which runs as the service and so asks where the command points. */
+export function commandRuntime(path = process.env["PATH"] ?? ""): { dist: string; version: string | null } | null {
+  for (const dir of path.split(":").filter(one => isAbsolute(one))) {
+    const candidate = join(dir, NAME);
+    if (!existsSync(candidate)) continue;
+    const real = realOr(candidate);
+    return basename(real) === "bin.js" && basename(dirname(real)) === "dist" ? { dist: dirname(real), version: runtimeVersionAt(dirname(real)) } : null;
+  }
+  return null;
+}
+/** The console's view: it runs as the service (`service`), so drift is the command on PATH running another build. */
+export function consoleDriftWords(service: RuntimeRef, command: { dist: string; version: string | null } | null): string | null {
+  if (command === null || command.version === null || realOr(command.dist) === realOr(service.dist)) return null;
+  return driftWords({ version: service.version, dist: service.dist }, { version: command.version });
+}
+/** The fact and the one command that fixes it. */
+export function driftWords(service: { version: string | null; dist: string }, cli: { version: string }): string {
+  return `${driftFact(service, cli)} Run \`toolroll update --yes\` to bring them together.`;
+}
+
 async function json(url: string): Promise<unknown> {
   const response = await fetch(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(30_000) });
   if (!response.ok) throw new Refusal(`${url} answered ${response.status}. Nothing was changed.`);
@@ -1350,13 +1438,6 @@ export function machineSystem(home = homedir(), env: Record<string, string | und
   const supervise = seams.run ?? (async (file, args, options) => (await import("./exec.js")).run(file, args, options));
   // Linux: the laptop service is a systemd user unit; nothing else here runs under systemd (watches use launchd's road).
   if ((seams.platform ?? process.platform) === "linux") return { ...machineSystem(home, env, { ...seams, platform: "darwin" }), ...systemdLaptopService(home, sh, supervise, seams) };
-  const unitFor = (from: RuntimeRef) => {
-    for (const label of LABELS) {
-      const unit = join(home, "Library", "LaunchAgents", `${label}.plist`);
-      if (existsSync(unit) && readFileSync(unit, "utf8").includes(from.dist)) return unit;
-    }
-    return null;
-  };
   const labelOf = (unit: string) => basename(unit, ".plist");
   const domain = `gui/${typeof process.getuid === "function" ? process.getuid() : userInfo().uid}`;
   const definition = (unit: string) => {
@@ -1420,7 +1501,7 @@ export function machineSystem(home = homedir(), env: Record<string, string | und
       const checked = sh(process.execPath, ["--no-warnings", "-e", SIGSTORE_SCRIPT], { input: JSON.stringify({ verifier, bundle, ...identity }), timeout: 120_000 });
       if (checked.status !== 0) throw new Refusal(`Sigstore did not verify Toolroll's provenance for ${identity.identity}: ${(checked.stderr || checked.stdout).trim().slice(-400)} Nothing was changed.`);
     },
-    serviceUnit: from => unitFor(from),
+    serviceUnit: (from, databaseFile) => ownServiceUnit(home, from, databaseFile),
     watchUnits: from => {
       const dir = join(home, "Library", "LaunchAgents");
       let names: string[] = [];
