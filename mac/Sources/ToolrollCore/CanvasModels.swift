@@ -777,9 +777,21 @@ public enum YouiCanvasStorage {
 
     static func requestsDirectory(projectRoot: String, forId id: String) -> URL? {
         guard CanvasPin.isPlainRequestId(id) else { return nil }
-        let dir = URL(fileURLWithPath: projectRoot).appendingPathComponent(".youi/requests", isDirectory: true)
-        if let type = try? FileManager.default.attributesOfItem(atPath: dir.path)[.type] as? FileAttributeType, type != .typeDirectory { return nil }
-        do { try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) } catch { return nil }
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: projectRoot) {
+            do { try fm.createDirectory(atPath: projectRoot, withIntermediateDirectories: true) } catch { return nil }
+        }
+        let root = URL(fileURLWithPath: projectRoot).resolvingSymlinksInPath()
+        var dir = root
+        for part in [".youi", "requests"] {
+            dir = dir.appendingPathComponent(part, isDirectory: true)
+            if let type = try? fm.attributesOfItem(atPath: dir.path)[.type] as? FileAttributeType {
+                guard type == .typeDirectory else { return nil }
+            } else {
+                do { try fm.createDirectory(at: dir, withIntermediateDirectories: false) } catch { return nil }
+            }
+        }
+        guard dir.resolvingSymlinksInPath().path == root.appendingPathComponent(".youi/requests").path else { return nil }
         return dir
     }
 

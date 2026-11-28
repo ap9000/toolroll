@@ -420,12 +420,22 @@ struct CanvasAppSurfaceTests {
         #expect(YouiCanvasStorage.loadPins(projectRoot: root).map(\.id) == ["r-dddddddddd"])
     }
 
-    @Test("A linked .youi/requests folder is never written through")
+    @Test("A linked .youi or .youi/requests folder is never written through; a plain project still works")
     func linkedRequestsFolderRefused() throws {
         let root = try tempDir("pin-link"), elsewhere = try tempDir("pin-elsewhere")
         try FileManager.default.createDirectory(atPath: (root as NSString).appendingPathComponent(".youi"), withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(atPath: (root as NSString).appendingPathComponent(".youi/requests"), withDestinationPath: elsewhere)
         #expect(YouiCanvasStorage.writeYouiRequest(projectRoot: root, projectName: "p", pin: pin(draft: false)) == nil)
         #expect(try FileManager.default.contentsOfDirectory(atPath: elsewhere).isEmpty)
+
+        let root2 = try tempDir("pin-link2"), elsewhere2 = try tempDir("pin-elsewhere2")
+        try FileManager.default.createDirectory(atPath: (elsewhere2 as NSString).appendingPathComponent("requests"), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: (root2 as NSString).appendingPathComponent(".youi"), withDestinationPath: elsewhere2)
+        #expect(YouiCanvasStorage.writeYouiRequest(projectRoot: root2, projectName: "p", pin: pin(draft: false)) == nil)
+        #expect(YouiCanvasStorage.savePinScreenshot(Data([0x89, 0x50]), projectRoot: root2, pinId: "r-0123456789") == nil)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: (elsewhere2 as NSString).appendingPathComponent("requests")).isEmpty)
+
+        let root3 = try tempDir("pin-ok")
+        #expect(YouiCanvasStorage.writeYouiRequest(projectRoot: root3, projectName: "p", pin: pin(draft: false)) != nil)
     }
 }
