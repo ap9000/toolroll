@@ -81,7 +81,7 @@ git_refuses() {
       core.fsmonitor) case "$value" in ''|false|no|off|0) ;; *) return 0 ;; esac ;;
       filter.*) return 0 ;;
     esac
-  done < <(git_ config --list --includes -z 2>/dev/null || true)
+  done < <(git_ config --list --includes -z 2>/dev/null || true)  # guard: allow no git config is fine; defaults apply
   return 1
 }
 
@@ -164,10 +164,10 @@ booted_here=0
 udid=""
 cleanup() {
   if [ "$booted_here" = 1 ] && [ "$keep_booted" = 0 ] && [ -n "$udid" ]; then
-    xcrun simctl shutdown "$udid" >>"$log" 2>&1 || true
+    xcrun simctl shutdown "$udid" >>"$log" 2>&1 || true  # guard: allow best-effort shutdown of the simulator this script booted
   fi
   rm -rf "$cache_dir/.incoming-$$"
-  rmdir "$lock" 2>/dev/null || true
+  rmdir "$lock" 2>/dev/null || true  # guard: allow lock dir may already be gone
 }
 trap cleanup EXIT
 
@@ -182,13 +182,13 @@ if [ -z "$udid" ]; then
 fi
 state="$(xcrun simctl list devices | sed -nE "s/^ +${device_name} \(${udid}\) \(([A-Za-z ]+)\).*/\1/p" | head -1)"
 if [ "$state" != "Booted" ]; then
-  xcrun simctl boot "$udid" >>"$log" 2>&1 || true
+  xcrun simctl boot "$udid" >>"$log" 2>&1 || true  # guard: allow already-booted simulator is fine
   booted_here=1
 fi
 xcrun simctl bootstatus "$udid" -b >>"$log" 2>&1 || fail "the \"$device_name\" Simulator didn't boot; see $log"
 os_version="iOS $(xcrun simctl getenv "$udid" SIMULATOR_RUNTIME_VERSION 2>/dev/null || echo '?')"
 xcrun simctl status_bar "$udid" override --time "9:41" --dataNetwork wifi --wifiMode active --wifiBars 3 \
-  --cellularMode active --cellularBars 4 --batteryState charged --batteryLevel 100 >>"$log" 2>&1 || true
+  --cellularMode active --cellularBars 4 --batteryState charged --batteryLevel 100 >>"$log" 2>&1 || true  # guard: allow status bar override is cosmetic
 
 # ---------------------------------------------------------------- build and install
 say "Building the app with Xcode…"
@@ -198,7 +198,7 @@ if ! xcodebuild build -quiet \
     -destination "platform=iOS Simulator,id=$udid" \
     -derivedDataPath "$derived" \
     CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= >>"$log" 2>&1; then
-  reason="$(grep -m1 -E 'error:' "$log" | sed -E 's/^.*error: //' | cut -c1-200 || true)"
+  reason="$(grep -m1 -E 'error:' "$log" | sed -E 's/^.*error: //' | cut -c1-200 || true)"  # guard: allow no error line to quote is fine
   fail "the Xcode build failed${reason:+: $reason} (log: $log)"
 fi
 app="$(ls -d "$derived"/Build/Products/Debug-iphonesimulator/*.app 2>/dev/null | head -1)"
@@ -224,7 +224,7 @@ done_count=0
 
 appearances_of() {
   local i="$1" n
-  n="$(extract "$S.screens.$i.appearances" || true)"
+  n="$(extract "$S.screens.$i.appearances" || true)"  # guard: allow screen without appearances falls back to light
   if [ -n "$n" ]; then
     for ((k = 0; k < n; k++)); do extract "$S.screens.$i.appearances.$k"; done
   else
@@ -243,7 +243,7 @@ for appearance in light dark; do
     for ((k = 0; k < $(extract "$S.screens.$i.launch" || echo 0); k++)); do args+=("$(extract "$S.screens.$i.launch.$k")"); done
     done_count=$((done_count + 1))
     say "Capturing $done_count/$total: $id ($appearance)"
-    xcrun simctl terminate "$udid" "$bundle_id" >>"$log" 2>&1 || true
+    xcrun simctl terminate "$udid" "$bundle_id" >>"$log" 2>&1 || true  # guard: allow app may not be running yet
     if ! xcrun simctl launch "$udid" "$bundle_id" ${args[@]+"${args[@]}"} >>"$log" 2>&1; then
       failures+=("$id ($appearance): it didn't launch")
       continue
@@ -257,7 +257,7 @@ for appearance in light dark; do
     entries+=("{\"screen\": \"$id\", \"appearance\": \"$appearance\", \"file\": \"$file\", \"commit\": \"$commit\", \"captured_at\": \"$(now_iso)\"}")
   done
 done
-xcrun simctl terminate "$udid" "$bundle_id" >>"$log" 2>&1 || true
+xcrun simctl terminate "$udid" "$bundle_id" >>"$log" 2>&1 || true  # guard: allow app may not be running
 
 [ "${#entries[@]}" -gt 0 ] || fail "no screen was captured: ${failures[*]:-unknown} (log: $log)"
 
